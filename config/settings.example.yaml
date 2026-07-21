@@ -14,6 +14,9 @@ llm:
   is_multimodal: false
   temperature: 1.0
   max_react_steps: 15
+  # provider_default, always, never, or first_step. QWB understands the
+  # enable_thinking extension; provider_default sends no extra field.
+  thinking_policy: provider_default
   # wrapper keeps maximum compatibility (including QWB/Qwen).
   # native exposes selected skills directly; hybrid keeps both transports.
   tool_transport: wrapper

@@ -255,6 +255,9 @@ class LLMConfig(BaseModel):
     is_multimodal: bool = False
     temperature: float = 1.0
     max_react_steps: int = 15
+    thinking_policy: Literal[
+        "provider_default", "always", "never", "first_step"
+    ] = "provider_default"
     tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper"
     native_tool_prefixes: list[str] = Field(
         default_factory=lambda: [

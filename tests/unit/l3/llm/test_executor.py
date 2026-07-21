@@ -41,6 +41,26 @@ async def test_executor_success(mock_executor_deps):
 
 
 @pytest.mark.asyncio
+async def test_executor_forwards_optional_thinking_extension(mock_executor_deps):
+    llm, tracker = mock_executor_deps
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    response = MagicMock()
+    response.choices[0].message.tool_calls = None
+    response.choices[0].message.content = "ok"
+    session.chat.completions.create.return_value = response
+
+    executor = LLMExecutor(llm, tracker)
+    await executor.execute(
+        "model", [], 0.0, MagicMock(), "[Log]", enable_thinking=False
+    )
+
+    assert session.chat.completions.create.await_args.kwargs["extra_body"] == {
+        "enable_thinking": False
+    }
+
+
+@pytest.mark.asyncio
 async def test_executor_metrics_include_current_trace(mock_executor_deps):
     llm, tracker = mock_executor_deps
     session = AsyncMock()

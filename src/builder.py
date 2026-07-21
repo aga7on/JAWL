@@ -318,6 +318,7 @@ class SystemBuilder:
                 subconscious_config=self.system_config.subconscious,
             ),
             tool_transport=self.container.settings.llm.tool_transport,
+            thinking_policy=self.container.settings.llm.thinking_policy,
             event_bus=self.container.event_bus,
             tot_config=self.system_config.tree_of_thoughts,
             tot_generator=tot_generator,

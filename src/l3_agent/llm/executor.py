@@ -54,6 +54,7 @@ class LLMExecutor:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None, 
         tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
+        enable_thinking: Optional[bool] = None,
         max_retries: int = 1,
         max_timeout_retries: int = 1,
     ) -> Optional[str]:
@@ -68,6 +69,8 @@ class LLMExecutor:
             log_prefix: Logging prefix (e.g., '[ReAct LLM]').
             tools: Optional JSON Schema list of available tools.
             tool_choice: Optional string to force a specific tool call.
+            enable_thinking: Optional provider extension. When set, sends the
+                top-level ``enable_thinking`` field through ``extra_body``.
             max_retries: Total retry attempts limit for any exceptions.
             max_timeout_retries: Specific retry attempts limit for timeouts.
 
@@ -103,6 +106,8 @@ class LLMExecutor:
                     kwargs["tools"] = tools
                 if tool_choice is not None:
                     kwargs["tool_choice"] = tool_choice
+                if enable_thinking is not None:
+                    kwargs["extra_body"] = {"enable_thinking": enable_thinking}
 
                 response = await session.chat.completions.create(**kwargs)
 

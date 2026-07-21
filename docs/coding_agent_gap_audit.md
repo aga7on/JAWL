@@ -19,15 +19,16 @@ tasks safely, recoverably, and with measurable evidence.
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
-| LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, persisted protocol failures, terminal step-limit record | Live QWB calibration exposed repeated format failures and expensive recovery; provider-specific auto-probing/policy is absent |
+| LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, noisy Qwen payload recovery, bounded transient retries, configurable Thinking policy, persisted failures, terminal step-limit record | QWB exposes only a Boolean Thinking switch, not a token/time budget; adaptive per-task policy still needs measured validation |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
 | Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, isolated real-ReAct driver, and a recorded QWB calibration | No equivalent baseline run yet; first QWB run passed patch quality but failed lifecycle/time budget |
 | Planning | Strong | Persistent task-local requirements, dependency steps, revision guards, evidence history, and commit gate | No automatic plan synthesis quality grader |
 
 ## Priority order
 
-1. Reduce QWB wrapper protocol failures and excessive ReAct round trips, then
-   rerun the same fixed task before expanding the benchmark set.
+1. Validate `first_step` Thinking and proportional planning in one deliberate
+   fixed-task live run before expanding the benchmark set; avoid repetitive
+   account-consuming calibration.
 2. Execute equivalent declared baseline agents before making comparative
    performance claims.
 3. If live traces show repeated navigation startup cost, add lifecycle-managed
@@ -57,6 +58,18 @@ QWB `500 quota_limit/high demand`, exposing that ReAct still used one total
 inference attempt. The executor now retries bounded 5xx/connection failures; the
 run is recorded in
 `benchmarks/coding_tasks/results/2026-07-21-qwb-qwen3.8-max-preview-parserfix.json`.
+
+The fourth run on `97f6054` validated bounded transient retries. It again had
+zero protocol errors, and its second model call succeeded on attempt two after
+a temporary QWB 500. The 600-second watchdog nevertheless cancelled call three
+after 289 seconds. The first two calls took 162 and 149 seconds, while the model
+expanded a localized one-file task into five requirements and five steps. This
+isolates the current performance gap to repeated Qwen Web Thinking latency and
+disproportionate planning. JAWL now supports a compatibility-safe
+`thinking_policy`; the local fork uses `first_step` so the initial decision can
+think deeply while subsequent action-followup turns ask QWB to skip Thinking.
+The run is recorded in
+`benchmarks/coding_tasks/results/2026-07-21-qwb-qwen3.8-max-preview-retryfix.json`.
 
 ## Compatibility guardrail
 

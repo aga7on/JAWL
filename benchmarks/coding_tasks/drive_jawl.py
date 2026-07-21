@@ -100,7 +100,9 @@ def build_task_prompt(task: Dict[str, Any], task_id: str) -> str:
         "with evidence, and commit the verified workspace. Batch causally safe "
         "operations with action_id/depends_on so workspace creation can precede a "
         "task-relative read and patch can precede verify/evidence/commit in the same "
-        "action plan. Do not modify files outside the managed workspace. "
+        "action plan. Keep the plan proportional to the task: routine search, read, "
+        "diff review, and commit are actions rather than separate milestones. Do not "
+        "modify files outside the managed workspace. "
         "Conclude the ReAct cycle only after the commit or after recording concrete "
         "failure evidence. Hidden tests are intentionally unavailable."
     )
@@ -248,6 +250,7 @@ async def run_live_task(
     transport: str,
     max_steps: int,
     timeout_seconds: int,
+    thinking_policy: str = "provider_default",
 ) -> Dict[str, Any]:
     started = time.perf_counter()
     task_id = f"eval-{task['id']}"
@@ -331,6 +334,7 @@ async def run_live_task(
             tools=lambda: build_tools_schema(transport=transport),
             event_bus=event_bus,
             tool_transport=transport,
+            thinking_policy=thinking_policy,
             cooldown_sec=0,
         )
 
@@ -420,6 +424,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 args.transport,
                 args.max_steps,
                 args.timeout_seconds,
+                args.thinking_policy,
             )
         )
     evaluation = [
@@ -431,6 +436,7 @@ async def async_main(args: argparse.Namespace) -> int:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "model": args.model,
         "transport": args.transport,
+        "thinking_policy": args.thinking_policy,
         "task_count": len(tasks),
         "live_lifecycle_passed": all(
             item["lifecycle_gate_passed"] and not item["error"] for item in live_results
@@ -464,6 +470,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--api-key", default=os.environ.get("LLM_API_KEY_1", "local_dummy_key"))
     parser.add_argument("--model", required=True)
     parser.add_argument("--transport", choices=["wrapper", "native", "hybrid"], default="wrapper")
+    parser.add_argument(
+        "--thinking-policy",
+        choices=["provider_default", "always", "never", "first_step"],
+        default="provider_default",
+    )
     parser.add_argument("--max-steps", type=int, default=15)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument("--task", action="append", default=[])

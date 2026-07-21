@@ -54,6 +54,9 @@ class ReactLoop:
         tools: Union[list, Callable[[], list]],
         event_bus: EventBus,
         tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
+        thinking_policy: Literal[
+            "provider_default", "always", "never", "first_step"
+        ] = "provider_default",
         cooldown_sec: int = 30,
         llm_max_retries: int = 3,
         llm_max_timeout_retries: int = 2,
@@ -89,6 +92,7 @@ class ReactLoop:
 
         self.tools = tools
         self.tool_transport = tool_transport
+        self.thinking_policy = thinking_policy
         self.cooldown_sec = cooldown_sec
         self.llm_max_retries = max(1, llm_max_retries)
         self.llm_max_timeout_retries = max(1, llm_max_timeout_retries)
@@ -99,6 +103,16 @@ class ReactLoop:
         self.tot_generator = tot_generator
 
         self.current_events: List[Dict[str, Any]] = []
+
+    def _thinking_enabled_for_step(self) -> Optional[bool]:
+        """Resolve the optional provider thinking flag for this ReAct step."""
+        if self.thinking_policy == "provider_default":
+            return None
+        if self.thinking_policy == "always":
+            return True
+        if self.thinking_policy == "never":
+            return False
+        return self.agent_state.current_step == 1
 
     async def run(
         self, event_name: str, payload: Dict[str, Any], missed_events: List[Dict[str, Any]]
@@ -176,6 +190,7 @@ class ReactLoop:
                     log_prefix="[LLM]",
                     tools=self.tools() if callable(self.tools) else self.tools,
                     tool_transport=self.tool_transport,
+                    enable_thinking=self._thinking_enabled_for_step(),
                     max_retries=self.llm_max_retries,
                     max_timeout_retries=self.llm_max_timeout_retries,
                 )

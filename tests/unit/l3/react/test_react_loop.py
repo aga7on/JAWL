@@ -20,6 +20,15 @@ def test_react_dump_context_to_file(mock_dependencies):
         assert str(args[0]).replace("\\", "/") == "logs/prompts/main_prompt.md"
 
 
+def test_react_first_step_thinking_policy(mock_dependencies):
+    loop = ReactLoop(**mock_dependencies, thinking_policy="first_step")
+
+    loop.agent_state.current_step = 1
+    assert loop._thinking_enabled_for_step() is True
+    loop.agent_state.current_step = 2
+    assert loop._thinking_enabled_for_step() is False
+
+
 @pytest.mark.asyncio
 @patch("src.l3_agent.react.loop.execute_skill", new_callable=AsyncMock)
 async def test_react_empty_actions_exit(mock_execute_skill, mock_dependencies):
