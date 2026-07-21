@@ -453,6 +453,19 @@
         "tests/integration/src/l2/mcp/test_mcp_client.py::test_real_stdio_mcp_progressive_discovery_and_guarded_call",
         "tests/integration/src/l2/mcp/test_mcp_client.py::test_real_stdio_mcp_resources_prompts_and_bounded_projection"
       ]
+    },
+    {
+      "id": "exact_state_desktop_observe_act_verify",
+      "description": "Opt-in Windows UI Automation returns bounded semantic controls, rejects stale exact-state targets before dispatch, and distinguishes action dispatch from verified postconditions while retaining visual fallbacks.",
+      "tests": [
+        "tests/unit/l2/host/os/test_desktop_automation.py::test_semantic_desktop_observe_act_and_verify",
+        "tests/unit/l2/host/os/test_desktop_automation.py::test_semantic_desktop_rejects_stale_target_before_action",
+        "tests/unit/l2/host/os/test_desktop_automation.py::test_semantic_desktop_wait_requires_selector_and_returns_exact_ref",
+        "tests/unit/l2/host/os/test_desktop_automation.py::test_semantic_desktop_observation_enforces_serialized_budget",
+        "tests/unit/l2/host/os/skills/test_desktop.py::test_desktop_take_screenshot",
+        "tests/unit/l2/host/os/skills/test_desktop.py::test_desktop_take_screenshot_with_grid",
+        "tests/unit/l2/host/os/test_plugin.py::test_host_os_plugin_adds_approval_notifier_only_for_desktop_opt_in"
+      ]
     }
   ]
 }

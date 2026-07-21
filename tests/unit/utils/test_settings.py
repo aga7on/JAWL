@@ -102,6 +102,10 @@ def test_host_os_config_parsing():
     assert config.access_level == 3
     assert config.enabled is True
     assert config.file_read_max_chars == 5000
+    assert config.desktop_max_elements == 250
+
+    with pytest.raises(ValueError):
+        HostOSConfig(desktop_max_result_chars=1000)
 
 
 def test_host_os_config_validation():

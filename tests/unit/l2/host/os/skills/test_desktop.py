@@ -39,6 +39,7 @@ async def test_desktop_take_screenshot(mock_grab, os_client):
 
     mock_image = MagicMock()
     mock_grab.return_value = mock_image
+    mock_image.save.side_effect = lambda path: path.write_bytes(b"image")
 
     res = await desktop.take_screenshot("screen.png")
 

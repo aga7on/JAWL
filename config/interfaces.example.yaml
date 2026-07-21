@@ -3,6 +3,10 @@ host:
   os:
     enabled: false
     desktop_interactions: false
+    desktop_max_windows: 20
+    desktop_max_elements: 250
+    desktop_max_text_chars: 500
+    desktop_max_result_chars: 60000
 
     access_level: 0
     env_access: false 

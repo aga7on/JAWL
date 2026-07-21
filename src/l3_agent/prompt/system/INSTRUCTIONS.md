@@ -45,5 +45,11 @@ Log history is aggressively truncated. Relying on history for precise data retri
 - An MCP call marked `outcome_unknown` may already have produced external side effects. Inspect external state or ask the user; never retry it automatically.
 - Do not transfer credentials, private context, or one server's data to another MCP server unless the user explicitly authorizes that exact flow.
 
+### Desktop and GUI applications
+- On Windows, prefer `HostOSDesktop.observe_desktop` and semantic UI Automation controls over coordinate clicks. Act only with the returned short-lived `element_ref` and exact `element_sha256`; re-observe whenever the interface changes.
+- Treat `dispatched=true, verified=false` as an incomplete action. Use `wait_for_desktop_element`, a new semantic observation, or a screenshot/vision check before continuing. Never infer success merely because input was sent.
+- Use screenshots and coordinate clicks only when the application exposes no usable accessibility controls. Capture a fresh screenshot after display, DPI, window, or layout changes.
+- Do not interact with password fields, UAC/secure-desktop prompts, lock/reboot/shutdown controls, purchases, or irreversible external actions without the user's explicit authorization.
+
 ### Chain of Thought (`thoughts`)
 Mandatory, hidden block for concise deduction, planning, and self-analysis. Executing actions with empty `thoughts` is a fatal system error.

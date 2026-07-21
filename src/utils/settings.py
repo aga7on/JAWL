@@ -80,6 +80,10 @@ class CodingContainerProfileConfig(BaseModel):
 class HostOSConfig(BaseModel):
     enabled: bool = False
     desktop_interactions: bool = False
+    desktop_max_windows: int = Field(default=20, ge=1, le=100)
+    desktop_max_elements: int = Field(default=250, ge=10, le=1000)
+    desktop_max_text_chars: int = Field(default=500, ge=50, le=5000)
+    desktop_max_result_chars: int = Field(default=60000, ge=5000, le=200000)
 
     access_level: int = 0
     env_access: bool = False

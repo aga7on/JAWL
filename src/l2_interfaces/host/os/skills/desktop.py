@@ -11,6 +11,8 @@ import subprocess
 import webbrowser
 import shutil
 import ctypes
+import hashlib
+import json
 from PIL import ImageGrab
 import time
 
@@ -18,6 +20,10 @@ from src.utils._tools import draw_image_grid
 
 from src.l2_interfaces.host.os.client import HostOSClient, HostOSAccessLevel
 from src.l2_interfaces.host.os.decorators import require_access
+from src.l2_interfaces.host.os.desktop_automation import (
+    DesktopAutomationError,
+    WindowsDesktopAutomation,
+)
 
 from src.l3_agent.skills.registry import SkillResult, skill
 
@@ -30,6 +36,121 @@ class HostOSDesktop:
 
     def __init__(self, host_os_client: HostOSClient):
         self.host_os = host_os_client
+        self._semantic_client = None
+
+    def _semantic(self) -> WindowsDesktopAutomation:
+        if sys.platform != "win32":
+            raise DesktopAutomationError(
+                "Semantic desktop automation currently requires Windows UI Automation."
+            )
+        if self._semantic_client is None:
+            config = self.host_os.config
+            self._semantic_client = WindowsDesktopAutomation(
+                max_windows=config.desktop_max_windows,
+                max_elements=config.desktop_max_elements,
+                max_text_chars=config.desktop_max_text_chars,
+                max_result_chars=config.desktop_max_result_chars,
+            )
+        return self._semantic_client
+
+    @skill()
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def observe_desktop(
+        self,
+        window_title: str = "",
+        max_depth: int = 6,
+        max_elements: int | None = None,
+    ) -> SkillResult:
+        """[GUI] Observe bounded Windows UIA windows and semantic controls.
+
+        Returns short-lived element references and exact element hashes. Prefer
+        these semantic controls over coordinate clicks. Re-observe after any UI
+        change because references and hashes deliberately become stale.
+        """
+
+        try:
+            result = await asyncio.to_thread(
+                self._semantic().observe,
+                window_title=window_title,
+                max_depth=max_depth,
+                max_elements=max_elements,
+            )
+            return SkillResult.ok(json.dumps(result, ensure_ascii=False))
+        except DesktopAutomationError as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Desktop observation failed: {exc}")
+
+    @skill()
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def act_on_desktop_element(
+        self,
+        element_ref: str,
+        expected_element_sha256: str,
+        action: str,
+        value: str | None = None,
+        settle_sec: float = 0.5,
+    ) -> SkillResult:
+        """[GUI] Act on one exactly observed UIA element, then verify its state.
+
+        Supported actions: invoke, click, focus, set_value, toggle, select,
+        expand, collapse. A stale element fails before dispatch. `verified=false`
+        means the action was dispatched but no semantic postcondition was seen;
+        observe or wait before continuing and never assume success.
+        """
+
+        try:
+            result = await asyncio.to_thread(
+                self._semantic().act,
+                element_ref=element_ref,
+                expected_element_sha256=expected_element_sha256,
+                action=action,
+                value=value,
+                settle_sec=settle_sec,
+            )
+            return SkillResult.ok(json.dumps(result, ensure_ascii=False))
+        except DesktopAutomationError as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Desktop action failed: {exc}")
+
+    @skill()
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def wait_for_desktop_element(
+        self,
+        window_title: str = "",
+        name: str = "",
+        automation_id: str = "",
+        control_type: str = "",
+        expected_exists: bool = True,
+        timeout_sec: float = 10,
+        poll_interval_sec: float = 0.25,
+    ) -> SkillResult:
+        """[GUI] Wait for a bounded semantic UI postcondition.
+
+        At least one window/control selector is required. Use this after actions
+        whose success is represented by a dialog or a newly appearing control.
+        """
+
+        try:
+            result = await asyncio.to_thread(
+                self._semantic().wait_for_element,
+                window_title=window_title,
+                name=name,
+                automation_id=automation_id,
+                control_type=control_type,
+                expected_exists=expected_exists,
+                timeout_sec=timeout_sec,
+                poll_interval_sec=poll_interval_sec,
+            )
+            message = json.dumps(result, ensure_ascii=False)
+            if result["condition_met"]:
+                return SkillResult.ok(message)
+            return SkillResult.fail(message)
+        except DesktopAutomationError as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Desktop wait failed: {exc}")
 
     @skill()
     @require_access(HostOSAccessLevel.SANDBOX)
@@ -124,7 +245,11 @@ class HostOSDesktop:
     @skill()
     @require_access(HostOSAccessLevel.SANDBOX)
     async def take_screenshot(
-        self, filename: str, with_grid: bool = False, grid_step: int = 100
+        self,
+        filename: str,
+        with_grid: bool = False,
+        grid_step: int = 100,
+        all_screens: bool = False,
     ) -> SkillResult:
         """
         [GUI] Captures main screen screenshot and saves to sandbox.
@@ -140,14 +265,28 @@ class HostOSDesktop:
             safe_path.parent.mkdir(parents=True, exist_ok=True)
 
             def _grab():
-                img = ImageGrab.grab(all_screens=False)
+                img = ImageGrab.grab(all_screens=all_screens)
                 img.save(safe_path)
 
                 if with_grid:
                     draw_image_grid(safe_path, step=grid_step)
 
             await asyncio.to_thread(_grab)
-            return SkillResult.ok("True")
+            digest = await asyncio.to_thread(
+                lambda: hashlib.sha256(safe_path.read_bytes()).hexdigest()
+            )
+            return SkillResult.ok(
+                json.dumps(
+                    {
+                        "path": safe_path.relative_to(
+                            self.host_os.framework_dir
+                        ).as_posix(),
+                        "sha256": digest,
+                        "all_screens": all_screens,
+                        "with_grid": with_grid,
+                    }
+                )
+            )
 
         except OSError:
             return SkillResult.fail(

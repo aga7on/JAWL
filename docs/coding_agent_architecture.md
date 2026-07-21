@@ -536,6 +536,24 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   bounded/redacted and binary content is decoded under a strict limit into the
   sandbox. No inputs, outputs, prompts, or resources enter L0 health state.
 
+## Desktop application control
+
+- The opt-in Windows path adds a bounded Microsoft UI Automation tree above the
+  existing screenshot, coordinate, keyboard, clipboard, and window primitives.
+  This lets the model ground actions in names, automation IDs, control types,
+  values, accessibility states, and rectangles instead of relying on pixels.
+- Observations issue short-lived element references bound to exact semantic
+  fingerprints. The action broker re-resolves the runtime element and rejects a
+  stale fingerprint before dispatch, preventing delayed actions from silently
+  landing on a changed interface.
+- Invoke, click, focus, value, toggle, selection, and expand/collapse actions
+  report dispatch and verification separately. A bounded wait primitive checks
+  explicit appearance/disappearance postconditions; ambiguous actions require a
+  new semantic or visual observation before the agent proceeds.
+- UI text/results are redacted and hard-bounded, reference maps are memory-only,
+  and screenshots are sandboxed and SHA-addressed. Secure desktop, elevation
+  boundaries, and inaccessible custom canvases remain explicit limitations.
+
 ## Capability benchmark contract
 
 - `benchmarks/coding_agent/manifest.json` maps critical coding properties to

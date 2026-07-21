@@ -11,11 +11,50 @@ The agent's access to the file system is controlled by the built-in `Gatekeeper`
 If the agent possesses `OPERATOR` access level or higher, and the `require_deploy_sessions` parameter is set to `true`, the system protects itself from fatal syntax crashes.
 Before modifying system code, the agent must open a "Deploy Session". The system creates a Copy-on-Write backup of the modified files. Upon committing the changes, the framework automatically runs a syntax analyzer and `pytest`. If any tests fail, the agent receives the Traceback error and consumes one retry attempt. If the attempts limit (`deploy_max_retries`) is exhausted, the system automatically triggers a Rollback (restores the backed-up files to their initial state).
 
+# Desktop and GUI automation
+
+`desktop_interactions: true` enables desktop skills. On Windows, JAWL uses the
+Microsoft UI Automation accessibility tree for bounded semantic observation and
+control of native Win32, WinForms, WPF, Store, Qt, and accessibility-enabled
+browser interfaces. The legacy screenshot, coordinate mouse, keyboard, window,
+and clipboard tools remain available as fallbacks.
+
+`observe_desktop` returns visible windows and a bounded control tree. Every
+control has a short-lived opaque `element_ref` and exact `element_sha256`.
+`act_on_desktop_element` re-resolves the control and recomputes its semantic
+fingerprint immediately before invoking, clicking, focusing, editing, toggling,
+selecting, expanding, or collapsing it. A stale target fails before input is
+sent. The result distinguishes `dispatched` from `verified`; an unchanged button
+does not become a guessed success. `wait_for_desktop_element` supplies an
+explicit bounded postcondition for dialogs and controls that appear or vanish.
+
+The repeated L0 context contains no desktop control text. Observations are
+on-demand, bounded by `desktop_max_windows`, `desktop_max_elements`,
+`desktop_max_text_chars`, and `desktop_max_result_chars`, and only the five most
+recent reference maps remain in memory. Screenshots stay inside the sandbox and
+return their path plus SHA-256 so the vision interface can inspect the exact
+capture.
+
+UI Automation cannot cross the Windows secure desktop and normally cannot drive
+an elevated process from a non-elevated JAWL process. Custom-drawn/canvas/game
+controls may expose no semantic tree; use a fresh screenshot and coordinates in
+that case. macOS/Linux retain the existing native command fallbacks, but the
+new semantic control tree is Windows-only.
+
+The underlying accessibility model is documented by
+[Microsoft UI Automation control patterns](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-implementinguiautocontrolpatterns),
+and the Windows adapter uses the
+[pywinauto UIA backend](https://pywinauto.readthedocs.io/en/latest/getting_started.html).
+
 # Host OS Limits (`host.os`)
 
 These parameters protect the system prompt from being overloaded by giant directory trees and verbose logs while the agent is operating on the host machine.
 
 * **`framework_tree_depth`**: The depth to which the agent can view the directory tree of the framework itself (JAWL). `1` — root folder only, `2` — root and nested folders, etc.
+* **`desktop_max_windows`**: Maximum visible windows in one semantic observation.
+* **`desktop_max_elements`**: Hard UI-control traversal limit per observation.
+* **`desktop_max_text_chars`**: Per-property UI text limit after redaction.
+* **`desktop_max_result_chars`**: Hard serialized observation budget.
 * **`monitoring_interval_sec`**: Frequency (in seconds) of polling telemetry (CPU/RAM) and file system changes.
 * **`file_read_max_chars`**: Character limit when reading files (the `read_file` skill). If a file is larger, it will be truncated.
 * **`file_list_limit`**: Maximum number of files/folders displayed when scanning directories.
