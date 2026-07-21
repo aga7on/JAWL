@@ -109,12 +109,14 @@ async def test_webhook_port_collision_graceful_degradation(hooks_events):
     Он должен просто залогировать ошибку и оставить is_online = False.
     """
     host = hooks_events.client.config.host
-    port = hooks_events.client.config.port
 
     # Искусственно занимаем порт на уровне операционной системы
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        sock.bind((host, port))
+        # Use an OS-assigned ephemeral port so the test is independent from
+        # HTTP.sys reservations and unrelated applications on the host.
+        sock.bind((host, 0))
+        hooks_events.client.config.port = sock.getsockname()[1]
         sock.listen(1)
 
         # Пытаемся заemptyить сервер вебхуков
