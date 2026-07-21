@@ -264,11 +264,16 @@ class HostOSCodingWorkspaces:
         code, head, err = await self._run_git(workspace, "rev-parse", "HEAD")
         if code != 0:
             raise ValueError(f"Unable to resolve workspace HEAD: {err}")
-        code, diff, err = await self._run_git(
-            workspace, "diff", "--binary", "HEAD", "--"
+        code, staged_diff, err = await self._run_git(
+            workspace, "diff", "--cached", "--binary", "HEAD", "--"
         )
         if code != 0:
-            raise ValueError(f"Unable to fingerprint workspace diff: {err}")
+            raise ValueError(f"Unable to fingerprint staged workspace diff: {err}")
+        code, unstaged_diff, err = await self._run_git(
+            workspace, "diff", "--binary", "--"
+        )
+        if code != 0:
+            raise ValueError(f"Unable to fingerprint unstaged workspace diff: {err}")
         code, untracked_output, err = await self._run_git(
             workspace, "ls-files", "--others", "--exclude-standard", "-z"
         )
@@ -287,10 +292,12 @@ class HostOSCodingWorkspaces:
 
         def _hash() -> str:
             digest = hashlib.sha256()
-            digest.update(b"jawl-workspace-v1\x00")
+            digest.update(b"jawl-workspace-v2\x00")
             digest.update(head.encode("utf-8"))
-            digest.update(b"\x00diff\x00")
-            digest.update(diff.encode("utf-8"))
+            digest.update(b"\x00staged-diff\x00")
+            digest.update(staged_diff.encode("utf-8"))
+            digest.update(b"\x00unstaged-diff\x00")
+            digest.update(unstaged_diff.encode("utf-8"))
             for relative_path in untracked:
                 candidate = workspace / relative_path
                 digest.update(b"\x00untracked\x00")

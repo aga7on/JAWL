@@ -122,6 +122,7 @@ class SQLManager:
         """Opens connections, runs migrations, and initializes drives."""
         await self.db.connect()
         await self.tasks.bootstrap_migrations()
+        await self.ticks.bootstrap_migrations()
         await self.mental_states.bootstrap_migrations()
         await self.hypotheses.bootstrap_migrations()
 

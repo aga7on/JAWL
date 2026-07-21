@@ -122,6 +122,27 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   errors and max-step exhaustion are terminally recorded in ticks rather than
   silently consuming the cycle budget.
 
+## Transactional recovery contract
+
+- `create_coding_recovery_checkpoint` snapshots the managed task worktree,
+  staging index, current HEAD, durable coding plan, active tick timeline cursor,
+  and trace correlation without changing the task branch or working files.
+- Workspace fingerprints distinguish staged from unstaged diffs and include
+  untracked files. Creation and rewind accept exact fingerprint guards, so work
+  produced after inspection cannot be overwritten accidentally.
+- Git objects are retained under task-scoped `refs/jawl/checkpoints/...` refs.
+  Rewinds affect only the isolated task worktree; they never reset the user's
+  base repository checkout or delete physical episodic-memory rows.
+- Before mutation, every rewind persists an automatic forward checkpoint. If
+  workspace, plan, or context switching fails, compensation restores that exact
+  forward state and leaves its checkpoint available for manual recovery.
+- Episodic context is append-only. A rewind creates and activates a child
+  timeline anchored at the saved tick cursor; abandoned futures remain in SQL
+  and a later forward-checkpoint rewind can make the prior future visible again.
+- Successful rewinds append an explanatory marker tick. Failure to append that
+  marker is reported as a warning after the already durable transaction rather
+  than pretending the workspace was rolled back.
+
 ## LLM transport observability contract
 
 - The compatible string-returning executor API remains intact, while every call
@@ -177,8 +198,9 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   Maven, and Gradle projects; profiles may also be selected explicitly.
 - Output is tail-bounded, timeouts terminate the full process tree, and every run
   is persisted with pass/fail/stale/cancelled/interrupted state.
-- A successful run records HEAD plus a SHA-256 fingerprint of tracked changes and
-  untracked files. Conventional Python caches are the only excluded artifacts.
+- A successful run records HEAD plus a SHA-256 fingerprint of staged changes,
+  unstaged changes, and untracked files. Conventional Python caches are the only
+  excluded artifacts.
 - A workspace mutation during or after verification invalidates the result.
 - Task commits require a current successful fingerprint by default. An explicit
   bypass remains available for justified non-executable changes and is recorded.

@@ -77,6 +77,7 @@ class TickTable(Base):
     __tablename__ = "ticks"
 
     id: Mapped[str] = mapped_column(primary_key=True)
+    timeline_id: Mapped[str] = mapped_column(default="main")
 
     created_at: Mapped[datetime] = mapped_column(default=lambda: datetime.now(timezone.utc))
     thoughts: Mapped[str]
@@ -86,6 +87,29 @@ class TickTable(Base):
 
     # Stores execution results: {"func_1": "success", "func_2": "error details"}
     results: Mapped[dict[str, Any]] = mapped_column(JSON)
+
+
+class TickTimelineTable(Base):
+    """Immutable branch metadata for append-only episodic-memory timelines."""
+
+    __tablename__ = "tick_timelines"
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    parent_id: Mapped[Optional[str]] = mapped_column(default=None)
+    anchor_tick_id: Mapped[Optional[str]] = mapped_column(default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        default=lambda: datetime.now(timezone.utc)
+    )
+    reason: Mapped[str] = mapped_column(default="")
+
+
+class AgentRuntimeStateTable(Base):
+    """Small durable pointer store for runtime projections, not source memory."""
+
+    __tablename__ = "agent_runtime_state"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    value: Mapped[str]
 
 
 class PersonalityTraitTable(Base):

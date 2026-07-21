@@ -22,6 +22,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Lifecycle policy | Good | Ordered bounded pre/post/error/cancel hooks, preflight deny, fail-open/fail-closed policy, durable records, passive EventBus observations | No declarative repository/user command-hook adapter yet |
 | Event steering | Good | Configurable interrupt/defer/append policy; deferred urgent events preserve in-flight provider responses, skip stale actions, persist a steer tick, and become the next primary trigger | No interactive mid-generation provider steering; safe boundary waits for the active response |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
+| Transactional rewind | Strong | Exact workspace/index snapshot, plan revision, append-only tick timeline branch, optimistic guard, automatic forward checkpoint and compensation | Does not rewind vector/graph stores or external side effects by design |
 | LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, noisy Qwen payload recovery, bounded transient retries, configurable Thinking policy, persisted failures, terminal step-limit record | QWB exposes only a Boolean Thinking switch, not a token/time budget; adaptive per-task policy still needs measured validation |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
 | Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, isolated real-ReAct driver, recorded QWB calibrations, and a shell-free external CLI driver using the identical grader | No equivalent external-agent baseline has been executed yet |
@@ -34,17 +35,15 @@ tasks safely, recoverably, and with measurable evidence.
    calibration.
 2. Add declarative repository/user command adapters on the lifecycle contract,
    then extend the same contract to compaction, stop, and delegated work.
-3. Add an automatic checkpoint/rewind transaction spanning conversation state,
-   coding-plan revision, and workspace changes.
-4. Put command execution behind an OS-enforced sandbox/approval policy; Git
+3. Put command execution behind an OS-enforced sandbox/approval policy; Git
    worktrees isolate task state but are not a host security boundary.
-5. Extend safe-boundary steering with queue inspection/coalescing and, where a
+4. Extend safe-boundary steering with queue inspection/coalescing and, where a
    provider supports it, true mid-generation steering.
-6. Execute declared external CLI baselines through `drive_cli.py` before making
+5. Execute declared external CLI baselines through `drive_cli.py` before making
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation
    still requires the candidate CLI's sandbox or an external container.
-7. If live traces show repeated navigation startup cost, add lifecycle-managed
+6. If live traces show repeated navigation startup cost, add lifecycle-managed
    incremental LSP sessions without weakening process and output bounds.
 
 ## Current reference architecture comparison
@@ -56,7 +55,7 @@ official documentation shows recurring patterns in leading coding agents:
 | --- | --- | --- |
 | Parallel delegated work | [Codex subagents](https://developers.openai.com/codex/subagents/), [Claude Code subagents](https://code.claude.com/docs/en/sub-agents) | Swarm roles and isolated worktrees exist; delegation quality and reconciliation still need benchmark coverage |
 | Lifecycle control | [Claude Code hooks](https://code.claude.com/docs/en/hooks), [GitHub Copilot hooks](https://docs.github.com/en/copilot/concepts/agents/hooks) | Stable in-process pre/post/error/cancel policy now wraps all action paths; declarative command adapters and non-tool phases remain |
-| Recovery and rewind | [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing), [Gemini CLI checkpointing](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/commands.md) | File checkpoints, durable plans, and action journals exist separately; one atomic conversation/workspace rewind does not |
+| Recovery and rewind | [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing), [Gemini CLI checkpointing](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/commands.md) | Transactional task-workspace/index/plan rewind plus append-only context timelines, automatic forward recovery, and compensation are implemented; vector/graph memory and external side effects intentionally remain outside rewind scope |
 | Enforced execution boundary | [Gemini CLI sandboxing](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md) | Allowlisted commands, timeouts, and task paths reduce accidents; they do not provide OS-level containment |
 | Repository context economy | [Aider repository map](https://aider.chat/docs/repomap.html) | Bounded map/search/LSP/dependency tools plus the new dynamic budget are competitive substrate; relevance is deterministic rather than learned |
 | Automatic verification | [Aider lint/test integration](https://aider.chat/docs/usage/lint-test.html) | Exact-state verification and commit gates are stronger than a best-effort post-edit test loop |

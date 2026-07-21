@@ -30,6 +30,7 @@ from src.l2_interfaces.host.os.skills.coding_dependencies import HostOSCodingDep
 from src.l2_interfaces.host.os.skills.coding_files import HostOSCodingFiles
 from src.l2_interfaces.host.os.skills.coding_lsp import HostOSCodingLanguageServer
 from src.l2_interfaces.host.os.skills.coding_plans import HostOSCodingPlans
+from src.l2_interfaces.host.os.skills.coding_recovery import HostOSCodingRecovery
 
 from src.l3_agent.skills.registry import register_instance
 from src.l3_agent.context.registry import ContextSection
@@ -89,6 +90,17 @@ class HostOsPlugin(BaseInterface):
             HostOSCodingFiles(client, coding_workspaces, reader, editor, search)
         )
         register_instance(HostOSCodingPlans(client, coding_workspaces))
+        # Normal bootstrap has L0/L1 ready before interfaces. Keeping this guard
+        # also permits intentionally partial interface-only test containers.
+        if container.sql is not None:
+            register_instance(
+                HostOSCodingRecovery(
+                    client,
+                    coding_workspaces,
+                    container.sql.ticks,
+                    container.agent_state,
+                )
+            )
         register_instance(HostOSCodingVerification(client, coding_workspaces))
         coding_context = HostOSCodingContext(client)
         register_instance(coding_context)

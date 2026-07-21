@@ -143,6 +143,18 @@
       ]
     },
     {
+      "id": "transactional_coding_recovery",
+      "description": "Guarded checkpoints round-trip workspace content, Git index, plan, and append-only context while compensating failed rewinds.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_recovery.py::test_recovery_round_trip_preserves_index_plan_and_context",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_recovery.py::test_recovery_rejects_stale_state_and_compensates_failed_context_branch",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_recovery.py::test_recovery_rechecks_workspace_immediately_before_destructive_restore",
+        "tests/integration/src/l1/sql/management/test_integration_tick_timelines.py::test_tick_timeline_rewind_branches_without_deleting_memory",
+        "tests/integration/src/l1/sql/management/test_integration_tick_timelines.py::test_tick_timeline_rejects_cursor_from_unrelated_branch",
+        "tests/integration/src/l1/sql/management/test_integration_tick_timelines.py::test_tick_timeline_migrates_legacy_ticks_without_losing_rows"
+      ]
+    },
+    {
       "id": "cross_layer_trace_correlation",
       "description": "Async trace IDs survive child tasks, cancellation, actions, verification, and commits without leaking contexts.",
       "tests": [

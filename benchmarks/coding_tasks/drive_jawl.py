@@ -35,6 +35,7 @@ from src.l2_interfaces.host.os.skills.coding_files import HostOSCodingFiles
 from src.l2_interfaces.host.os.skills.coding_lsp import HostOSCodingLanguageServer
 from src.l2_interfaces.host.os.skills.coding_plans import HostOSCodingPlans
 from src.l2_interfaces.host.os.skills.coding_verification import HostOSCodingVerification
+from src.l2_interfaces.host.os.skills.coding_recovery import HostOSCodingRecovery
 from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorkspaces
 from src.l2_interfaces.host.os.skills.files.editor import HostOSEditor
 from src.l2_interfaces.host.os.skills.files.reader import HostOSReader
@@ -297,6 +298,7 @@ async def run_live_task(
         await db.connect()
         ticks = SQLTicks(db=db)
         register_instance(ticks)
+        register_instance(HostOSCodingRecovery(host, workspaces, ticks, agent_state=None))
 
         agent_state = AgentState(
             llm_model=model,
