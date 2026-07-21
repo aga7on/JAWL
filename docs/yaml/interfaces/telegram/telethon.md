@@ -18,5 +18,15 @@ Upon the first launch, the terminal will prompt you to enter a phone number and 
 * **`incoming_history_limit`**: How many of the latest messages are kept in memory (MRU cache) for quick access.
 * **`coding_approval_chat_id`**: Optional user/chat ID, username, or `"me"` target
   for passive coding-approval pushes. Only the bounded public record with a
-  redacted argv preview is sent. The notification cannot decide the request;
-  approve or deny it through the local operator CLI.
+  redacted argv preview is sent. Passive notifications alone cannot decide the
+  request; approve or deny it through the local operator CLI.
+* **`coding_approval_remote_decisions`**: Disabled by default. When enabled,
+  exact `/jawl_approve <16-hex-id>` and `/jawl_deny <16-hex-id>` messages are
+  consumed by the Telethon connector before chat state, EventBus message
+  routing, or LLM context construction. A successful decision emits a bounded
+  `CODING_APPROVAL_DECIDED` wake event so the agent can continue.
+* **`coding_approval_actor_id`**: Exact numeric Telegram user ID authorized to
+  make remote decisions. Remote decisions require this value and a numeric
+  `coding_approval_chat_id`; usernames and `"me"` remain valid only for passive
+  pushes. Both chat and actor must match, decisions expire and are one-shot,
+  and commands from other identities cannot inspect approval state.

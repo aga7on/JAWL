@@ -18,6 +18,9 @@ from src.utils.logger import main_logger
 
 from src.l2_interfaces.telegram.aiogram.state import AiogramState
 from src.l2_interfaces.telegram.aiogram.client import AiogramClient
+from src.l2_interfaces.telegram.coding_approval_notifications import (
+    TelegramCodingApprovalControl,
+)
 
 
 class AiogramEvents:
@@ -31,6 +34,7 @@ class AiogramEvents:
         aiogram_client: AiogramClient,
         state: AiogramState,
         event_bus: EventBus,
+        approval_control: Optional[TelegramCodingApprovalControl] = None,
     ) -> None:
         """
         Initializes the events listener.
@@ -43,6 +47,7 @@ class AiogramEvents:
         self.client = aiogram_client
         self.state = state
         self.bus = event_bus
+        self.approval_control = approval_control
 
         self.dp = Dispatcher()
         self._polling_task: Optional[asyncio.Task] = None
@@ -135,6 +140,13 @@ class AiogramEvents:
 
     async def _on_private_message(self, message: Message) -> None:
         """Trigger on incoming private messages (DMs) to the bot."""
+        if self.approval_control is not None and await self.approval_control.handle_message(
+            raw_text=message.text or message.caption or "",
+            chat_id=message.chat.id,
+            sender_id=message.from_user.id if message.from_user else None,
+            message_id=message.message_id,
+        ):
+            return
         await self._update_state(message)
 
         sender_name = message.from_user.first_name if message.from_user else "Unknown"
@@ -145,11 +157,19 @@ class AiogramEvents:
             raw_text=message.text or message.caption or "",
             sender_name=sender_name,
             chat_id=message.chat.id,
+            sender_id=message.from_user.id if message.from_user else None,
             msg_id=message.message_id,
         )
 
     async def _on_group_message(self, message: Message) -> None:
         """Trigger on messages in groups/supergroups."""
+        if self.approval_control is not None and await self.approval_control.handle_message(
+            raw_text=message.text or message.caption or "",
+            chat_id=message.chat.id,
+            sender_id=message.from_user.id if message.from_user else None,
+            message_id=message.message_id,
+        ):
+            return
         await self._update_state(message)
 
         bot = self.client.bot()
@@ -173,6 +193,7 @@ class AiogramEvents:
             raw_text=message.text or message.caption or "",
             sender_name=sender_name,
             chat_id=message.chat.id,
+            sender_id=message.from_user.id if message.from_user else None,
             msg_id=message.message_id,
         )
 

@@ -86,6 +86,10 @@ telegram:
     incoming_history_limit: 8
     # Optional passive push target for redacted coding approval requests.
     coding_approval_chat_id: null
+    # Opt-in exact /jawl_approve and /jawl_deny interception. Remote decisions
+    # require numeric chat and actor IDs and never enter agent context.
+    coding_approval_remote_decisions: false
+    coding_approval_actor_id: null
 
   # Подробнее: docs/yaml/interfaces/telegram/aiogram.md
   aiogram:
@@ -93,6 +97,10 @@ telegram:
     recent_chats_limit: 20
     # Optional passive push target for redacted coding approval requests.
     coding_approval_chat_id: null
+    # Opt-in exact /jawl_approve and /jawl_deny interception. Remote decisions
+    # require numeric chat and actor IDs and never enter agent context.
+    coding_approval_remote_decisions: false
+    coding_approval_actor_id: null
 
 
 # Подробнее: docs/yaml/interfaces/github.md

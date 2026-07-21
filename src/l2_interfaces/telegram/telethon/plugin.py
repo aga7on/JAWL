@@ -9,6 +9,7 @@ from src.l2_interfaces.telegram.telethon.state import TelethonState
 from src.l2_interfaces.telegram.telethon.client import TelethonClient
 from src.l2_interfaces.telegram.telethon.events import TelethonEvents
 from src.l2_interfaces.telegram.coding_approval_notifications import (
+    TelegramCodingApprovalControl,
     TelegramCodingApprovalNotifications,
 )
 
@@ -75,8 +76,24 @@ class TelethonPlugin(BaseInterface):
             timezone=container.settings.system.timezone,
             proxy_url=env_vars.get("TELETHON_PROXY_URL") or env_vars.get("PROXY_URL"),
         )
+        approval_control = (
+            TelegramCodingApprovalControl(
+                container.event_bus,
+                client,
+                lambda: container.coding_approvals,
+                config.coding_approval_chat_id,
+                config.coding_approval_actor_id,
+                "telethon",
+            )
+            if config.coding_approval_remote_decisions
+            else None
+        )
         events = TelethonEvents(
-            tg_client=client, state=state, event_bus=container.event_bus, config=config
+            tg_client=client,
+            state=state,
+            event_bus=container.event_bus,
+            config=config,
+            approval_control=approval_control,
         )
         approval_notifications = (
             TelegramCodingApprovalNotifications(
@@ -84,6 +101,7 @@ class TelethonPlugin(BaseInterface):
                 client,
                 config.coding_approval_chat_id,
                 "telethon",
+                remote_decisions=config.coding_approval_remote_decisions,
             )
             if config.coding_approval_chat_id is not None
             else None

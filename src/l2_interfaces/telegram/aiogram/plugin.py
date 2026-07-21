@@ -9,6 +9,7 @@ from src.l2_interfaces.telegram.aiogram.state import AiogramState
 from src.l2_interfaces.telegram.aiogram.client import AiogramClient
 from src.l2_interfaces.telegram.aiogram.events import AiogramEvents
 from src.l2_interfaces.telegram.coding_approval_notifications import (
+    TelegramCodingApprovalControl,
     TelegramCodingApprovalNotifications,
 )
 from src.l2_interfaces.telegram.aiogram.skills.chats import AiogramChats
@@ -41,24 +42,38 @@ class AiogramPlugin(BaseInterface):
             self.register_off_provider(container.context_registry)
             return []
 
-        state = AiogramState(
-            number_of_last_chats=container.interfaces_config.telegram.aiogram.recent_chats_limit
-        )
+        config = container.interfaces_config.telegram.aiogram
+        state = AiogramState(number_of_last_chats=config.recent_chats_limit)
         container.l0_states["aiogram"] = state
 
         client = AiogramClient(
             bot_token=bot_token, state=state, proxy_url=env_vars.get("PROXY_URL")
         )
-        events = AiogramEvents(
-            aiogram_client=client, state=state, event_bus=container.event_bus
+        approval_control = (
+            TelegramCodingApprovalControl(
+                container.event_bus,
+                client,
+                lambda: container.coding_approvals,
+                config.coding_approval_chat_id,
+                config.coding_approval_actor_id,
+                "aiogram",
+            )
+            if config.coding_approval_remote_decisions
+            else None
         )
-        config = container.interfaces_config.telegram.aiogram
+        events = AiogramEvents(
+            aiogram_client=client,
+            state=state,
+            event_bus=container.event_bus,
+            approval_control=approval_control,
+        )
         approval_notifications = (
             TelegramCodingApprovalNotifications(
                 container.event_bus,
                 client,
                 config.coding_approval_chat_id,
                 "aiogram",
+                remote_decisions=config.coding_approval_remote_decisions,
             )
             if config.coding_approval_chat_id is not None
             else None

@@ -109,6 +109,28 @@ def test_host_os_config_validation():
     )
     with pytest.raises(ValueError, match="non-empty bounded chat ID"):
         TelethonConfig(coding_approval_chat_id="  ")
+    for config_type in (TelethonConfig, AiogramConfig):
+        with pytest.raises(ValueError, match="require numeric"):
+            config_type(coding_approval_remote_decisions=True)
+        with pytest.raises(ValueError, match="require numeric"):
+            config_type(
+                coding_approval_chat_id="123",
+                coding_approval_actor_id=456,
+                coding_approval_remote_decisions=True,
+            )
+        with pytest.raises(ValueError):
+            config_type(
+                coding_approval_chat_id=True,
+                coding_approval_actor_id=True,
+                coding_approval_remote_decisions=True,
+            )
+        remote = config_type(
+            coding_approval_chat_id=-100123,
+            coding_approval_actor_id=456,
+            coding_approval_remote_decisions=True,
+        )
+        assert remote.coding_approval_chat_id == -100123
+        assert remote.coding_approval_actor_id == 456
 
 
 def test_lifecycle_command_hook_config_is_exact_argv_not_shell_text():

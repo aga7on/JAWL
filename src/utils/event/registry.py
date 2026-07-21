@@ -153,6 +153,13 @@ class Events:
         requires_attention=False,
     )
 
+    CODING_APPROVAL_DECIDED = EventConfig(
+        name="CODING_APPROVAL_DECIDED",
+        description="An authenticated operator decided a coding approval.",
+        level=EventLevel.HIGH,
+        requires_attention=True,
+    )
+
     CODING_ACTION_RECOVERY_REQUIRED = EventConfig(
         name="CODING_ACTION_RECOVERY_REQUIRED",
         description="A prior coding action plan needs inspect-first recovery.",

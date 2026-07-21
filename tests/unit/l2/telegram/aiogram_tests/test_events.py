@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from src.utils.event.registry import Events
 
 
@@ -49,6 +49,7 @@ async def test_on_private_message(aiogram_events, mock_bus):
         raw_text="Привет",
         sender_name="Alex",
         chat_id=12345,
+        sender_id=999,
         msg_id=42,
     )
 
@@ -65,6 +66,7 @@ async def test_on_group_message_mention(aiogram_events, mock_bus):
         raw_text="Эй @test_bot, ответь",
         sender_name="Bob",
         chat_id=200,
+        sender_id=999,
         msg_id=42,
     )
 
@@ -81,5 +83,28 @@ async def test_on_group_message_background(aiogram_events, mock_bus):
         raw_text="Обычный текст",
         sender_name="Bob",
         chat_id=200,
+        sender_id=999,
         msg_id=42,
     )
+
+
+@pytest.mark.asyncio
+async def test_approval_command_is_consumed_before_state_and_event_routing(
+    aiogram_events, mock_bus
+):
+    control = MagicMock()
+    control.handle_message = AsyncMock(return_value=True)
+    aiogram_events.approval_control = control
+    aiogram_events._update_state = AsyncMock()
+    msg = create_mock_message(12345, "private", "/jawl_approve 0123456789abcdef")
+
+    await aiogram_events._on_private_message(msg)
+
+    control.handle_message.assert_awaited_once_with(
+        raw_text="/jawl_approve 0123456789abcdef",
+        chat_id=12345,
+        sender_id=999,
+        message_id=42,
+    )
+    aiogram_events._update_state.assert_not_awaited()
+    mock_bus.publish.assert_not_awaited()

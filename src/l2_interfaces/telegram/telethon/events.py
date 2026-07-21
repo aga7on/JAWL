@@ -8,7 +8,7 @@ chat history (up to 50 messages) to create deep context in EventBus.
 """
 
 import time
-from typing import Any, TYPE_CHECKING, Dict, Tuple, List
+from typing import Any, TYPE_CHECKING, Dict, Tuple, List, Optional
 
 from telethon import events, utils
 from telethon.tl.types import UpdateMessageReactions, Channel, Chat
@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 from src.l2_interfaces.telegram.telethon.state import TelethonState
 from src.l2_interfaces.telegram.telethon.client import TelethonClient
 from src.l2_interfaces.telegram.telethon.utils._message_parser import TelethonMessageParser
+from src.l2_interfaces.telegram.coding_approval_notifications import (
+    TelegramCodingApprovalControl,
+)
 
 
 class TelethonEvents:
@@ -40,6 +43,7 @@ class TelethonEvents:
         state: TelethonState,
         event_bus: EventBus,
         config: "TelethonConfig",
+        approval_control: Optional[TelegramCodingApprovalControl] = None,
     ) -> None:
         """
         Initializes the event manager.
@@ -55,6 +59,7 @@ class TelethonEvents:
         self.state = state
         self.bus = event_bus
         self.config = config
+        self.approval_control = approval_control
 
         # Spam protection (rate limiter for state updates)
         self._last_state_update = 0.0
@@ -276,16 +281,38 @@ class TelethonEvents:
     # HANDLERS
     # ==========================================================
 
+    @staticmethod
+    def _message_sender_id(event: Any, message: Any) -> Any:
+        sender_id = getattr(event, "sender_id", None)
+        if sender_id is None:
+            sender_id = getattr(message, "sender_id", None)
+        return sender_id
+
+    async def _consume_approval_control(self, event: Any) -> bool:
+        if self.approval_control is None:
+            return False
+        message = event.message
+        return await self.approval_control.handle_message(
+            raw_text=message.text or "",
+            chat_id=event.chat_id,
+            sender_id=self._message_sender_id(event, message),
+            message_id=message.id,
+        )
+
     async def _on_outgoing_message(self, event: events.NewMessage.Event) -> None:
         """Trigger on outgoing (our) messages: force state update."""
+        if await self._consume_approval_control(event):
+            return
         await self._update_state(force=True)
 
     async def _on_private_message(self, event: events.NewMessage.Event) -> None:
         """Intercepts DMs. Dynamically pulls chat context (history)."""
+        msg_obj = event.message
+        if await self._consume_approval_control(event):
+            return
         await self._update_state(force=True)
 
         client = self.tg_client.client()
-        msg_obj = event.message
 
         sender_name = await TelethonMessageParser.get_sender_name(msg_obj)
         chat = await event.get_chat()
@@ -312,6 +339,7 @@ class TelethonEvents:
             "sender_name": sender_name,
             "chat_name": chat_name,
             "chat_id": event.chat_id,
+            "sender_id": self._message_sender_id(event, msg_obj),
             "msg_id": msg_obj.id,
         }
         if history:
@@ -321,6 +349,9 @@ class TelethonEvents:
 
     async def _on_group_message(self, event: events.NewMessage.Event) -> None:
         """Intercepts group messages. Resolves threads (Topics) on forums."""
+        msg_obj = event.message
+        if await self._consume_approval_control(event):
+            return
         if event.mentioned:
             event_type = Events.TELETHON_GROUP_MENTION
         else:
@@ -329,7 +360,6 @@ class TelethonEvents:
         await self._update_state(force=True)
 
         client = self.tg_client.client()
-        msg_obj = event.message
 
         sender_name = await TelethonMessageParser.get_sender_name(msg_obj)
         chat = await event.get_chat()
@@ -370,6 +400,7 @@ class TelethonEvents:
             "sender_name": sender_name,
             "chat_name": chat_name,
             "chat_id": event.chat_id,
+            "sender_id": self._message_sender_id(event, msg_obj),
             "msg_id": msg_obj.id,
         }
 

@@ -10,7 +10,14 @@ import shutil
 import yaml
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 from yaml.constructor import ConstructorError
 
 from src.utils.logger import main_logger
@@ -151,7 +158,9 @@ class TelethonConfig(BaseModel):
     recent_chats_limit: int = 20
     private_chat_history_limit: int = 3
     incoming_history_limit: int = 8
-    coding_approval_chat_id: int | str | None = None
+    coding_approval_chat_id: StrictInt | str | None = None
+    coding_approval_remote_decisions: bool = False
+    coding_approval_actor_id: StrictInt | None = Field(default=None, gt=0)
 
     @field_validator("coding_approval_chat_id")
     @classmethod
@@ -163,12 +172,26 @@ class TelethonConfig(BaseModel):
                     "coding_approval_chat_id must be a non-empty bounded chat ID"
                 )
         return value
+
+    @model_validator(mode="after")
+    def validate_remote_approval_identity(self) -> "TelethonConfig":
+        if self.coding_approval_remote_decisions and (
+            not isinstance(self.coding_approval_chat_id, int)
+            or self.coding_approval_actor_id is None
+        ):
+            raise ValueError(
+                "remote coding approval decisions require numeric "
+                "coding_approval_chat_id and coding_approval_actor_id"
+            )
+        return self
 
 
 class AiogramConfig(BaseModel):
     enabled: bool = False
     recent_chats_limit: int = 20
-    coding_approval_chat_id: int | str | None = None
+    coding_approval_chat_id: StrictInt | str | None = None
+    coding_approval_remote_decisions: bool = False
+    coding_approval_actor_id: StrictInt | None = Field(default=None, gt=0)
 
     @field_validator("coding_approval_chat_id")
     @classmethod
@@ -180,6 +203,18 @@ class AiogramConfig(BaseModel):
                     "coding_approval_chat_id must be a non-empty bounded chat ID"
                 )
         return value
+
+    @model_validator(mode="after")
+    def validate_remote_approval_identity(self) -> "AiogramConfig":
+        if self.coding_approval_remote_decisions and (
+            not isinstance(self.coding_approval_chat_id, int)
+            or self.coding_approval_actor_id is None
+        ):
+            raise ValueError(
+                "remote coding approval decisions require numeric "
+                "coding_approval_chat_id and coding_approval_actor_id"
+            )
+        return self
 
 
 class TelegramConfig(BaseModel):

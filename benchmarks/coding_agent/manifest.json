@@ -326,6 +326,23 @@
       ]
     },
     {
+      "id": "authenticated_remote_command_approval",
+      "description": "Opt-in Telegram decisions are exact-syntax, strict chat/actor bound, intercepted before agent context, one-shot and TTL protected, redacted, wake-producing after persistence, and lazily wired to either transport.",
+      "tests": [
+        "tests/unit/l2/telegram/test_coding_approval_control.py::test_remote_approval_is_actor_chat_bound_one_shot_and_redacted",
+        "tests/unit/l2/telegram/test_coding_approval_control.py::test_remote_approval_expiry_and_ack_failure_cannot_hide_decision",
+        "tests/unit/l2/telegram/telethon_tests/test_events.py::test_approval_command_is_consumed_before_state_and_event_routing",
+        "tests/unit/l2/telegram/telethon_tests/test_events.py::test_outgoing_approval_command_is_consumed_before_state_update",
+        "tests/unit/l2/telegram/aiogram_tests/test_events.py::test_approval_command_is_consumed_before_state_and_event_routing",
+        "tests/unit/l2/telegram/test_plugins.py::test_telethon_plugin_wires_remote_approval_control",
+        "tests/unit/l2/telegram/test_plugins.py::test_aiogram_plugin_wires_remote_approval_control",
+        "tests/unit/l2/host/os/test_coding_approval_notifications.py::test_telegram_remote_decision_push_advertises_exact_commands",
+        "tests/unit/utils/test_settings.py::test_host_os_config_validation",
+        "tests/unit/utils/event/test_bridge.py::test_bridge_setup_routing_subscriptions",
+        "tests/unit/utils/event/test_bridge.py::test_approval_decision_wakes_heartbeat_with_public_record"
+      ]
+    },
+    {
       "id": "cross_layer_trace_correlation",
       "description": "Async trace IDs survive child tasks, cancellation, actions, verification, and commits without leaking contexts.",
       "tests": [

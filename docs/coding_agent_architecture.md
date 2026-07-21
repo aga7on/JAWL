@@ -321,6 +321,13 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   event is explicitly excluded from Heartbeat routing to avoid a self-triggered
   ReAct cycle. Delivery failure never broadens authorization or changes request
   state.
+- A separate disabled-by-default Telegram decision control accepts only an
+  exact 16-hex approval command from one configured numeric chat and actor. The
+  connector consumes matching control syntax before state/history/agent event
+  routing, delegates TTL and replay enforcement to the same protected one-shot
+  store, and publishes only the bounded public decision after persistence. The
+  decision wake event is routed to Heartbeat; acknowledgement delivery remains
+  best-effort and cannot roll back or hide the persisted authorization state.
 - The approval subject covers task, argv, workspace fingerprint, cwd, timeout,
   backend, executable/runtime hash, selected profile identity, and the resolved
   container image/network/resource policy. A renamed or modified profile never

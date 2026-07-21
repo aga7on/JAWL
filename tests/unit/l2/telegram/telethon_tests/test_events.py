@@ -42,7 +42,7 @@ async def test_update_state(telethon_events, mock_tg_client, state):
 @patch("src.l2_interfaces.telegram.telethon.events.utils.get_display_name")
 async def test_on_group_message_mentioned(mock_get_display_name, telethon_events, mock_bus):
     mock_get_display_name.return_value = "Dev Chat"
-    event = MagicMock(chat_id=-100999, mentioned=True)
+    event = MagicMock(chat_id=-100999, sender_id=999, mentioned=True)
     event.get_chat = AsyncMock(return_value=MagicMock())
 
     event.message = MagicMock(
@@ -52,7 +52,7 @@ async def test_on_group_message_mentioned(mock_get_display_name, telethon_events
         reply_to=None,
         media=None,
         sender=None,
-        sender_id=None,
+        sender_id=999,
         action=None,
     )
 
@@ -71,4 +71,58 @@ async def test_on_group_message_mentioned(mock_get_display_name, telethon_events
     mock_bus.publish.assert_called_once()
     call_args = mock_bus.publish.call_args[1]
     assert call_args["chat_id"] == -100999
+    assert call_args["sender_id"] == 999
     assert call_args["message"] == "@agent, как дела?"
+
+
+@pytest.mark.asyncio
+async def test_approval_command_is_consumed_before_state_and_event_routing(
+    telethon_events, mock_bus
+):
+    control = MagicMock()
+    control.handle_message = AsyncMock(return_value=True)
+    telethon_events.approval_control = control
+    telethon_events._update_state = AsyncMock()
+    event = MagicMock(chat_id=12345, sender_id=999)
+    event.message = MagicMock(
+        id=42,
+        text="/jawl_deny 0123456789abcdef",
+        sender_id=999,
+    )
+
+    await telethon_events._on_private_message(event)
+
+    control.handle_message.assert_awaited_once_with(
+        raw_text="/jawl_deny 0123456789abcdef",
+        chat_id=12345,
+        sender_id=999,
+        message_id=42,
+    )
+    telethon_events._update_state.assert_not_awaited()
+    mock_bus.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_outgoing_approval_command_is_consumed_before_state_update(
+    telethon_events
+):
+    control = MagicMock()
+    control.handle_message = AsyncMock(return_value=True)
+    telethon_events.approval_control = control
+    telethon_events._update_state = AsyncMock()
+    event = MagicMock(chat_id=-100123, sender_id=456)
+    event.message = MagicMock(
+        id=43,
+        text="/jawl_approve 0123456789abcdef",
+        sender_id=456,
+    )
+
+    await telethon_events._on_outgoing_message(event)
+
+    control.handle_message.assert_awaited_once_with(
+        raw_text="/jawl_approve 0123456789abcdef",
+        chat_id=-100123,
+        sender_id=456,
+        message_id=43,
+    )
+    telethon_events._update_state.assert_not_awaited()

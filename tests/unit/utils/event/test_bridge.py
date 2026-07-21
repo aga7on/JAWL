@@ -41,6 +41,7 @@ def test_bridge_setup_routing_subscriptions(mock_container: SystemContainer) -> 
         for call in mock_container.event_bus.subscribe.call_args_list
     }
     assert Events.CODING_APPROVAL_REQUESTED.name not in subscribed_events
+    assert Events.CODING_APPROVAL_DECIDED.name in subscribed_events
 
 
 @pytest.mark.asyncio
@@ -57,6 +58,27 @@ async def test_bridge_handler_triggers_heartbeat(mock_container: SystemContainer
     assert kwargs["level"] == Events.TELETHON_MESSAGE_INCOMING.level
     assert kwargs["event_name"] == Events.TELETHON_MESSAGE_INCOMING.name
     assert kwargs["payload"]["message"] == "Test"
+
+
+@pytest.mark.asyncio
+async def test_approval_decision_wakes_heartbeat_with_public_record(
+    mock_container: SystemContainer,
+) -> None:
+    bridge = EventBridge(mock_container)
+    public = {
+        "id": "0123456789abcdef",
+        "status": "approved",
+        "argv_preview": '["python", "[REDACTED]"]',
+    }
+
+    handler = bridge._create_heartbeat_handler(Events.CODING_APPROVAL_DECIDED)
+    await handler(approval=public, transport="aiogram")
+
+    mock_container.heartbeat.answer_to_event.assert_called_once_with(
+        level=Events.CODING_APPROVAL_DECIDED.level,
+        event_name=Events.CODING_APPROVAL_DECIDED.name,
+        payload={"approval": public, "transport": "aiogram"},
+    )
 
 
 @pytest.mark.asyncio

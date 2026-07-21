@@ -99,5 +99,28 @@ async def test_telegram_approval_push_uses_configured_transport(
     target = args[0] if transport == "telethon" else kwargs["chat_id"]
     assert target == 12345
     assert "Approve: python jawl.py --approvals approve <ID>" in message
+    assert "/jawl_approve" not in message
     assert "[REDACTED]" in message
+    await notifier.stop()
+
+
+@pytest.mark.asyncio
+async def test_telegram_remote_decision_push_advertises_exact_commands():
+    bus = EventBus()
+    client = FakeAiogramClient()
+    notifier = TelegramCodingApprovalNotifications(
+        bus,
+        client,
+        12345,
+        "aiogram",
+        remote_decisions=True,
+    )
+
+    await notifier.start()
+    await bus.publish(Events.CODING_APPROVAL_REQUESTED, approval=approval())
+    await bus.stop()
+
+    _, kwargs = client.sender.calls[0]
+    assert "/jawl_approve 0123456789abcdef" in kwargs["text"]
+    assert "/jawl_deny 0123456789abcdef" in kwargs["text"]
     await notifier.stop()
