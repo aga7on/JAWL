@@ -18,7 +18,9 @@ async def test_daemons_sandbox_webhook(os_client):
     webhook_file = events_dir / "12345_abc.json"
 
     webhook_data = {"message": "Скрипт завершен", "payload": {"count": 10}}
-    webhook_file.write_text(json.dumps(webhook_data), encoding="utf-8")
+    # Older framework_api versions emitted a BOM. The poller must continue to
+    # consume those already queued events after an upgrade.
+    webhook_file.write_text(json.dumps(webhook_data), encoding="utf-8-sig")
 
     await poller._poll_sandbox_events()
 

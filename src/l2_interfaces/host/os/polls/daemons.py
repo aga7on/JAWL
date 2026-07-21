@@ -64,7 +64,9 @@ class DaemonsPoller:
 
         for file_path in events_dir.glob("*.json"):
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                # Accept both the current UTF-8 writer and legacy files that
+                # contain a UTF-8 BOM.
+                with open(file_path, "r", encoding="utf-8-sig") as f:
                     data = json.load(f)
 
                 msg = data.get("message", "Sandbox event.")

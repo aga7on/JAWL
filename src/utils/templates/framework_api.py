@@ -44,7 +44,7 @@ def _write_event(data: dict):
     temp_path = events_dir / f"{int(time.time())}_{event_id}.tmp"
     file_path = events_dir / f"{int(time.time())}_{event_id}.json"
 
-    with open(temp_path, "w", encoding="utf-8-sig") as f:
+    with open(temp_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False)
 
     temp_path.rename(file_path)
