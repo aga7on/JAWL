@@ -242,6 +242,16 @@
       ]
     },
     {
+      "id": "fail_closed_affected_test_selection",
+      "description": "Opt-in pytest selection follows bounded transitive Python dependents, persists an exact decision contract, and falls back to the full suite whenever static evidence is incomplete or unsafe.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_affected_pytest_selection_follows_transitive_imports",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_affected_pytest_selection_falls_back_to_full_on_uncertainty",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_affected_pytest_selection_treats_shared_conftest_as_full_suite",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_repository_verification_policy_selects_only_allowlisted_profiles"
+      ]
+    },
+    {
       "id": "protocol_failure_observability",
       "description": "Multiple tool calls survive transport and failed or exhausted ReAct steps leave durable evidence.",
       "tests": [

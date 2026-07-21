@@ -297,6 +297,15 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   deliberately not a success: it requests plan revision, never becomes current
   verification, and cannot satisfy the verified-state commit gate. Uniform
   reruns become `stable_pass` or `stable_fail` evidence.
+- Optional `test_selection: "affected"` narrows only pytest. It indexes a bounded
+  Python import graph once, walks transitive dependents from the exact tracked
+  and untracked change set, and passes only reached pytest files as shell-free
+  argv targets. The default remains `full`.
+- Affected selection fails closed to the full pytest suite for renames, deleted
+  tests, non-Python or configuration changes, ambiguous modules, parse/read/size
+  failures, index/selection limits, or when no affected test can be proven. The
+  requested/effective mode, reason, bounded paths, graph counts, and decision
+  hash are persisted with the exact-state verification run.
 - A successful run records HEAD plus a SHA-256 fingerprint of staged changes,
   unstaged changes, and untracked files. Conventional Python caches are the only
   excluded artifacts.
@@ -304,7 +313,8 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Task commits require a current successful fingerprint by default. An explicit
   bypass remains available for justified non-executable changes and is recorded.
 - Repositories may declare `.jawl/verification.json` with version, built-in
-  profile names, timeout, stop-on-failure behavior, and bounded stability runs.
+  profile names, timeout, stop-on-failure behavior, bounded stability runs, and
+  `full`/`affected` test selection.
   Unknown fields,
   environment overrides, and arbitrary commands are rejected; the policy hash
   is stored with each run.

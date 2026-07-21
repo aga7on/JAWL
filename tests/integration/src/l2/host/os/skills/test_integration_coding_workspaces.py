@@ -431,6 +431,160 @@ async def test_cancelled_stability_run_persists_completed_attempt_evidence(
 
 
 @pytest.mark.asyncio
+async def test_affected_pytest_selection_follows_transitive_imports(
+    os_client,
+):
+    repository = create_repository(os_client.sandbox_dir)
+    source_dir = repository / "src"
+    tests_dir = repository / "tests"
+    source_dir.mkdir()
+    tests_dir.mkdir()
+    (source_dir / "core.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source_dir / "feature.py").write_text(
+        "from src import core\n\ndef value():\n    return core.VALUE\n",
+        encoding="utf-8",
+    )
+    (source_dir / "other.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (tests_dir / "test_feature.py").write_text(
+        "from src import feature\n\ndef test_value():\n    assert feature.value()\n",
+        encoding="utf-8",
+    )
+    (tests_dir / "test_other.py").write_text(
+        "from src import other\n\ndef test_other():\n    assert other.VALUE == 999\n",
+        encoding="utf-8",
+    )
+    run_git(repository, "add", "--all")
+    run_git(repository, "commit", "-m", "add dependency graph")
+
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "affected-selection"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "src" / "core.py").write_text("VALUE = 3\n", encoding="utf-8")
+    verification = await verifier.run_coding_verification(
+        "affected-selection", checks=["pytest"], test_selection="affected"
+    )
+    payload = json.loads(verification.message)
+    selection = payload["test_selection"]
+
+    assert verification.is_success is True, verification.message
+    assert selection["effective"] == "affected", selection
+    assert selection["reason"] == "affected_tests_selected"
+    assert selection["changed_files"] == ["src/core.py"]
+    assert selection["selected_tests"] == ["tests/test_feature.py"]
+    assert len(selection["decision_sha256"]) == 64
+    assert payload["results"][0]["command"][-1] == "tests/test_feature.py"
+    assert payload["results"][0]["command"][-2] == "--"
+    assert "tests/test_other.py" not in payload["results"][0]["command"]
+    assert (
+        await manager.remove_coding_workspace("affected-selection", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
+async def test_affected_pytest_selection_falls_back_to_full_on_uncertainty(
+    os_client, monkeypatch
+):
+    repository = create_repository(os_client.sandbox_dir)
+    (repository / "README.md").write_text("initial\n", encoding="utf-8")
+    tests_dir = repository / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_app.py").write_text(
+        "def test_app():\n    assert True\n", encoding="utf-8"
+    )
+    run_git(repository, "add", "--all")
+    run_git(repository, "commit", "-m", "add tests and metadata")
+
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "affected-fallback"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "README.md").write_text("changed\n", encoding="utf-8")
+    commands = []
+
+    async def passing_runner(check, command, worktree, timeout_sec):
+        commands.append(command)
+        result = verification_attempt(check, True, "1")
+        result["command"] = command
+        return result
+
+    monkeypatch.setattr(verifier, "_run_command", passing_runner)
+    verification = await verifier.run_coding_verification(
+        "affected-fallback", checks=["pytest"], test_selection="affected"
+    )
+    payload = json.loads(verification.message)
+    selection = payload["test_selection"]
+
+    assert verification.is_success is True, verification.message
+    assert selection["requested"] == "affected"
+    assert selection["effective"] == "full"
+    assert selection["reason"] == "unsupported_changed_path:README.md"
+    assert selection["selected_tests"] == []
+    assert commands[0] == verifier._command_for("pytest", workspace)
+    rejected = await verifier.run_coding_verification(
+        "affected-fallback", checks=["pytest"], test_selection="guessed"
+    )
+    assert rejected.is_success is False
+    assert "test_selection" in rejected.message
+    assert (
+        await manager.remove_coding_workspace("affected-fallback", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
+async def test_affected_pytest_selection_treats_shared_conftest_as_full_suite(
+    os_client, monkeypatch
+):
+    repository = create_repository(os_client.sandbox_dir)
+    source_dir = repository / "src"
+    tests_dir = repository / "tests"
+    source_dir.mkdir()
+    tests_dir.mkdir()
+    (source_dir / "core.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repository / "conftest.py").write_text(
+        "from src import core\n\nVALUE = core.VALUE\n", encoding="utf-8"
+    )
+    (tests_dir / "test_fixture_user.py").write_text(
+        "def test_fixture_user():\n    assert True\n", encoding="utf-8"
+    )
+    run_git(repository, "add", "--all")
+    run_git(repository, "commit", "-m", "add shared pytest fixture dependency")
+
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "affected-conftest"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "src" / "core.py").write_text("VALUE = 2\n", encoding="utf-8")
+    commands = []
+
+    async def passing_runner(check, command, worktree, timeout_sec):
+        commands.append(command)
+        result = verification_attempt(check, True, "1")
+        result["command"] = command
+        return result
+
+    monkeypatch.setattr(verifier, "_run_command", passing_runner)
+    verification = await verifier.run_coding_verification(
+        "affected-conftest", checks=["pytest"], test_selection="affected"
+    )
+    selection = json.loads(verification.message)["test_selection"]
+
+    assert verification.is_success is True, verification.message
+    assert selection["effective"] == "full"
+    assert selection["reason"] == "affected_conftest_requires_full_suite:conftest.py"
+    assert commands[0] == verifier._command_for("pytest", workspace)
+    assert (
+        await manager.remove_coding_workspace("affected-conftest", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
 async def test_verification_bounds_failure_output(os_client):
     create_repository(os_client.sandbox_dir)
     manager = HostOSCodingWorkspaces(os_client)
@@ -856,6 +1010,7 @@ async def test_repository_verification_policy_selects_only_allowlisted_profiles(
                 "timeout_sec": 45,
                 "stop_on_failure": False,
                 "stability_runs": 2,
+                "test_selection": "affected",
             }
         ),
         encoding="utf-8",
@@ -870,6 +1025,8 @@ async def test_repository_verification_policy_selects_only_allowlisted_profiles(
     assert payload["stop_on_failure"] is False
     assert payload["stability_runs"] == 2
     assert payload["policy"]["stability_runs"] == 2
+    assert payload["policy"]["test_selection"] == "affected"
+    assert payload["test_selection"]["reason"] == "pytest_profile_not_selected"
     assert payload["policy"]["path"] == ".jawl/verification.json"
     assert len(payload["policy"]["sha256"]) == 64
 
@@ -908,6 +1065,22 @@ async def test_repository_verification_policy_selects_only_allowlisted_profiles(
     )
     assert rejected_argument.is_success is False
     assert "stability_runs" in rejected_argument.message
+
+    policy_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "checks": ["pytest"],
+                "test_selection": "learned-magic",
+            }
+        ),
+        encoding="utf-8",
+    )
+    rejected_selection = await verifier.run_coding_verification(
+        "verification-policy"
+    )
+    assert rejected_selection.is_success is False
+    assert "test_selection" in rejected_selection.message
     assert (
         await manager.remove_coding_workspace("verification-policy", force=True)
     ).is_success

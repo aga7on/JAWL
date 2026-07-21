@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import json
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
@@ -19,6 +21,7 @@ import psutil
 
 from src.l2_interfaces.host.os.client import HostOSAccessLevel, HostOSClient
 from src.l2_interfaces.host.os.decorators import require_access
+from src.l2_interfaces.host.os.polls.utils import is_ignored
 from src.l2_interfaces.host.os.skills.coding_workspaces import (
     HostOSCodingWorkspaces,
 )
@@ -41,6 +44,7 @@ VerificationCheck = Literal[
     "maven_test",
     "gradle_test",
 ]
+TestSelection = Literal["full", "affected"]
 
 
 class HostOSCodingVerification:
@@ -68,6 +72,19 @@ class HostOSCodingVerification:
         "gradle_test",
     }
     _POLICY_PATH = Path(".jawl/verification.json")
+    _AFFECTED_MAX_CHANGED_FILES = 100
+    _AFFECTED_MAX_INDEX_FILES = 3000
+    _AFFECTED_MAX_SOURCE_BYTES = 2 * 1024 * 1024
+    _AFFECTED_MAX_SELECTED_TESTS = 250
+    _AFFECTED_CONFIG_NAMES = {
+        ".jawl/verification.json",
+        "conftest.py",
+        "pyproject.toml",
+        "pytest.ini",
+        "setup.cfg",
+        "setup.py",
+        "tox.ini",
+    }
     _PYTHON_SYNTAX_CHECK = r"""import pathlib
 import sys
 
@@ -165,6 +182,306 @@ if errors:
             return await self._detect_checks(workspace)
         return list(dict.fromkeys(requested))
 
+    @staticmethod
+    def _python_module(relative: Path) -> str:
+        parts = list(relative.with_suffix("").parts)
+        if parts and parts[-1] == "__init__":
+            parts.pop()
+        return ".".join(parts)
+
+    @classmethod
+    def _python_module_aliases(
+        cls, relative: Path, known_files: set[str]
+    ) -> set[str]:
+        parts = list(relative.with_suffix("").parts)
+        is_package = bool(parts and parts[-1] == "__init__")
+        if is_package:
+            parts.pop()
+        if not parts:
+            return set()
+        aliases = {".".join(parts)}
+        directories = parts if is_package else parts[:-1]
+        for start in range(len(directories)):
+            package_files = [
+                Path(*directories[: depth + 1], "__init__.py").as_posix()
+                for depth in range(start, len(directories))
+            ]
+            if all(path in known_files for path in package_files):
+                aliases.add(".".join(parts[start:]))
+                break
+        if len(parts) > 1 and parts[0].lower() in {"lib", "python", "src"}:
+            aliases.add(".".join(parts[1:]))
+        return {alias for alias in aliases if alias}
+
+    @staticmethod
+    def _resolve_python_module(
+        module: str, module_map: Dict[str, Optional[str]]
+    ) -> Optional[str]:
+        candidate = module
+        while candidate:
+            if candidate in module_map:
+                return module_map[candidate]
+            candidate = candidate.rpartition(".")[0]
+        return None
+
+    @staticmethod
+    def _is_pytest_file(path: str) -> bool:
+        name = Path(path).name.lower()
+        return name.startswith("test_") or name.endswith("_test.py")
+
+    @staticmethod
+    def _selection_record(
+        *,
+        requested: str = "affected",
+        effective: str,
+        reason: str,
+        changed_files: Sequence[str],
+        selected_tests: Sequence[str] = (),
+        indexed_python_files: int = 0,
+        dependency_edge_count: int = 0,
+    ) -> Dict[str, Any]:
+        record: Dict[str, Any] = {
+            "requested": requested,
+            "effective": effective,
+            "reason": reason,
+            "changed_files": list(changed_files),
+            "selected_tests": list(selected_tests),
+            "indexed_python_files": indexed_python_files,
+            "dependency_edge_count": dependency_edge_count,
+        }
+        canonical = json.dumps(
+            record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        record["decision_sha256"] = hashlib.sha256(
+            canonical.encode("utf-8")
+        ).hexdigest()
+        return record
+
+    @classmethod
+    def _build_affected_pytest_selection(
+        cls, workspace: Path, changed_files: Sequence[str]
+    ) -> Dict[str, Any]:
+        changed = sorted(
+            dict.fromkeys(path.replace("\\", "/") for path in changed_files)
+        )
+        if not changed:
+            return cls._selection_record(
+                effective="full", reason="no_changed_files", changed_files=changed
+            )
+        if len(changed) > cls._AFFECTED_MAX_CHANGED_FILES:
+            return cls._selection_record(
+                effective="full",
+                reason="changed_file_limit_exceeded",
+                changed_files=changed[: cls._AFFECTED_MAX_CHANGED_FILES],
+            )
+        unsafe = next(
+            (
+                path
+                for path in changed
+                if path.lower() in cls._AFFECTED_CONFIG_NAMES
+                or Path(path).name.lower() == "conftest.py"
+                or Path(path).suffix.lower() != ".py"
+            ),
+            None,
+        )
+        if unsafe is not None:
+            return cls._selection_record(
+                effective="full",
+                reason=f"unsupported_changed_path:{unsafe}",
+                changed_files=changed,
+            )
+        deleted_test = next(
+            (
+                path
+                for path in changed
+                if cls._is_pytest_file(path) and not (workspace / path).is_file()
+            ),
+            None,
+        )
+        if deleted_test is not None:
+            return cls._selection_record(
+                effective="full",
+                reason=f"deleted_test_requires_full_suite:{deleted_test}",
+                changed_files=changed,
+            )
+
+        python_paths: List[Path] = []
+        for current_root, directories, filenames in os.walk(workspace):
+            current = Path(current_root)
+            directories[:] = sorted(
+                name
+                for name in directories
+                if not is_ignored((current / name).relative_to(workspace))
+            )
+            for filename in sorted(filenames):
+                path = current / filename
+                relative = path.relative_to(workspace)
+                if path.suffix.lower() != ".py" or is_ignored(relative):
+                    continue
+                if len(python_paths) >= cls._AFFECTED_MAX_INDEX_FILES:
+                    return cls._selection_record(
+                        effective="full",
+                        reason="python_index_truncated",
+                        changed_files=changed,
+                        indexed_python_files=len(python_paths),
+                    )
+                try:
+                    if path.stat().st_size > cls._AFFECTED_MAX_SOURCE_BYTES:
+                        return cls._selection_record(
+                            effective="full",
+                            reason=f"oversized_python_source:{relative.as_posix()}",
+                            changed_files=changed,
+                            indexed_python_files=len(python_paths),
+                        )
+                except OSError:
+                    return cls._selection_record(
+                        effective="full",
+                        reason=f"unreadable_python_source:{relative.as_posix()}",
+                        changed_files=changed,
+                        indexed_python_files=len(python_paths),
+                    )
+                python_paths.append(path)
+
+        relative_paths = {
+            path.relative_to(workspace).as_posix() for path in python_paths
+        }
+        relative_paths.update(changed)
+        module_map: Dict[str, Optional[str]] = {}
+        ambiguous_aliases: set[str] = set()
+        for relative_text in sorted(relative_paths):
+            relative = Path(relative_text)
+            for alias in cls._python_module_aliases(relative, relative_paths):
+                prior = module_map.get(alias)
+                if alias in module_map and prior != relative_text:
+                    module_map[alias] = None
+                    ambiguous_aliases.add(alias)
+                elif alias not in ambiguous_aliases:
+                    module_map[alias] = relative_text
+        if ambiguous_aliases:
+            return cls._selection_record(
+                effective="full",
+                reason="ambiguous_python_modules",
+                changed_files=changed,
+                indexed_python_files=len(python_paths),
+            )
+
+        incoming: Dict[str, set[str]] = {}
+        edge_count = 0
+        for path in python_paths:
+            relative = path.relative_to(workspace).as_posix()
+            try:
+                source = path.read_text(encoding="utf-8", errors="replace")
+                tree = ast.parse(source)
+            except (OSError, SyntaxError):
+                return cls._selection_record(
+                    effective="full",
+                    reason=f"python_parse_error:{relative}",
+                    changed_files=changed,
+                    indexed_python_files=len(python_paths),
+                    dependency_edge_count=edge_count,
+                )
+            current_module = cls._python_module(Path(relative))
+            current_package = (
+                current_module
+                if Path(relative).name == "__init__.py"
+                else current_module.rpartition(".")[0]
+            )
+            targets: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom):
+                    if node.level:
+                        package_parts = (
+                            current_package.split(".") if current_package else []
+                        )
+                        keep = max(0, len(package_parts) - (node.level - 1))
+                        prefix = package_parts[:keep]
+                        if node.module:
+                            prefix.extend(node.module.split("."))
+                        base = ".".join(prefix)
+                    else:
+                        base = node.module or ""
+                    imports = [
+                        f"{base}.{alias.name}" if base else alias.name
+                        for alias in node.names
+                    ]
+                    if base:
+                        imports.append(base)
+                else:
+                    continue
+                for imported in imports:
+                    target = cls._resolve_python_module(imported, module_map)
+                    if target is not None and target != relative:
+                        targets.add(target)
+            for target in targets:
+                incoming.setdefault(target, set()).add(relative)
+                edge_count += 1
+
+        reached = set(changed)
+        queue = deque(changed)
+        while queue:
+            current = queue.popleft()
+            for dependent in sorted(incoming.get(current, set())):
+                if dependent not in reached:
+                    reached.add(dependent)
+                    queue.append(dependent)
+        reached_conftest = next(
+            (path for path in reached if Path(path).name.lower() == "conftest.py"),
+            None,
+        )
+        if reached_conftest is not None:
+            return cls._selection_record(
+                effective="full",
+                reason=f"affected_conftest_requires_full_suite:{reached_conftest}",
+                changed_files=changed,
+                indexed_python_files=len(python_paths),
+                dependency_edge_count=edge_count,
+            )
+        selected = sorted(path for path in reached if cls._is_pytest_file(path))
+        if not selected:
+            return cls._selection_record(
+                effective="full",
+                reason="no_affected_tests_proven",
+                changed_files=changed,
+                indexed_python_files=len(python_paths),
+                dependency_edge_count=edge_count,
+            )
+        if len(selected) > cls._AFFECTED_MAX_SELECTED_TESTS:
+            return cls._selection_record(
+                effective="full",
+                reason="selected_test_limit_exceeded",
+                changed_files=changed,
+                indexed_python_files=len(python_paths),
+                dependency_edge_count=edge_count,
+            )
+        return cls._selection_record(
+            effective="affected",
+            reason="affected_tests_selected",
+            changed_files=changed,
+            selected_tests=selected,
+            indexed_python_files=len(python_paths),
+            dependency_edge_count=edge_count,
+        )
+
+    async def _select_affected_pytest(self, workspace: Path) -> Dict[str, Any]:
+        code, renamed, error = await self.workspaces._run_git(
+            workspace, "diff", "--name-only", "--diff-filter=R", "HEAD", "--"
+        )
+        if code != 0:
+            raise ValueError(f"Unable to inspect renamed files: {error or renamed}")
+        tracked, untracked = await self.workspaces._list_changed_files(workspace)
+        changed = sorted(dict.fromkeys([*tracked, *untracked]))
+        if renamed:
+            return self._selection_record(
+                effective="full",
+                reason="renamed_files_require_full_suite",
+                changed_files=changed,
+            )
+        return await asyncio.to_thread(
+            self._build_affected_pytest_selection, workspace, changed
+        )
+
     async def _load_repository_policy(
         self, workspace: Path
     ) -> Optional[Dict[str, Any]]:
@@ -189,6 +506,7 @@ if errors:
             "timeout_sec",
             "stop_on_failure",
             "stability_runs",
+            "test_selection",
         }
         unknown = set(policy) - allowed_fields
         if unknown:
@@ -222,6 +540,14 @@ if errors:
             raise ValueError(
                 "Verification policy stability_runs must be an integer between 1 and 3."
             )
+        test_selection = policy.get("test_selection", "full")
+        if not isinstance(test_selection, str) or test_selection not in {
+            "full",
+            "affected",
+        }:
+            raise ValueError(
+                "Verification policy test_selection must be 'full' or 'affected'."
+            )
         return {
             "path": self._POLICY_PATH.as_posix(),
             "sha256": hashlib.sha256(raw).hexdigest(),
@@ -229,6 +555,7 @@ if errors:
             "timeout_sec": timeout_sec,
             "stop_on_failure": stop_on_failure,
             "stability_runs": stability_runs,
+            "test_selection": test_selection,
         }
 
     @staticmethod
@@ -240,13 +567,28 @@ if errors:
             )
         return executable
 
-    def _command_for(self, check: str, workspace: Path) -> List[str]:
+    def _command_for(
+        self,
+        check: str,
+        workspace: Path,
+        pytest_targets: Optional[Sequence[str]] = None,
+    ) -> List[str]:
         if check == "git_diff_check":
             return [self._resolve_executable("git"), "diff", "--check", "HEAD", "--"]
         if check == "python_compile":
             return [sys.executable, "-c", self._PYTHON_SYNTAX_CHECK]
         if check == "pytest":
-            return [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+            command = [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+            ]
+            if pytest_targets:
+                command.extend(["--", *pytest_targets])
+            return command
         if check == "npm_test":
             return [self._resolve_executable("npm"), "test"]
         if check == "cargo_test":
@@ -489,6 +831,7 @@ if errors:
         timeout_sec: Optional[int] = None,
         stop_on_failure: Optional[bool] = None,
         stability_runs: Optional[int] = None,
+        test_selection: Optional[TestSelection] = None,
     ) -> SkillResult:
         """Run standard verification profiles in a task worktree.
 
@@ -497,6 +840,8 @@ if errors:
         never arbitrary commands. Otherwise ``auto`` detects the project stack.
         ``stability_runs`` repeats only test profiles up to three times; mixed
         pass/fail outcomes are persisted as fail-closed ``flaky`` evidence.
+        ``test_selection='affected'`` may narrow pytest to statically proven
+        dependents; uncertainty always falls back to the full suite.
         """
 
         if timeout_sec is not None and (timeout_sec < 1 or timeout_sec > 1800):
@@ -508,6 +853,11 @@ if errors:
             or stability_runs > 3
         ):
             return SkillResult.fail("stability_runs must be an integer between 1 and 3.")
+        if test_selection is not None and (
+            not isinstance(test_selection, str)
+            or test_selection not in {"full", "affected"}
+        ):
+            return SkillResult.fail("test_selection must be 'full' or 'affected'.")
         run_persisted = False
         try:
             task_id, entry, workspace = await self._resolve_task(task_id)
@@ -528,10 +878,40 @@ if errors:
                 if stability_runs is not None
                 else (policy["stability_runs"] if policy else 1)
             )
+            effective_test_selection = (
+                test_selection
+                if test_selection is not None
+                else (policy["test_selection"] if policy else "full")
+            )
             normalized_checks = await self._normalize_checks(
                 workspace, requested_checks
             )
             fingerprint_before = await self.workspaces.workspace_fingerprint(workspace)
+            if effective_test_selection == "affected" and "pytest" in normalized_checks:
+                try:
+                    pytest_selection = await self._select_affected_pytest(workspace)
+                except Exception as exc:
+                    pytest_selection = self._selection_record(
+                        effective="full",
+                        reason=(
+                            "selector_error:"
+                            + redact_sensitive_text(str(exc))[:240]
+                        ),
+                        changed_files=[],
+                    )
+            elif effective_test_selection == "affected":
+                pytest_selection = self._selection_record(
+                    effective="full",
+                    reason="pytest_profile_not_selected",
+                    changed_files=[],
+                )
+            else:
+                pytest_selection = self._selection_record(
+                    requested="full",
+                    effective="full",
+                    reason="full_suite_requested",
+                    changed_files=[],
+                )
             run = {
                 "run_id": uuid.uuid4().hex,
                 "session_id": self.session_id,
@@ -548,6 +928,7 @@ if errors:
                 "timeout_sec": effective_timeout,
                 "stop_on_failure": effective_stop,
                 "stability_runs": effective_stability_runs,
+                "test_selection": pytest_selection,
             }
             await self._persist_run(task_id, run, start=True)
             run_persisted = True
@@ -555,7 +936,15 @@ if errors:
             try:
                 for check in normalized_checks:
                     try:
-                        command = self._command_for(check, workspace)
+                        pytest_targets = (
+                            pytest_selection["selected_tests"]
+                            if check == "pytest"
+                            and pytest_selection["effective"] == "affected"
+                            else None
+                        )
+                        command = self._command_for(
+                            check, workspace, pytest_targets=pytest_targets
+                        )
                     except FileNotFoundError as exc:
                         attempts = [self._failed_attempt(check, str(exc))]
                     except Exception as exc:

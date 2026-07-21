@@ -115,7 +115,8 @@ Repositories can make this policy durable without adding executable text:
   "checks": ["git_diff_check", "python_compile", "pytest"],
   "timeout_sec": 300,
   "stop_on_failure": true,
-  "stability_runs": 2
+  "stability_runs": 2,
+  "test_selection": "affected"
 }
 ```
 
@@ -126,6 +127,19 @@ the next starts. Uniform repeated outcomes are labelled `stable_pass` or
 treated as current verification, triggers the same replanning path as a failed
 run, and cannot authorize a commit. Workspace mutation during any attempt still
 takes precedence and marks the result `stale`.
+
+`test_selection` is `full` by default. The opt-in `affected` mode currently
+narrows only pytest: JAWL collects the exact tracked and untracked changes,
+builds a bounded Python import graph, follows transitive dependents, and passes
+the reached pytest files as argv targets. It never constructs shell text.
+
+Selection automatically falls back to the full pytest suite when a changed path
+is configuration or non-Python content, a rename or deleted test is present, a
+source cannot be parsed/read, module resolution is ambiguous, an index bound is
+reached, or no affected test is statically proven. Each run persists requested
+and effective mode, fallback reason, bounded changed/selected paths, graph
+counts, and a SHA-256 decision fingerprint. The normal exact-workspace commit
+gate still applies to the resulting run.
 
 ## Durable coding diff review
 
