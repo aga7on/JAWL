@@ -281,6 +281,24 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Reset tokens restore any parent trace after the cycle and prevent correlation
   state leaking into later Heartbeats or unrelated background work.
 
+## Coding telemetry contract
+
+- Every LLM metrics record now carries local tokenizer estimates for input and
+  output even when the provider omits OpenAI usage fields. Provider-reported and
+  estimated counts remain separate rather than being silently mixed.
+- `inspect_coding_telemetry` joins bounded active-timeline ticks with the rotated
+  redacted action journal through inherited traces. It reports request/model
+  latency, token coverage, action outcomes, tool timing, plan states, and
+  verification failures without returning prompts, thoughts, trace/task/request
+  IDs, tool parameters, or tool results.
+- `publish_coding_telemetry_dashboard` emits the same bounded aggregate through
+  the existing passive `SYSTEM_DASHBOARD_UPDATE` event. It does not wake
+  Heartbeat and does not add another persistence store.
+- Monetary cost remains explicitly unavailable until a trusted model price
+  catalogue exists. This avoids inventing token pricing for subscription/web
+  Qwen traffic; the rollup exposes provider-token coverage so future pricing can
+  be added without retroactively misrepresenting incomplete records.
+
 ## Verification contract
 
 - `run_coding_verification` executes bounded standard profiles inside the task

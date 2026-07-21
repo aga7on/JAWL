@@ -19,10 +19,11 @@ def test_add_input_record(tracker):
 
 def test_add_output_record(tracker):
     output = "test output " * 10
-    tracker.add_output_record(output)
+    total = tracker.add_output_record(output)
 
     assert len(tracker.output_history) == 1
     assert tracker.output_history[0]["total"] > 0
+    assert total == tracker.output_history[0]["total"]
 
 
 def test_tracker_maxlen(tracker):

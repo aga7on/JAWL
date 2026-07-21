@@ -79,7 +79,9 @@ class LLMExecutor:
                           Returns None if all retries failed or a fatal error occurred.
         """
 
-        self.tracker.add_input_record(messages, log_prefix=log_prefix, logger=logger)
+        estimated_input_tokens = self.tracker.add_input_record(
+            messages, log_prefix=log_prefix, logger=logger
+        )
         request_id = str(uuid.uuid4().hex)
         started = time.perf_counter()
         self.last_call_metrics = {
@@ -88,6 +90,7 @@ class LLMExecutor:
             "status": "running",
             "attempts": 0,
             "thinking_enabled": enable_thinking,
+            "estimated_input_tokens": self._plain_metric(estimated_input_tokens),
         }
         timeout_count = 0
 
@@ -115,7 +118,7 @@ class LLMExecutor:
                 # Extract content and count tokens
                 raw_answer = self._extract_response_text(response, tool_transport)
 
-                self.tracker.add_output_record(
+                estimated_output_tokens = self.tracker.add_output_record(
                     raw_answer, log_prefix=log_prefix, logger=logger
                 )
 
@@ -126,6 +129,8 @@ class LLMExecutor:
                     attempts=attempt + 1,
                     duration_ms=(time.perf_counter() - started) * 1000,
                     output_chars=len(raw_answer),
+                    estimated_input_tokens=estimated_input_tokens,
+                    estimated_output_tokens=estimated_output_tokens,
                 )
                 self.last_call_metrics["thinking_enabled"] = enable_thinking
 
@@ -343,6 +348,8 @@ class LLMExecutor:
         attempts: int,
         duration_ms: float,
         output_chars: int,
+        estimated_input_tokens: Any,
+        estimated_output_tokens: Any,
     ) -> Dict[str, Any]:
         choice = response.choices[0]
         message = choice.message
@@ -359,6 +366,8 @@ class LLMExecutor:
             ),
             "tool_call_count": len(getattr(message, "tool_calls", None) or []),
             "output_chars": output_chars,
+            "estimated_input_tokens": self._plain_metric(estimated_input_tokens),
+            "estimated_output_tokens": self._plain_metric(estimated_output_tokens),
             "provider_prompt_tokens": self._plain_metric(
                 getattr(usage, "prompt_tokens", None)
             ),
@@ -381,12 +390,17 @@ class LLMExecutor:
         error: str,
     ) -> None:
         thinking_enabled = self.last_call_metrics.get("thinking_enabled")
+        estimated_input_tokens = self.last_call_metrics.get(
+            "estimated_input_tokens"
+        )
         self.last_call_metrics = {
             "request_id": request_id,
             "model": model_name,
             "status": status,
             "attempts": attempts,
             "thinking_enabled": thinking_enabled,
+            "estimated_input_tokens": estimated_input_tokens,
+            "estimated_output_tokens": None,
             "duration_ms": round((time.perf_counter() - started) * 1000, 1),
             "error": redact_sensitive_text(error)[:1000],
             "trace": current_trace(),

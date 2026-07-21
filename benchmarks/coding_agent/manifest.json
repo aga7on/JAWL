@@ -373,6 +373,18 @@
       ]
     },
     {
+      "id": "privacy_preserving_coding_telemetry",
+      "description": "Durable coding traces roll up separate estimated/provider tokens, LLM and tool latency, outcomes, verification failures, and a passive bounded dashboard without exposing prompts, thoughts, identifiers, parameters, or results.",
+      "tests": [
+        "tests/unit/l3/skills/test_coding_telemetry.py::test_coding_telemetry_rolls_up_only_coding_traces_without_payloads",
+        "tests/unit/l3/skills/test_coding_telemetry.py::test_coding_telemetry_dashboard_is_passive_bounded_and_validated",
+        "tests/unit/l3/llm/test_executor.py::test_executor_success",
+        "tests/unit/l3/llm/test_executor.py::test_executor_records_downstream_cancellation",
+        "tests/unit/utils/test_token_tracker.py::test_add_output_record",
+        "tests/unit/test_builder.py::test_build_l3_agent"
+      ]
+    },
+    {
       "id": "fixed_patch_quality_eval",
       "description": "Fixed repositories grade public and hidden correctness, scope precision, and patch economy for JAWL and isolated external CLI baselines.",
       "tests": [

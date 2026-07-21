@@ -22,6 +22,8 @@ def mock_executor_deps():
 @pytest.mark.asyncio
 async def test_executor_success(mock_executor_deps):
     llm, tracker = mock_executor_deps
+    tracker.add_input_record.return_value = 123
+    tracker.add_output_record.return_value = 45
     mock_session = AsyncMock()
     llm.get_session.return_value = mock_session
 
@@ -38,6 +40,8 @@ async def test_executor_success(mock_executor_deps):
     assert executor.last_call_metrics["status"] == "completed"
     assert executor.last_call_metrics["output_chars"] == len("Success Content")
     assert executor.last_call_metrics["tool_call_count"] == 0
+    assert executor.last_call_metrics["estimated_input_tokens"] == 123
+    assert executor.last_call_metrics["estimated_output_tokens"] == 45
 
 
 @pytest.mark.asyncio
@@ -83,6 +87,7 @@ async def test_executor_metrics_include_current_trace(mock_executor_deps):
 @pytest.mark.asyncio
 async def test_executor_records_downstream_cancellation(mock_executor_deps):
     llm, tracker = mock_executor_deps
+    tracker.add_input_record.return_value = 77
     session = AsyncMock()
     llm.get_session.return_value = session
     started = asyncio.Event()
@@ -103,6 +108,8 @@ async def test_executor_records_downstream_cancellation(mock_executor_deps):
 
     assert executor.last_call_metrics["status"] == "cancelled"
     assert executor.last_call_metrics["thinking_enabled"] is None
+    assert executor.last_call_metrics["estimated_input_tokens"] == 77
+    assert executor.last_call_metrics["estimated_output_tokens"] is None
 
 
 @pytest.mark.asyncio

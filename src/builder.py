@@ -37,6 +37,7 @@ from src.l3_agent.skills.registry import (
     register_instance,
 )
 from src.l3_agent.skills.journal_skills import ActionJournalSkills
+from src.l3_agent.skills.coding_telemetry import CodingTelemetrySkills
 from src.l3_agent.skills.coding_reconciliation import (
     CodingActionReconciliation,
 )
@@ -240,6 +241,13 @@ class SystemBuilder:
             self.container.lifecycle_command_adapter.register(lifecycle_hooks)
         self.container.lifecycle_hooks = configure_lifecycle_hooks(lifecycle_hooks)
         register_instance(ActionJournalSkills(action_journal))
+        register_instance(
+            CodingTelemetrySkills(
+                action_journal,
+                self.container.sql.ticks,
+                self.container.event_bus,
+            )
+        )
 
         llm_api_keys = env_vars.get("LLM_API_KEYS", [])
         llm_api_url = env_vars.get("LLM_API_URL", "")
