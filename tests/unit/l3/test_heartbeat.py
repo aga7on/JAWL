@@ -1,6 +1,7 @@
 import pytest
+import asyncio
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from src.utils.event.registry import EventLevel
 from src.l3_agent.heartbeat import Heartbeat
@@ -162,3 +163,83 @@ def test_heartbeat_priority_overwriting(mock_react_loop, mock_accel_config):
     hb.answer_to_event(EventLevel.LOW, "LOW_EVENT")
     assert hb._wake_level == EventLevel.CRITICAL.value
     assert hb._wake_reason == "CRITICAL_EVENT"
+
+
+@pytest.mark.asyncio
+async def test_active_defer_policy_does_not_cancel_provider_task(mock_react_loop):
+    config = EventAccelerationConfig(
+        active_cycle_policy="defer", critical_multiplier=0.0
+    )
+    hb = Heartbeat(mock_react_loop, 60, False, config, 3)
+    blocker = asyncio.Event()
+    active_task = asyncio.create_task(blocker.wait())
+    hb._active_react_task = active_task
+    mock_react_loop.request_steer = MagicMock()
+
+    hb.answer_to_event(
+        EventLevel.CRITICAL,
+        "TELETHON_MESSAGE_INCOMING",
+        {"message": "new request"},
+    )
+
+    assert not active_task.done()
+    assert hb._deferred_wakeup is True
+    assert hb._wake_reason == "TELETHON_MESSAGE_INCOMING"
+    mock_react_loop.request_steer.assert_called_once()
+    mock_react_loop.add_realtime_event.assert_not_called()
+
+    active_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await active_task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_first_cycle", [False, True])
+async def test_deferred_event_runs_as_next_primary_cycle(fail_first_cycle):
+    class FakeReactLoop:
+        def __init__(self):
+            self.calls = []
+            self.first_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+            self.steer_events = []
+            self.heartbeat = None
+
+        async def run(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                self.first_started.set()
+                await self.release_first.wait()
+                if fail_first_cycle:
+                    raise RuntimeError("old cycle failed after steer request")
+            else:
+                self.heartbeat._is_running = False
+
+        def request_steer(self, event_data):
+            self.steer_events.append(event_data)
+
+        def add_realtime_event(self, event_data):
+            raise AssertionError("defer must not append into stale cycle")
+
+    react = FakeReactLoop()
+    config = EventAccelerationConfig(
+        active_cycle_policy="defer", critical_multiplier=0.0
+    )
+    hb = Heartbeat(react, 3600, False, config, 3)
+    react.heartbeat = hb
+    hb._next_tick_time = time.time()
+    heartbeat_task = asyncio.create_task(hb.start())
+    await asyncio.wait_for(react.first_started.wait(), timeout=0.5)
+
+    hb.answer_to_event(
+        EventLevel.CRITICAL,
+        "TELETHON_MESSAGE_INCOMING",
+        {"message": "queued"},
+    )
+    react.release_first.set()
+    await asyncio.wait_for(heartbeat_task, timeout=0.5)
+
+    assert len(react.calls) == 2
+    assert react.calls[1]["event_name"] == "TELETHON_MESSAGE_INCOMING"
+    assert react.calls[1]["payload"] == {"message": "queued"}
+    assert react.calls[1]["missed_events"] == []
+    assert react.steer_events[0]["name"] == "TELETHON_MESSAGE_INCOMING"

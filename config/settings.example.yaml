@@ -42,6 +42,9 @@ system:
 
   # Подробнее: docs/yaml/settings/event_acceleration.md
   event_acceleration:
+    # Keep long provider requests alive; yield before stale actions and run the
+    # urgent event as the next primary ReAct trigger.
+    active_cycle_policy: defer
     critical_multiplier: 0.0
     high_multiplier: 0.2
     medium_multiplier: 0.6

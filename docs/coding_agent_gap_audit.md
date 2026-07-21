@@ -20,6 +20,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
 | Lifecycle policy | Good | Ordered bounded pre/post/error/cancel hooks, preflight deny, fail-open/fail-closed policy, durable records, passive EventBus observations | No declarative repository/user command-hook adapter yet |
+| Event steering | Good | Configurable interrupt/defer/append policy; deferred urgent events preserve in-flight provider responses, skip stale actions, persist a steer tick, and become the next primary trigger | No interactive mid-generation provider steering; safe boundary waits for the active response |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, noisy Qwen payload recovery, bounded transient retries, configurable Thinking policy, persisted failures, terminal step-limit record | QWB exposes only a Boolean Thinking switch, not a token/time budget; adaptive per-task policy still needs measured validation |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
@@ -37,8 +38,8 @@ tasks safely, recoverably, and with measurable evidence.
    coding-plan revision, and workspace changes.
 4. Put command execution behind an OS-enforced sandbox/approval policy; Git
    worktrees isolate task state but are not a host security boundary.
-5. Replace unconditional critical-event cancellation with explicit steer/queue
-   semantics while preserving the current event-driven philosophy.
+5. Extend safe-boundary steering with queue inspection/coalescing and, where a
+   provider supports it, true mid-generation steering.
 6. Execute declared external CLI baselines through `drive_cli.py` before making
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation

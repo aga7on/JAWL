@@ -118,6 +118,69 @@ async def test_react_cancellation_persists_terminal_tick(mock_dependencies):
 
 
 @pytest.mark.asyncio
+@patch("src.l3_agent.react.loop.execute_skill", new_callable=AsyncMock)
+async def test_react_deferred_steer_waits_for_llm_and_skips_stale_actions(
+    mock_execute_skill, mock_dependencies
+):
+    deps = mock_dependencies
+    loop = ReactLoop(**deps)
+
+    async def complete_after_steer(**kwargs):
+        loop.request_steer(
+            {
+                "name": "TELETHON_MESSAGE_INCOMING",
+                "level": "CRITICAL",
+                "time": "12:00:00",
+                "payload": {"message": "new request"},
+            }
+        )
+        return json.dumps(
+            {
+                "reflection": "stale answer",
+                "actions": [{"tool_name": "dangerous", "parameters": {}}],
+            }
+        )
+
+    deps["executor"].execute.side_effect = complete_after_steer
+    await loop.run("OLD_REQUEST", {}, missed_events=[])
+
+    deps["executor"].execute.assert_awaited_once()
+    mock_execute_skill.assert_not_called()
+    saved = deps["sql_ticks"].save_tick.await_args.kwargs
+    assert saved["results"]["status"] == "cycle_steered"
+    assert saved["results"]["queued_events"][0]["name"] == (
+        "TELETHON_MESSAGE_INCOMING"
+    )
+    assert loop._steer_requested is False
+
+
+@pytest.mark.asyncio
+async def test_react_steer_during_context_build_prevents_new_provider_call(
+    mock_dependencies,
+):
+    deps = mock_dependencies
+    loop = ReactLoop(**deps)
+
+    async def context_then_steer(*args, **kwargs):
+        loop.request_steer(
+            {
+                "name": "TELETHON_MESSAGE_INCOMING",
+                "level": "CRITICAL",
+                "time": "12:00:00",
+                "payload": {},
+            }
+        )
+        return "stale context"
+
+    deps["context_builder"].build.side_effect = context_then_steer
+    await loop.run("OLD_REQUEST", {}, missed_events=[])
+
+    deps["executor"].execute.assert_not_awaited()
+    saved = deps["sql_ticks"].save_tick.await_args.kwargs
+    assert saved["results"]["status"] == "cycle_steered"
+
+
+@pytest.mark.asyncio
 @patch("src.l3_agent.react.loop.resolve_native_tool_name")
 @patch("src.l3_agent.react.loop.execute_skill", new_callable=AsyncMock)
 async def test_react_executes_resolved_native_tool_and_dynamic_schema(

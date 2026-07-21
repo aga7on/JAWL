@@ -72,6 +72,17 @@
       ]
     },
     {
+      "id": "safe_event_steering",
+      "description": "Urgent events can defer at a safe boundary without cancelling an in-flight provider response or executing its stale actions.",
+      "tests": [
+        "tests/unit/l3/test_heartbeat.py::test_active_defer_policy_does_not_cancel_provider_task",
+        "tests/unit/l3/test_heartbeat.py::test_deferred_event_runs_as_next_primary_cycle",
+        "tests/unit/l3/react/test_react_loop.py::test_react_deferred_steer_waits_for_llm_and_skips_stale_actions",
+        "tests/unit/l3/react/test_react_loop.py::test_react_steer_during_context_build_prevents_new_provider_call",
+        "tests/unit/l3/react/test_react_loop.py::test_react_cancellation_persists_terminal_tick"
+      ]
+    },
+    {
       "id": "task_workspace_isolation",
       "description": "Concurrent coding tasks receive independent persistent Git worktrees.",
       "tests": [

@@ -316,6 +316,7 @@ class ContextDepthConfig(BaseModel):
 
 
 class EventAccelerationConfig(BaseModel):
+    active_cycle_policy: Literal["interrupt", "defer", "append"] = "interrupt"
     critical_multiplier: float = 0.0
     high_multiplier: float = 0.2
     medium_multiplier: float = 0.6

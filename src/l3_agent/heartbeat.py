@@ -64,6 +64,7 @@ class Heartbeat:
         self._active_react_task: Optional[asyncio.Task] = None
 
         self._is_interrupted: bool = False
+        self._deferred_wakeup: bool = False
 
     def answer_to_event(
         self, level: EventLevel, event_name: str, payload: Optional[Dict[str, Any]] = None
@@ -112,14 +113,37 @@ class Heartbeat:
         # ---------------------------------------------------------------------
 
         if is_awake:
-            # Inject event directly into the active cycle
-            self.react_loop.add_realtime_event(event_data)
+            active_policy = getattr(
+                self.accel_config, "active_cycle_policy", "interrupt"
+            )
 
-            log = f"[Heartbeat] Incoming event '{event_name}' ({level.name}) received during agent execution. Data appended to context."
-            agent_logger.info(log)
-
-            # If multiplier is 0.0, perform a hard interruption
+            # A zero multiplier may interrupt now, defer to a safe boundary, or
+            # merely append the event, depending on explicit runtime policy.
             if multiplier <= 0.01:
+                if active_policy == "defer":
+                    self._sleep_memory.append(event_data)
+                    if level.value >= self._wake_level:
+                        self._wake_reason = event_name
+                        self._wake_payload = payload
+                        self._wake_level = level.value
+                    self._deferred_wakeup = True
+                    self._next_tick_time = time.time()
+                    self._wake_event.set()
+                    self.react_loop.request_steer(event_data)
+                    agent_logger.warning(
+                        f"[Heartbeat] Deferred active ReAct cycle at a safe "
+                        f"boundary due to event: {event_name} ({level.name})"
+                    )
+                    return
+
+                self.react_loop.add_realtime_event(event_data)
+                agent_logger.info(
+                    f"[Heartbeat] Incoming event '{event_name}' ({level.name}) "
+                    "received during agent execution. Data appended to context."
+                )
+                if active_policy == "append":
+                    return
+
                 log = f"[Heartbeat] Interrupted current ReAct cycle due to event: {event_name} ({level.name})"
                 agent_logger.warning(log)
 
@@ -134,6 +158,14 @@ class Heartbeat:
 
                 self._active_react_task.cancel()
 
+                return
+
+            # Non-immediate events remain available to the next ReAct step.
+            self.react_loop.add_realtime_event(event_data)
+            agent_logger.info(
+                f"[Heartbeat] Incoming event '{event_name}' ({level.name}) "
+                "received during agent execution. Data appended to context."
+            )
             return
 
         # ---------------------------------------------------------------------
@@ -203,6 +235,7 @@ class Heartbeat:
                         if self._next_tick_time <= time.time():
                             self._wake_reason = "HEARTBEAT"
                             self._wake_payload = {}
+                            self._wake_level = 0
 
             if self.continuous_cycle or time.time() >= self._next_tick_time:
                 missed_events = list(self._sleep_memory)
@@ -218,6 +251,7 @@ class Heartbeat:
                             break
 
                 self._next_tick_time = time.time() + self.heartbeat_interval
+                self._deferred_wakeup = False
 
                 try:
                     self._active_react_task = asyncio.create_task(
@@ -228,8 +262,10 @@ class Heartbeat:
                         )
                     )
                     await self._active_react_task
-                    self._wake_reason = "HEARTBEAT"
-                    self._wake_payload = {}
+                    if not self._deferred_wakeup:
+                        self._wake_reason = "HEARTBEAT"
+                        self._wake_payload = {}
+                        self._wake_level = 0
                     
                 except asyncio.CancelledError:
                     if self._is_interrupted:
@@ -242,9 +278,11 @@ class Heartbeat:
                 except Exception as e:
                     log = f"[System] Critical error in ReAct reasoning cycle: {e}"
                     agent_logger.error(log)
-                    self._next_tick_time = time.time() + self.heartbeat_interval
-                    self._wake_reason = "HEARTBEAT"
-                    self._wake_payload = {}
+                    if not self._deferred_wakeup:
+                        self._next_tick_time = time.time() + self.heartbeat_interval
+                        self._wake_reason = "HEARTBEAT"
+                        self._wake_payload = {}
+                        self._wake_level = 0
                 finally:
                     self._active_react_task = None
 

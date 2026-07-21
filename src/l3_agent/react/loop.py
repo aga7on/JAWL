@@ -103,6 +103,8 @@ class ReactLoop:
         self.tot_generator = tot_generator
 
         self.current_events: List[Dict[str, Any]] = []
+        self._steer_requested: bool = False
+        self._steer_events: List[Dict[str, Any]] = []
 
     def _thinking_enabled_for_step(self) -> Optional[bool]:
         """Resolve the optional provider thinking flag for this ReAct step."""
@@ -146,6 +148,10 @@ class ReactLoop:
             # ==================================================================
 
             while self.agent_state.current_step <= self.agent_state.max_react_steps:
+                if self._steer_requested:
+                    await self._handle_cycle_steered()
+                    cycle_concluded = True
+                    break
                 self.agent_state.update_state(AgentStatus.THINKING)
 
                 # --------------------------------------------------------------
@@ -172,11 +178,21 @@ class ReactLoop:
                         if tree_md:
                             self.agent_state.current_thoughts_tree = tree_md
 
+                if self._steer_requested:
+                    await self._handle_cycle_steered()
+                    cycle_concluded = True
+                    break
+
                 # --------------------------------------------------------------
                 # Context and Prompt compilation
                 # --------------------------------------------------------------
 
                 messages = await self._prepare_messages(prompt, event_name, payload)
+
+                if self._steer_requested:
+                    await self._handle_cycle_steered()
+                    cycle_concluded = True
+                    break
 
                 # --------------------------------------------------------------
                 # LLM execution call
@@ -194,6 +210,10 @@ class ReactLoop:
                     max_retries=self.llm_max_retries,
                     max_timeout_retries=self.llm_max_timeout_retries,
                 )
+                if self._steer_requested:
+                    await self._handle_cycle_steered()
+                    cycle_concluded = True
+                    break
                 if raw_answer is None:
                     self.agent_state.update_state(AgentStatus.ERROR)
                     break
@@ -230,6 +250,11 @@ class ReactLoop:
 
                 await self._execute_actions(thoughts, actions)
 
+                if self._steer_requested:
+                    await self._handle_cycle_steered()
+                    cycle_concluded = True
+                    break
+
                 self.agent_state.next_step()
 
             if (
@@ -244,6 +269,8 @@ class ReactLoop:
         finally:
             self.agent_state.update_state(AgentStatus.IDLE)
             self.agent_state.current_trace_id = ""
+            self._steer_requested = False
+            self._steer_events.clear()
             reset_trace(trace_token)
 
     # -------------------------------------------------------------------------
@@ -431,6 +458,38 @@ class ReactLoop:
         )
         await self.event_bus.publish(Events.REACT_TICK_SAVED)
 
+    async def _handle_cycle_steered(self) -> None:
+        """Persist a safe-boundary yield before Heartbeat starts queued work."""
+
+        event_summaries = [
+            {
+                "name": event.get("name", "UNKNOWN"),
+                "level": event.get("level", "UNKNOWN"),
+                "time": event.get("time"),
+            }
+            for event in self._steer_events[-20:]
+        ]
+        message = (
+            "ReAct cycle yielded at a safe boundary for queued higher-priority "
+            "event(s). The in-flight LLM request was not cancelled."
+        )
+        self.agent_state.last_action_error = ""
+        self.agent_state.last_actions_result = message
+        await self.sql_ticks.save_tick(
+            thoughts="[Cycle steered to queued higher-priority event]",
+            actions=[],
+            results={
+                "status": "cycle_steered",
+                "message": message,
+                "queued_events": event_summaries,
+                "step": self.agent_state.current_step,
+                "max_steps": self.agent_state.max_react_steps,
+                "llm_metrics": self._llm_metrics_snapshot(),
+                "trace": current_trace(),
+            },
+        )
+        await self.event_bus.publish(Events.REACT_TICK_SAVED)
+
     def _llm_metrics_snapshot(self) -> Dict[str, Any]:
         metrics = getattr(self.executor, "last_call_metrics", {})
         return copy.deepcopy(metrics) if isinstance(metrics, dict) else {}
@@ -460,6 +519,12 @@ class ReactLoop:
         """
 
         self.current_events.append(event_data)
+
+    def request_steer(self, event_data: Dict[str, Any]) -> None:
+        """Request a non-cancelling yield at the next safe ReAct boundary."""
+
+        self._steer_events.append(event_data)
+        self._steer_requested = True
 
     def _dump_context_to_file(self, messages: List[Dict[str, Any]]) -> None:
         """
