@@ -118,7 +118,9 @@ class HostOsPlugin(BaseInterface):
         )
         coding_context = HostOSCodingContext(client)
         register_instance(coding_context)
-        register_instance(HostOSCodingLanguageServer(client, coding_context))
+        coding_lsp = HostOSCodingLanguageServer(client, coding_context)
+        container.coding_lsp = coding_lsp
+        register_instance(coding_lsp)
         register_instance(HostOSCodingDependencies(client))
 
         if config.desktop_interactions:
@@ -131,4 +133,4 @@ class HostOsPlugin(BaseInterface):
         )
 
         main_logger.info("[Host OS] Interface loaded.")
-        return [events]
+        return [events, coding_lsp]

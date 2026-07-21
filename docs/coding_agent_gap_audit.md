@@ -14,7 +14,7 @@ tasks safely, recoverably, and with measurable evidence.
 | --- | --- | --- | --- |
 | Atomic editing | Strong | SHA-checked exact-match patches, atomic writes, reversible checkpoints | No syntax-aware patch primitive |
 | Task isolation | Strong | Persistent branch/worktree per task, dirty-base guard, recovery stash | No automatic branch publication or merge conflict assistant |
-| Context navigation | Strong | Bounded map/search/range reads, syntax-aware occurrences, directed local dependency slices, and optional allowlisted LSP definition/reference resolution with zero-index fallback | LSP uses safe one-shot processes rather than a cached incremental workspace session |
+| Context navigation | Strong | Bounded map/search/range reads, syntax-aware occurrences, directed local dependency slices, and allowlisted lifecycle-managed incremental LSP sessions with document sync, process/document LRUs, explicit reset, and zero-index fallback | Workspace-wide out-of-band edits rely on server file watching or explicit session reset |
 | Dynamic context | Good | Hard per-turn budget, task/event-routed skill namespaces, compact omitted-namespace index, exact signatures through `SkillCatalog`, newest-tick and current-trigger retention | Needs organic QWB latency/token validation and learned relevance ranking |
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
@@ -43,8 +43,8 @@ tasks safely, recoverably, and with measurable evidence.
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation
    still requires the candidate CLI's sandbox or an external container.
-5. If live traces show repeated navigation startup cost, add lifecycle-managed
-   incremental LSP sessions without weakening process and output bounds.
+5. Add syntax-aware patch/hunk grouping if live traces show that textual checked
+   patches, rather than navigation or provider latency, dominate repair loops.
 
 ## Current reference architecture comparison
 

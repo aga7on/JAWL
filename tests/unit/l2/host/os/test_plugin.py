@@ -35,8 +35,12 @@ def test_host_os_plugin_setup(tmp_path):
     assert "os" in container.l0_states
 
     # 2. Компоненты жизненного цикла (Events) должны быть возвращены
-    assert len(lifecycle_components) == 1
+    assert len(lifecycle_components) == 2
     assert lifecycle_components[0].__class__.__name__ == "HostOSEvents"
+    assert lifecycle_components[1].__class__.__name__ == (
+        "HostOSCodingLanguageServer"
+    )
+    assert container.coding_lsp is lifecycle_components[1]
 
     # 3. Контекст должен быть зарегистрирован в реестре ядра
     container.context_registry.register_provider.assert_called_once()

@@ -64,3 +64,4 @@ class SystemContainer:
         self.coding_workspaces: Optional[Any] = None
         self.coding_plans: Optional[Any] = None
         self.coding_approvals: Optional[Any] = None
+        self.coding_lsp: Optional[Any] = None

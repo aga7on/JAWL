@@ -24,6 +24,18 @@
       ]
     },
     {
+      "id": "lifecycle_managed_incremental_lsp",
+      "description": "Project-scoped LSP processes are reused, document-synchronized, LRU-bounded, observable without payloads, explicitly resettable, and closed by system lifecycle.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_reuses_session_syncs_changes_and_stops_process",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_evicts_idle_lru_session_at_process_bound",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_timeout_discards_session_and_preserves_fallback",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_lifecycle_reaper_closes_truly_idle_session",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_bounds_open_documents_with_did_close",
+        "tests/unit/l2/host/os/test_plugin.py::test_host_os_plugin_setup"
+      ]
+    },
+    {
       "id": "adaptive_dynamic_context",
       "description": "Repeated prompts stay bounded while preserving the current trigger, newest evidence, and exact on-demand skill discovery.",
       "tests": [

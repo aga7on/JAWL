@@ -99,11 +99,19 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Result count, source-file size, file count, match count, serialized output,
   and fallback diagnostics are bounded. Shared cached parsers are serialized
   because concurrent tree-sitter parsing is not assumed to be thread-safe.
-- `resolve_code_symbol` optionally starts an installed allowlisted language
+- `resolve_code_symbol` optionally retains an installed allowlisted language
   server over bounded stdio JSON-RPC for project-resolved definitions or
-  references. It auto-discovers a nearby project manifest, filters locations to
-  that validated root, handles UTF-16 LSP columns, bounds messages/results/time,
-  and terminates the one-shot server after each request.
+  references. Sessions are keyed by validated project root and exact command,
+  serialize requests, synchronize changed open documents, and restart once after
+  a broken retained connection. It auto-discovers a nearby project manifest,
+  filters locations to that validated root, handles UTF-16 LSP columns, and
+  bounds messages/results/request time.
+- Retained LSP processes and their open-document sets are independently capped
+  by idle LRUs (`didClose` is emitted for document eviction), expose payload-free
+  status, support an explicit safe reset after broad out-of-band edits, and
+  participate in system startup/shutdown. Eviction, timeout, cancellation, and
+  shutdown close the protocol and terminate the process tree; syntax fallback
+  remains available.
 - Python/JavaScript/TypeScript/Rust/Go/C/C++ server commands are discovered from
   a fixed executable allowlist; the model cannot supply a process command. When
   no server is installed, initialization fails, or no in-project result exists,

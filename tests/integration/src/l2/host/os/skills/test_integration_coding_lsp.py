@@ -12,6 +12,13 @@ FAKE_LSP_SOURCE = r'''import json
 import sys
 
 
+def record(event):
+    if len(sys.argv) < 3:
+        return
+    with open(sys.argv[2], "a", encoding="utf-8") as stream:
+        stream.write(event + "\n")
+
+
 def receive():
     headers = {}
     while True:
@@ -30,12 +37,16 @@ def send(payload):
     sys.stdout.buffer.flush()
 
 
+record("process_start")
 while True:
     message = receive()
     method = message.get("method")
+    record(method or "response")
     if method == "initialize":
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {}}})
     elif method == "textDocument/definition":
+        if len(sys.argv) > 3 and sys.argv[3] == "hang":
+            continue
         send({"jsonrpc": "2.0", "id": message["id"], "result": [{
             "uri": sys.argv[1],
             "range": {
@@ -96,6 +107,7 @@ async def test_lsp_resolves_project_definition_and_normalizes_utf16_column(
 
     assert result.is_success is True
     assert resolver._python_column("😀target", 2) == 2
+    assert resolver._lsp_character("😀target", 2) == 2
     assert payload["backend"] == "lsp"
     assert payload["lsp_available"] is True
     assert payload["server"] == "fake-language-server"
@@ -205,16 +217,326 @@ async def test_lsp_real_stdio_process_round_trip(os_client, tmp_path):
         },
     )
 
-    result = await resolver.resolve_code_symbol(
-        "sandbox/stdio_repo/main.py",
+    try:
+        result = await resolver.resolve_code_symbol(
+            "sandbox/stdio_repo/main.py",
+            line=2,
+            column=2,
+            project_root="sandbox/stdio_repo",
+            timeout_sec=10,
+        )
+        payload = json.loads(result.message)
+
+        assert result.is_success is True
+        assert payload["backend"] == "lsp"
+        assert payload["results"][0]["path"] == "lib.py"
+        assert payload["results"][0]["preview"] == "def target():"
+        assert payload["session_mode"] == "incremental"
+        assert payload["session_reused"] is False
+    finally:
+        await resolver.stop()
+
+
+@pytest.mark.asyncio
+async def test_lsp_reuses_session_syncs_changes_and_stops_process(os_client, tmp_path):
+    repository = os_client.sandbox_dir / "incremental_repo"
+    repository.mkdir()
+    source_file = repository / "main.py"
+    definition_file = repository / "lib.py"
+    source_file.write_text("from lib import target\ntarget()\n", encoding="utf-8")
+    definition_file.write_text("def target():\n    return 1\n", encoding="utf-8")
+    server = tmp_path / "fake_incremental_lsp.py"
+    event_log = tmp_path / "lsp_events.log"
+    server.write_text(FAKE_LSP_SOURCE, encoding="utf-8")
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        server_commands={
+            ".py": (
+                sys.executable,
+                str(server),
+                definition_file.as_uri(),
+                str(event_log),
+            )
+        },
+    )
+
+    first = await resolver.resolve_code_symbol(
+        "sandbox/incremental_repo/main.py",
         line=2,
         column=2,
-        project_root="sandbox/stdio_repo",
+        project_root="sandbox/incremental_repo",
         timeout_sec=10,
     )
-    payload = json.loads(result.message)
+    second = await resolver.resolve_code_symbol(
+        "sandbox/incremental_repo/main.py",
+        line=2,
+        column=2,
+        project_root="sandbox/incremental_repo",
+        timeout_sec=10,
+    )
+    source_file.write_text(
+        "from lib import target\ntarget()\n# changed\n", encoding="utf-8"
+    )
+    third = await resolver.resolve_code_symbol(
+        "sandbox/incremental_repo/main.py",
+        line=2,
+        column=2,
+        project_root="sandbox/incremental_repo",
+        timeout_sec=10,
+    )
+    fourth = await resolver.resolve_code_symbol(
+        "sandbox/incremental_repo/main.py",
+        line=2,
+        column=2,
+        project_root="sandbox/incremental_repo",
+        timeout_sec=10,
+        restart_session=True,
+    )
 
-    assert result.is_success is True
-    assert payload["backend"] == "lsp"
-    assert payload["results"][0]["path"] == "lib.py"
-    assert payload["results"][0]["preview"] == "def target():"
+    payloads = [
+        json.loads(item.message) for item in (first, second, third, fourth)
+    ]
+    assert all(item.is_success for item in (first, second, third, fourth))
+    assert [item["session_reused"] for item in payloads] == [
+        False,
+        True,
+        True,
+        False,
+    ]
+    assert [item["document_sync"] for item in payloads] == [
+        "opened",
+        "unchanged",
+        "changed",
+        "opened",
+    ]
+    assert payloads[-1]["session_reset_requested"] is True
+    status = json.loads((await resolver.get_lsp_session_status()).message)
+    assert status["session_count"] == 1
+    assert status["sessions"][0]["open_documents"] == 1
+    events = event_log.read_text(encoding="utf-8").splitlines()
+    assert events.count("process_start") == 2
+    assert events.count("initialize") == 2
+    assert events.count("textDocument/didOpen") == 2
+    assert events.count("textDocument/didChange") == 1
+    assert events.count("textDocument/definition") == 4
+    assert events.count("shutdown") == 1
+    assert events.count("exit") == 1
+
+    await resolver.stop()
+    stopped = json.loads((await resolver.get_lsp_session_status()).message)
+    assert stopped["accepting_queries"] is False
+    assert stopped["session_count"] == 0
+    events = event_log.read_text(encoding="utf-8").splitlines()
+    assert events[-2:] == ["shutdown", "exit"]
+
+
+@pytest.mark.asyncio
+async def test_lsp_evicts_idle_lru_session_at_process_bound(os_client, tmp_path):
+    first_root = os_client.sandbox_dir / "lru_one"
+    second_root = os_client.sandbox_dir / "lru_two"
+    first_root.mkdir()
+    second_root.mkdir()
+    first_source = first_root / "main.py"
+    second_source = second_root / "main.py"
+    definition_file = first_root / "lib.py"
+    first_source.write_text("from lib import target\ntarget()\n", encoding="utf-8")
+    second_source.write_text(
+        "def target():\n    return 2\n\ntarget()\n", encoding="utf-8"
+    )
+    definition_file.write_text("def target():\n    return 1\n", encoding="utf-8")
+    server = tmp_path / "fake_bounded_lsp.py"
+    event_log = tmp_path / "bounded_lsp_events.log"
+    server.write_text(FAKE_LSP_SOURCE, encoding="utf-8")
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        server_commands={
+            ".py": (
+                sys.executable,
+                str(server),
+                definition_file.as_uri(),
+                str(event_log),
+            )
+        },
+        max_sessions=1,
+    )
+
+    try:
+        first = await resolver.resolve_code_symbol(
+            "sandbox/lru_one/main.py",
+            line=2,
+            column=2,
+            project_root="sandbox/lru_one",
+            timeout_sec=10,
+        )
+        second = await resolver.resolve_code_symbol(
+            "sandbox/lru_two/main.py",
+            line=4,
+            column=2,
+            project_root="sandbox/lru_two",
+            timeout_sec=10,
+        )
+        assert first.is_success is True
+        assert second.is_success is True
+        status = json.loads((await resolver.get_lsp_session_status()).message)
+        assert status["session_count"] == 1
+        assert status["max_sessions"] == 1
+        assert status["sessions"][0]["root"] == "sandbox/lru_two"
+        events = event_log.read_text(encoding="utf-8").splitlines()
+        assert events.count("process_start") == 2
+        assert events.count("shutdown") == 1
+        assert events.count("exit") == 1
+    finally:
+        await resolver.stop()
+
+
+@pytest.mark.asyncio
+async def test_lsp_timeout_discards_session_and_preserves_fallback(os_client, tmp_path):
+    repository = os_client.sandbox_dir / "timeout_repo"
+    repository.mkdir()
+    source_file = repository / "main.py"
+    source_file.write_text(
+        "def target():\n    return 1\n\ntarget()\n", encoding="utf-8"
+    )
+    server = tmp_path / "fake_hanging_lsp.py"
+    event_log = tmp_path / "hanging_lsp_events.log"
+    server.write_text(FAKE_LSP_SOURCE, encoding="utf-8")
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        server_commands={
+            ".py": (
+                sys.executable,
+                str(server),
+                source_file.as_uri(),
+                str(event_log),
+                "hang",
+            )
+        },
+        idle_timeout_sec=1,
+    )
+
+    await resolver.start()
+    try:
+        started = asyncio.get_running_loop().time()
+        result = await resolver.resolve_code_symbol(
+            "sandbox/timeout_repo/main.py",
+            line=4,
+            column=2,
+            project_root="sandbox/timeout_repo",
+            timeout_sec=2,
+        )
+        elapsed = asyncio.get_running_loop().time() - started
+        payload = json.loads(result.message)
+        assert result.is_success is True
+        assert elapsed >= 1.8
+        assert payload["backend"] == "syntax_fallback"
+        assert "timed out after 2 seconds" in payload["fallback_reason"]
+        status = json.loads((await resolver.get_lsp_session_status()).message)
+        assert status["session_count"] == 0
+        events = event_log.read_text(encoding="utf-8").splitlines()
+        assert events[-2:] == ["shutdown", "exit"]
+    finally:
+        await resolver.stop()
+
+
+@pytest.mark.asyncio
+async def test_lsp_lifecycle_reaper_closes_truly_idle_session(os_client, tmp_path):
+    repository = os_client.sandbox_dir / "idle_repo"
+    repository.mkdir()
+    source_file = repository / "main.py"
+    source_file.write_text("def target():\n    return 1\ntarget()\n", encoding="utf-8")
+    server = tmp_path / "fake_idle_lsp.py"
+    event_log = tmp_path / "idle_lsp_events.log"
+    server.write_text(FAKE_LSP_SOURCE, encoding="utf-8")
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        server_commands={
+            ".py": (
+                sys.executable,
+                str(server),
+                source_file.as_uri(),
+                str(event_log),
+            )
+        },
+        idle_timeout_sec=1,
+    )
+
+    await resolver.start()
+    try:
+        result = await resolver.resolve_code_symbol(
+            "sandbox/idle_repo/main.py",
+            line=3,
+            column=2,
+            project_root="sandbox/idle_repo",
+            timeout_sec=10,
+        )
+        assert result.is_success is True
+        assert json.loads((await resolver.get_lsp_session_status()).message)[
+            "session_count"
+        ] == 1
+        await asyncio.sleep(1.8)
+        status = json.loads((await resolver.get_lsp_session_status()).message)
+        assert status["session_count"] == 0
+        events = event_log.read_text(encoding="utf-8").splitlines()
+        assert events[-2:] == ["shutdown", "exit"]
+    finally:
+        await resolver.stop()
+
+
+@pytest.mark.asyncio
+async def test_lsp_bounds_open_documents_with_did_close(os_client, tmp_path):
+    repository = os_client.sandbox_dir / "document_lru_repo"
+    repository.mkdir()
+    first_source = repository / "first.py"
+    second_source = repository / "second.py"
+    definition_file = repository / "lib.py"
+    first_source.write_text("from lib import target\ntarget()\n", encoding="utf-8")
+    second_source.write_text("from lib import target\ntarget()\n", encoding="utf-8")
+    definition_file.write_text("def target():\n    return 1\n", encoding="utf-8")
+    server = tmp_path / "fake_document_lru_lsp.py"
+    event_log = tmp_path / "document_lru_events.log"
+    server.write_text(FAKE_LSP_SOURCE, encoding="utf-8")
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        server_commands={
+            ".py": (
+                sys.executable,
+                str(server),
+                definition_file.as_uri(),
+                str(event_log),
+            )
+        },
+        max_open_documents=1,
+    )
+
+    try:
+        first = await resolver.resolve_code_symbol(
+            "sandbox/document_lru_repo/first.py",
+            line=2,
+            column=2,
+            project_root="sandbox/document_lru_repo",
+            timeout_sec=10,
+        )
+        second = await resolver.resolve_code_symbol(
+            "sandbox/document_lru_repo/second.py",
+            line=2,
+            column=2,
+            project_root="sandbox/document_lru_repo",
+            timeout_sec=10,
+        )
+        assert first.is_success is True
+        assert second.is_success is True
+        status = json.loads((await resolver.get_lsp_session_status()).message)
+        assert status["session_count"] == 1
+        assert status["max_open_documents_per_session"] == 1
+        assert status["sessions"][0]["open_documents"] == 1
+        events = event_log.read_text(encoding="utf-8").splitlines()
+        assert events.count("process_start") == 1
+        assert events.count("textDocument/didOpen") == 2
+        assert events.count("textDocument/didClose") == 1
+    finally:
+        await resolver.stop()

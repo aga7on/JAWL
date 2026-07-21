@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import json
 import os
 import re
 import shutil
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 from urllib.parse import unquote, urlparse
+
+import psutil
 
 from src.l2_interfaces.host.os.client import HostOSAccessLevel, HostOSClient
 from src.l2_interfaces.host.os.decorators import require_access
@@ -17,6 +23,26 @@ from src.l2_interfaces.host.os.skills.coding_context import HostOSCodingContext
 from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
 from src.utils.logger import main_logger
+
+
+@dataclass
+class _LSPSession:
+    key: Tuple[str, Tuple[str, ...]]
+    command: Tuple[str, ...]
+    root: Path
+    process: asyncio.subprocess.Process
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+    server: str
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    documents: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    next_request_id: int = 2
+    last_used: float = field(default_factory=time.monotonic)
+    leases: int = 0
+    idle: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        self.idle.set()
 
 
 class HostOSCodingLanguageServer:
@@ -63,13 +89,82 @@ class HostOSCodingLanguageServer:
         host_os_client: HostOSClient,
         fallback: Optional[HostOSCodingContext] = None,
         server_commands: Optional[Dict[str, Sequence[str]]] = None,
+        max_sessions: int = 4,
+        idle_timeout_sec: float = 300.0,
+        max_open_documents: int = 128,
     ) -> None:
+        if max_sessions < 1 or max_sessions > 8:
+            raise ValueError("max_sessions must be between 1 and 8.")
+        if idle_timeout_sec < 1 or idle_timeout_sec > 3600:
+            raise ValueError("idle_timeout_sec must be between 1 and 3600.")
+        if max_open_documents < 1 or max_open_documents > 512:
+            raise ValueError("max_open_documents must be between 1 and 512.")
         self.host_os = host_os_client
         self.fallback = fallback or HostOSCodingContext(host_os_client)
         self._server_commands = {
             suffix.lower(): tuple(command)
             for suffix, command in (server_commands or {}).items()
         }
+        self._max_sessions = max_sessions
+        self._idle_timeout_sec = idle_timeout_sec
+        self._max_open_documents = max_open_documents
+        self._sessions: Dict[Tuple[str, Tuple[str, ...]], _LSPSession] = {}
+        self._sessions_lock = asyncio.Lock()
+        self._accepting_queries = True
+        self._reaper_task: Optional[asyncio.Task[None]] = None
+
+    async def start(self) -> None:
+        """Enable lazy session creation when managed by the system lifecycle."""
+
+        self._accepting_queries = True
+        if self._reaper_task is None or self._reaper_task.done():
+            self._reaper_task = asyncio.create_task(
+                self._reap_idle_sessions(), name="jawl-lsp-session-reaper"
+            )
+
+    async def stop(self) -> None:
+        """Close every retained server before shared system resources disappear."""
+
+        reaper = self._reaper_task
+        self._reaper_task = None
+        if reaper is not None:
+            reaper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reaper
+        async with self._sessions_lock:
+            self._accepting_queries = False
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        if sessions:
+            await asyncio.gather(
+                *(self._drain_and_close_session(session) for session in sessions),
+                return_exceptions=True,
+            )
+
+    async def _reap_idle_sessions(self) -> None:
+        interval = min(30.0, max(0.5, self._idle_timeout_sec / 2))
+        while True:
+            await asyncio.sleep(interval)
+            now = time.monotonic()
+            async with self._sessions_lock:
+                stale = [
+                    session
+                    for session in self._sessions.values()
+                    if session.leases == 0
+                    and not session.lock.locked()
+                    and (
+                        session.process.returncode is not None
+                        or now - session.last_used > self._idle_timeout_sec
+                        or not session.root.is_dir()
+                    )
+                ]
+                for session in stale:
+                    self._sessions.pop(session.key, None)
+            if stale:
+                await asyncio.gather(
+                    *(self._close_session(session) for session in stale),
+                    return_exceptions=True,
+                )
 
     def _server_command(self, suffix: str) -> Optional[Tuple[str, ...]]:
         suffix = suffix.lower()
@@ -144,16 +239,95 @@ class HostOSCodingLanguageServer:
             return {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
         return {}
 
-    async def _query_server(
+    @staticmethod
+    def _session_key(
+        command: Tuple[str, ...], root: Path
+    ) -> Tuple[str, Tuple[str, ...]]:
+        return os.path.normcase(str(root.resolve())), command
+
+    @staticmethod
+    def _kill_process_tree_sync(pid: int) -> None:
+        try:
+            parent = psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            return
+        processes = parent.children(recursive=True)
+        processes.append(parent)
+        for process in processes:
+            try:
+                process.terminate()
+            except psutil.NoSuchProcess:
+                pass
+        _, alive = psutil.wait_procs(processes, timeout=1)
+        for process in alive:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+        psutil.wait_procs(alive, timeout=1)
+
+    async def _close_session(self, session: _LSPSession) -> None:
+        async with session.lock:
+            process = session.process
+            if process.returncode is not None:
+                return
+            graceful = False
+            try:
+                request_id = session.next_request_id
+                session.next_request_id += 1
+                await self._send(
+                    session.writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "shutdown",
+                        "params": None,
+                    },
+                )
+                await asyncio.wait_for(
+                    self._receive_response(
+                        session.reader, request_id, session.writer
+                    ),
+                    timeout=1,
+                )
+                await self._send(
+                    session.writer,
+                    {"jsonrpc": "2.0", "method": "exit", "params": None},
+                )
+                await asyncio.wait_for(process.wait(), timeout=2)
+                graceful = True
+            except (Exception, asyncio.CancelledError):
+                graceful = False
+            if not graceful and process.returncode is None:
+                await asyncio.to_thread(self._kill_process_tree_sync, process.pid)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    process.kill()
+                    await process.wait()
+
+    async def _drain_and_close_session(self, session: _LSPSession) -> None:
+        try:
+            await asyncio.wait_for(session.idle.wait(), timeout=2)
+        except asyncio.TimeoutError:
+            if session.process.returncode is None:
+                main_logger.warning(
+                    f"[Host OS] Forcing busy LSP shutdown for {session.server}."
+                )
+                await asyncio.to_thread(
+                    self._kill_process_tree_sync, session.process.pid
+                )
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(session.process.wait(), timeout=2)
+            return
+        await self._close_session(session)
+
+    async def _create_session(
         self,
         command: Tuple[str, ...],
         root: Path,
-        source_file: Path,
-        source: str,
-        line: int,
-        column: int,
-        operation: str,
-    ) -> Tuple[Any, str]:
+        key: Tuple[str, Tuple[str, ...]],
+    ) -> _LSPSession:
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=root,
@@ -164,9 +338,18 @@ class HostOSCodingLanguageServer:
         )
         assert process.stdin is not None
         assert process.stdout is not None
+        session = _LSPSession(
+            key=key,
+            command=command,
+            root=root,
+            process=process,
+            reader=process.stdout,
+            writer=process.stdin,
+            server=Path(command[0]).name,
+        )
         try:
             await self._send(
-                process.stdin,
+                session.writer,
                 {
                     "jsonrpc": "2.0",
                     "id": 1,
@@ -182,77 +365,241 @@ class HostOSCodingLanguageServer:
                 },
             )
             initialized = await self._receive_response(
-                process.stdout, 1, process.stdin
+                session.reader, 1, session.writer
             )
             if "error" in initialized:
                 raise RuntimeError(f"initialize failed: {initialized['error']}")
             await self._send(
-                process.stdin,
+                session.writer,
                 {"jsonrpc": "2.0", "method": "initialized", "params": {}},
             )
-            await self._send(
-                process.stdin,
-                {
-                    "jsonrpc": "2.0",
-                    "method": "textDocument/didOpen",
-                    "params": {
-                        "textDocument": {
-                            "uri": source_file.as_uri(),
-                            "languageId": self._LANGUAGE_IDS[
-                                source_file.suffix.lower()
-                            ],
-                            "version": 1,
-                            "text": source,
-                        }
+            return session
+        except BaseException:
+            await asyncio.shield(self._close_session(session))
+            raise
+
+    async def _get_session(
+        self, command: Tuple[str, ...], root: Path
+    ) -> Tuple[_LSPSession, bool]:
+        key = self._session_key(command, root)
+        async with self._sessions_lock:
+            if not self._accepting_queries:
+                raise RuntimeError("LSP session manager is stopping")
+            now = time.monotonic()
+            stale = [
+                session
+                for session in self._sessions.values()
+                if session.leases == 0
+                and not session.lock.locked()
+                and (
+                    session.process.returncode is not None
+                    or now - session.last_used > self._idle_timeout_sec
+                    or not session.root.is_dir()
+                )
+            ]
+            for session in stale:
+                self._sessions.pop(session.key, None)
+                await self._close_session(session)
+
+            existing = self._sessions.get(key)
+            if existing is not None:
+                existing.last_used = now
+                existing.leases += 1
+                existing.idle.clear()
+                return existing, True
+
+            if len(self._sessions) >= self._max_sessions:
+                candidates = [
+                    session
+                    for session in self._sessions.values()
+                    if session.leases == 0 and not session.lock.locked()
+                ]
+                if not candidates:
+                    raise RuntimeError("All bounded LSP sessions are busy")
+                evicted = min(candidates, key=lambda item: item.last_used)
+                self._sessions.pop(evicted.key, None)
+                await self._close_session(evicted)
+
+            session = await self._create_session(command, root, key)
+            self._sessions[key] = session
+            session.leases = 1
+            session.idle.clear()
+            return session, False
+
+    async def _release_session(self, session: _LSPSession) -> None:
+        async with self._sessions_lock:
+            session.leases = max(0, session.leases - 1)
+            if session.leases == 0:
+                session.last_used = time.monotonic()
+                session.idle.set()
+
+    async def _discard_session(self, session: _LSPSession) -> None:
+        async with self._sessions_lock:
+            if self._sessions.get(session.key) is session:
+                self._sessions.pop(session.key, None)
+        await self._drain_and_close_session(session)
+
+    async def _reset_session(
+        self, command: Tuple[str, ...], root: Path
+    ) -> None:
+        key = self._session_key(command, root)
+        async with self._sessions_lock:
+            session = self._sessions.get(key)
+            if session is not None and session.leases:
+                raise RuntimeError("Cannot reset a busy LSP session")
+            session = self._sessions.pop(key, None)
+        if session is not None:
+            await self._close_session(session)
+
+    async def _query_session(
+        self,
+        session: _LSPSession,
+        source_file: Path,
+        source: str,
+        line: int,
+        column: int,
+        operation: str,
+    ) -> Tuple[Any, str]:
+        async with session.lock:
+            if session.process.returncode is not None:
+                raise RuntimeError("retained LSP process exited unexpectedly")
+            document_key = os.path.normcase(str(source_file.resolve()))
+            digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+            document = session.documents.get(document_key)
+            if document is None:
+                if len(session.documents) >= self._max_open_documents:
+                    evicted_key, evicted = min(
+                        session.documents.items(),
+                        key=lambda item: float(item[1]["last_used"]),
+                    )
+                    await self._send(
+                        session.writer,
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/didClose",
+                            "params": {
+                                "textDocument": {"uri": evicted["uri"]}
+                            },
+                        },
+                    )
+                    session.documents.pop(evicted_key, None)
+                version = 1
+                sync_state = "opened"
+                await self._send(
+                    session.writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didOpen",
+                        "params": {
+                            "textDocument": {
+                                "uri": source_file.as_uri(),
+                                "languageId": self._LANGUAGE_IDS[
+                                    source_file.suffix.lower()
+                                ],
+                                "version": version,
+                                "text": source,
+                            }
+                        },
                     },
-                },
-            )
+                )
+            elif document["digest"] != digest:
+                version = int(document["version"]) + 1
+                sync_state = "changed"
+                await self._send(
+                    session.writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didChange",
+                        "params": {
+                            "textDocument": {
+                                "uri": source_file.as_uri(),
+                                "version": version,
+                            },
+                            "contentChanges": [{"text": source}],
+                        },
+                    },
+                )
+            else:
+                version = int(document["version"])
+                sync_state = "unchanged"
+            session.documents[document_key] = {
+                "digest": digest,
+                "version": version,
+                "uri": source_file.as_uri(),
+                "last_used": time.monotonic(),
+            }
+
             method = (
                 "textDocument/definition"
                 if operation == "definition"
                 else "textDocument/references"
             )
+            source_lines = source.splitlines()
+            lsp_character = self._lsp_character(source_lines[line - 1], column)
             params: Dict[str, Any] = {
                 "textDocument": {"uri": source_file.as_uri()},
-                "position": {"line": line - 1, "character": column - 1},
+                "position": {"line": line - 1, "character": lsp_character},
             }
             if operation == "references":
                 params["context"] = {"includeDeclaration": True}
+            request_id = session.next_request_id
+            session.next_request_id += 1
             await self._send(
-                process.stdin,
-                {"jsonrpc": "2.0", "id": 2, "method": method, "params": params},
+                session.writer,
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": method,
+                    "params": params,
+                },
             )
-            response = await self._receive_response(process.stdout, 2, process.stdin)
+            response = await self._receive_response(
+                session.reader, request_id, session.writer
+            )
+            session.last_used = time.monotonic()
             if "error" in response:
                 raise RuntimeError(f"{method} failed: {response['error']}")
-            return response.get("result"), Path(command[0]).name
-        finally:
-            if process.returncode is None:
-                try:
-                    await self._send(
-                        process.stdin,
-                        {
-                            "jsonrpc": "2.0",
-                            "id": 99,
-                            "method": "shutdown",
-                            "params": None,
-                        },
-                    )
-                    await asyncio.wait_for(
-                        self._receive_response(process.stdout, 99, process.stdin),
-                        timeout=1,
-                    )
-                    await self._send(
-                        process.stdin,
-                        {"jsonrpc": "2.0", "method": "exit", "params": None},
-                    )
-                except Exception:
-                    process.terminate()
+            return response.get("result"), sync_state
+
+    async def _query_server(
+        self,
+        command: Tuple[str, ...],
+        root: Path,
+        source_file: Path,
+        source: str,
+        line: int,
+        column: int,
+        operation: str,
+        restart_session: bool = False,
+    ) -> Tuple[Any, str, Dict[str, Any]]:
+        if restart_session:
+            await self._reset_session(command, root)
+        for attempt in range(2):
+            session, reused = await self._get_session(command, root)
             try:
-                await asyncio.wait_for(process.wait(), timeout=2)
-            except asyncio.TimeoutError:
-                process.kill()
-                await process.wait()
+                raw, sync_state = await self._query_session(
+                    session, source_file, source, line, column, operation
+                )
+                result = raw, session.server, {
+                    "session_mode": "incremental",
+                    "session_reused": reused,
+                    "session_restarted": attempt > 0,
+                    "session_reset_requested": restart_session,
+                    "document_sync": sync_state,
+                }
+            except asyncio.CancelledError:
+                await self._release_session(session)
+                await asyncio.shield(self._discard_session(session))
+                raise
+            except Exception:
+                await self._release_session(session)
+                await self._discard_session(session)
+                if attempt > 0 or not reused:
+                    raise
+            else:
+                await self._release_session(session)
+                return result
+        raise RuntimeError("LSP query retry exhausted")
 
     @staticmethod
     def _path_from_uri(uri: str) -> Optional[Path]:
@@ -272,6 +619,13 @@ class HostOSCodingLanguageServer:
                 return index + 1
             units += 2 if ord(character) > 0xFFFF else 1
         return len(line) + 1
+
+    @staticmethod
+    def _lsp_character(line: str, python_column: int) -> int:
+        """Convert a one-based Python string column to a zero-based UTF-16 unit."""
+
+        prefix = line[: max(0, python_column - 1)]
+        return len(prefix.encode("utf-16-le")) // 2
 
     def _normalize_locations(
         self, raw: Any, root: Path, max_results: int, max_output_chars: int
@@ -392,6 +746,40 @@ class HostOSCodingLanguageServer:
         return source_file.parent
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER])
+    @require_access(HostOSAccessLevel.OBSERVER)
+    async def get_lsp_session_status(self) -> SkillResult:
+        """Return bounded process-free metadata for retained navigation sessions."""
+
+        async with self._sessions_lock:
+            now = time.monotonic()
+            sessions = [
+                {
+                    "root": (
+                        session.root.relative_to(self.host_os.framework_dir).as_posix()
+                        if session.root.is_relative_to(self.host_os.framework_dir)
+                        else session.root.name
+                    ),
+                    "server": session.server,
+                    "alive": session.process.returncode is None,
+                    "busy": bool(session.leases) or session.lock.locked(),
+                    "open_documents": len(session.documents),
+                    "idle_seconds": round(max(0.0, now - session.last_used), 3),
+                }
+                for session in sorted(
+                    self._sessions.values(), key=lambda item: str(item.root)
+                )
+            ]
+            payload = {
+                "accepting_queries": self._accepting_queries,
+                "session_count": len(sessions),
+                "max_sessions": self._max_sessions,
+                "idle_timeout_sec": self._idle_timeout_sec,
+                "max_open_documents_per_session": self._max_open_documents,
+                "sessions": sessions,
+            }
+        return SkillResult.ok(json.dumps(payload, ensure_ascii=False))
+
+    @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER])
     @require_access(HostOSAccessLevel.SANDBOX)
     async def resolve_code_symbol(
         self,
@@ -402,12 +790,15 @@ class HostOSCodingLanguageServer:
         project_root: Optional[str] = None,
         max_results: int = 100,
         timeout_sec: int = 30,
+        restart_session: bool = False,
     ) -> SkillResult:
         """Resolve a symbol semantically with LSP, retaining syntax fallback.
 
         Line and column are one-based. Installed servers are auto-detected from a
         fixed allowlist. Server failures, unsupported languages, and empty LSP
-        results fall back to bounded syntax-aware occurrence navigation.
+        results fall back to bounded syntax-aware occurrence navigation. Set
+        ``restart_session=true`` after broad out-of-band project mutations when
+        a server's own filesystem watcher cannot be trusted.
         """
 
         if line < 1 or column < 1:
@@ -449,7 +840,7 @@ class HostOSCodingLanguageServer:
                     f"no allowlisted LSP server installed for {source_file.suffix}",
                 )
             try:
-                raw, server = await asyncio.wait_for(
+                query_result = await asyncio.wait_for(
                     self._query_server(
                         command,
                         root,
@@ -458,8 +849,15 @@ class HostOSCodingLanguageServer:
                         line,
                         column,
                         operation,
+                        restart_session=restart_session,
                     ),
                     timeout=timeout_sec,
+                )
+                raw, server = query_result[:2]
+                session_metadata = (
+                    query_result[2]
+                    if len(query_result) > 2 and isinstance(query_result[2], dict)
+                    else {}
                 )
                 normalized = self._normalize_locations(
                     raw,
@@ -474,6 +872,7 @@ class HostOSCodingLanguageServer:
                         server=server,
                         operation=operation,
                         symbol=symbol,
+                        **session_metadata,
                     )
                     main_logger.info(
                         f"[Host OS] LSP {operation} resolved {symbol}: "
