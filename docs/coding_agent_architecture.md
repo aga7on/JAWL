@@ -90,3 +90,16 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   and symbols across common programming languages without requiring prior indexing.
 - Lightweight maps complement the persistent Code Graph: use the map for immediate
   navigation and the graph for semantic search and dependency history.
+
+## Diff review contract
+
+- `get_coding_workspace_diff` returns a paged task-wide or single-file unified
+  diff, the exact workspace fingerprint, and tracked/untracked file metadata.
+- Diff text is bounded and common credential forms are redacted before it enters
+  model context. Untracked previews are read with a hard byte bound, including
+  when an accidentally large artifact appears in the worktree.
+- A truncated task-wide diff or file-list page is only a change index. The agent
+  must page through every affected file before verification; staged and unstaged
+  views remain separately addressable.
+- The normal coding loop is map -> search -> numbered range -> checked patch ->
+  exact per-file diff -> deterministic verification -> verified-state commit.

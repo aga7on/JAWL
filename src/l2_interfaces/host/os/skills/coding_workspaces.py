@@ -11,13 +11,13 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.l2_interfaces.host.os.client import HostOSAccessLevel, HostOSClient
 from src.l2_interfaces.host.os.decorators import require_access
 from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
-from src.utils._tools import truncate_text
+from src.utils._tools import redact_sensitive_text, truncate_text
 from src.utils.logger import main_logger
 
 
@@ -414,6 +414,228 @@ class HostOSCodingWorkspaces:
             return SkillResult.fail(str(exc))
         except Exception as exc:
             return SkillResult.fail(f"Error inspecting coding workspace: {exc}")
+
+    @staticmethod
+    def _untracked_diff_preview(
+        path: Path, relative_path: str, max_bytes: int
+    ) -> str:
+        try:
+            total_bytes = path.stat().st_size
+            with path.open("rb") as stream:
+                content = stream.read(max_bytes + 1)
+        except OSError as exc:
+            return f"diff --jawl-untracked {relative_path}\n[read error: {exc}]\n"
+        preview_truncated = len(content) > max_bytes
+        content = content[:max_bytes]
+        header = (
+            f"diff --jawl-untracked a/{relative_path} b/{relative_path}\n"
+            "new file mode (untracked)\n"
+            "--- /dev/null\n"
+            f"+++ b/{relative_path}\n"
+        )
+        if b"\x00" in content[:4096]:
+            return header + f"Binary file ({total_bytes} bytes)\n"
+        text = content.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        body = "\n".join(f"+{line}" for line in lines)
+        if text.endswith(("\n", "\r")):
+            body += "\n"
+        if preview_truncated:
+            body += (
+                "\n+... [Untracked preview truncated after "
+                f"{max_bytes} of {total_bytes} bytes.]\n"
+            )
+        line_count = max(1, len(lines) + int(preview_truncated))
+        return header + f"@@ -0,0 +1,{line_count} @@\n" + body
+
+    @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def get_coding_workspace_diff(
+        self,
+        task_id: str,
+        file_path: Optional[str] = None,
+        staged: bool = False,
+        context_lines: int = 3,
+        max_chars: int = 30000,
+        file_offset: int = 0,
+        file_limit: int = 50,
+    ) -> SkillResult:
+        """Return a bounded unified diff for a task or one relative file.
+
+        Whole-task output lists all changed and untracked files. If truncated,
+        request individual files with ``file_path`` before verification/commit.
+        Common credential forms are redacted from the returned diff.
+        """
+
+        if context_lines < 0 or context_lines > 20:
+            return SkillResult.fail("context_lines must be between 0 and 20.")
+        if max_chars < 1000 or max_chars > 100000:
+            return SkillResult.fail("max_chars must be between 1000 and 100000.")
+        if file_offset < 0:
+            return SkillResult.fail("file_offset must be zero or greater.")
+        if file_limit < 1 or file_limit > 200:
+            return SkillResult.fail("file_limit must be between 1 and 200.")
+        try:
+            task_id = self._validate_task_id(task_id)
+            async with self._lock:
+                entry = self._get_entry(self._load_registry(), task_id)
+                _, workspace = self._entry_paths(entry)
+                if not workspace.is_dir():
+                    return SkillResult.fail("Coding workspace directory is missing.")
+
+                pathspec = None
+                if file_path is not None:
+                    requested = Path(file_path.replace("\\", "/"))
+                    if requested.is_absolute() or ".." in requested.parts:
+                        return SkillResult.fail(
+                            "file_path must be relative to the coding workspace."
+                        )
+                    candidate = (workspace / requested).resolve()
+                    if not candidate.is_relative_to(workspace.resolve()):
+                        return SkillResult.fail(
+                            "file_path escaped the coding workspace."
+                        )
+                    pathspec = requested.as_posix()
+
+                tracked_args = [
+                    "diff",
+                    "--name-only",
+                    "--no-ext-diff",
+                ]
+                if staged:
+                    tracked_args.append("--cached")
+                else:
+                    tracked_args.append("HEAD")
+                tracked_args.append("--")
+                if pathspec:
+                    tracked_args.append(pathspec)
+                code, tracked_output, err = await self._run_git(
+                    workspace, *tracked_args
+                )
+                if code != 0:
+                    return SkillResult.fail(
+                        f"Unable to list tracked changes: {err or tracked_output}"
+                    )
+                tracked_files = [
+                    line.replace("\\", "/")
+                    for line in tracked_output.splitlines()
+                    if line
+                ]
+
+                untracked_files: List[str] = []
+                if not staged:
+                    code, untracked_output, err = await self._run_git(
+                        workspace,
+                        "ls-files",
+                        "--others",
+                        "--exclude-standard",
+                        "-z",
+                        "--",
+                        *([pathspec] if pathspec else []),
+                    )
+                    if code != 0:
+                        return SkillResult.fail(
+                            f"Unable to list untracked files: {err}"
+                        )
+                    untracked_files = sorted(
+                        path.replace("\\", "/")
+                        for path in untracked_output.split("\x00")
+                        if path
+                    )
+
+                all_changed_files = sorted(set(tracked_files + untracked_files))
+                if pathspec:
+                    selected_files = all_changed_files
+                    effective_offset = 0
+                else:
+                    selected_files = all_changed_files[
+                        file_offset : file_offset + file_limit
+                    ]
+                    effective_offset = file_offset
+                selected_set = set(selected_files)
+                selected_tracked = [
+                    path for path in tracked_files if path in selected_set
+                ]
+                selected_untracked = [
+                    path for path in untracked_files if path in selected_set
+                ]
+
+                diff_args = [
+                    "diff",
+                    "--no-ext-diff",
+                    f"--unified={context_lines}",
+                ]
+                if staged:
+                    diff_args.append("--cached")
+                else:
+                    diff_args.append("HEAD")
+                diff_args.append("--")
+                diff_args.extend(selected_tracked)
+                diff_text = ""
+                if selected_tracked:
+                    code, diff_text, err = await self._run_git(
+                        workspace, *diff_args
+                    )
+                    if code != 0:
+                        return SkillResult.fail(
+                            f"Unable to read workspace diff: {err or diff_text}"
+                        )
+                if not staged:
+                    for untracked in selected_untracked:
+                        remaining_chars = max_chars - len(diff_text)
+                        if remaining_chars <= 0:
+                            break
+                        preview_path = (workspace / untracked).resolve()
+                        if not preview_path.is_relative_to(workspace.resolve()):
+                            continue
+                        preview_limit = min(
+                            max(1024, remaining_chars),
+                            1_000_000,
+                        )
+                        preview = await asyncio.to_thread(
+                            self._untracked_diff_preview,
+                            preview_path,
+                            untracked,
+                            preview_limit,
+                        )
+                        diff_text += ("\n" if diff_text else "") + preview
+
+                diff_text = redact_sensitive_text(diff_text)
+                original_chars = len(diff_text)
+                truncated = original_chars > max_chars
+                if truncated:
+                    diff_text = (
+                        diff_text[:max_chars]
+                        + "\n... [Diff truncated. Request changed files individually.]"
+                    )
+                fingerprint = await self.workspace_fingerprint(workspace)
+                payload = {
+                    "task_id": task_id,
+                    "branch": entry["branch"],
+                    "file_path": pathspec,
+                    "staged": staged,
+                    "context_lines": context_lines,
+                    "file_offset": effective_offset,
+                    "file_limit": file_limit,
+                    "changed_file_count": len(all_changed_files),
+                    "changed_files": selected_files,
+                    "tracked_files": selected_tracked,
+                    "untracked_files": selected_untracked,
+                    "file_page_has_more": (
+                        not pathspec
+                        and file_offset + len(selected_files)
+                        < len(all_changed_files)
+                    ),
+                    "fingerprint": fingerprint,
+                    "original_diff_chars": original_chars,
+                    "truncated": truncated,
+                    "diff": diff_text,
+                }
+            return SkillResult.ok(json.dumps(payload, ensure_ascii=False))
+        except (PermissionError, FileNotFoundError, TimeoutError, ValueError, KeyError) as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Error reading coding workspace diff: {exc}")
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.SANDBOX)

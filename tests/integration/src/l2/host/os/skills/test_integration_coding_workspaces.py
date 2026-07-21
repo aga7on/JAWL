@@ -63,6 +63,13 @@ async def test_coding_workspace_isolates_commits_and_persists_status(os_client):
     status_payload = json.loads(status.message)
     assert status_payload["state"] == "dirty"
     assert "app.py" in status_payload["diff_stat"]
+    diff_result = await resumed_manager.get_coding_workspace_diff(
+        "feature-123", file_path="app.py"
+    )
+    diff_payload = json.loads(diff_result.message)
+    assert "-value = 1" in diff_payload["diff"]
+    assert "+value = 2" in diff_payload["diff"]
+    assert diff_payload["changed_file_count"] == 1
 
     verified = await verifier.run_coding_verification("feature-123")
     assert verified.is_success is True, verified.message
@@ -354,3 +361,84 @@ async def test_fingerprint_ignores_only_cache_not_untracked_build_source(os_clie
     assert with_cache == initial
     assert with_source["fingerprint"] != initial["fingerprint"]
     assert (await manager.remove_coding_workspace("fingerprint-scope", force=True)).is_success
+
+
+@pytest.mark.asyncio
+async def test_workspace_diff_includes_untracked_redacts_secrets_and_bounds_output(os_client):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "diff-review"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    secret = "ghp_1234567890abcdefghij"
+    (workspace / "new_file.py").write_text(
+        f"api_key={secret}\n" + "payload = '" + "x" * 3000 + "'\n",
+        encoding="utf-8",
+    )
+
+    result = await manager.get_coding_workspace_diff(
+        "diff-review", file_path="new_file.py", max_chars=1000
+    )
+    payload = json.loads(result.message)
+    escaped = await manager.get_coding_workspace_diff(
+        "diff-review", file_path="../outside.py"
+    )
+
+    assert result.is_success is True
+    assert payload["untracked_files"] == ["new_file.py"]
+    assert "new file mode (untracked)" in payload["diff"]
+    assert secret not in payload["diff"]
+    assert "[REDACTED]" in payload["diff"]
+    assert payload["truncated"] is True
+    assert escaped.is_success is False
+    assert (await manager.remove_coding_workspace("diff-review", force=True)).is_success
+
+
+def test_untracked_diff_preview_reads_with_hard_bound(tmp_path):
+    artifact = tmp_path / "large.txt"
+    artifact.write_bytes(b"a" * 2_000_000)
+
+    preview = HostOSCodingWorkspaces._untracked_diff_preview(
+        artifact, "large.txt", max_bytes=256
+    )
+
+    assert len(preview) < 1000
+    assert "truncated after 256 of 2000000 bytes" in preview
+
+
+@pytest.mark.asyncio
+async def test_workspace_diff_paginates_changed_files(os_client):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "diff-pagination"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    for index in range(5):
+        (workspace / f"new_{index}.py").write_text(
+            f"value = {index}\n", encoding="utf-8"
+        )
+
+    first = json.loads(
+        (
+            await manager.get_coding_workspace_diff(
+                "diff-pagination", file_offset=0, file_limit=2
+            )
+        ).message
+    )
+    last = json.loads(
+        (
+            await manager.get_coding_workspace_diff(
+                "diff-pagination", file_offset=4, file_limit=2
+            )
+        ).message
+    )
+
+    assert first["changed_file_count"] == 5
+    assert first["changed_files"] == ["new_0.py", "new_1.py"]
+    assert first["file_page_has_more"] is True
+    assert "new_2.py" not in first["diff"]
+    assert last["changed_files"] == ["new_4.py"]
+    assert last["file_page_has_more"] is False
+    assert (await manager.remove_coding_workspace("diff-pagination", force=True)).is_success
