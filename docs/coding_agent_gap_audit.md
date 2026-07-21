@@ -17,19 +17,19 @@ tasks safely, recoverably, and with measurable evidence.
 | Context navigation | Good | Bounded map, ripgrep/Python search, numbered ranges with hashes | Symbol extraction is heuristic; no LSP/tree-sitter reference graph |
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
-| Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks | No cross-step dependency graph or requirement-level plan |
+| Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | LLM protocol | Strong | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, persisted protocol failures, terminal step-limit record | Provider-specific capability auto-probing is not yet implemented |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
-| Evaluation | Basic-good | Versioned deterministic capability gate with JSON reports | No fixed-repository end-to-end patch benchmark with quality/token/time grading |
+| Evaluation | Good | Deterministic capability gate plus fixed repositories with public/hidden correctness, scope, patch-economy, timing, and optional trace metrics | No live model driver or comparative baseline runs |
 | Planning | Strong | Persistent task-local requirements, dependency steps, revision guards, evidence history, and commit gate | No automatic plan synthesis quality grader |
 
 ## Priority order
 
 1. Upgrade code navigation with optional tree-sitter/LSP-backed definitions,
    references, and dependency slices; retain the current zero-index fallback.
-2. Add fixed-task end-to-end evaluation repositories and grade patch correctness,
-   regression safety, tool calls, wall time, and context/token use separately.
+2. Add a live-model adapter that provisions each fixed task through JAWL,
+   exports the committed diff and trace metrics, and supports fair baseline runs.
 
 ## Compatibility guardrail
 

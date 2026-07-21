@@ -99,6 +99,14 @@
         "tests/unit/l3/react/test_react_loop.py::test_react_cancellation_persists_terminal_tick",
         "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_coding_plan_persists_dependencies_evidence_and_commit_gate"
       ]
+    },
+    {
+      "id": "fixed_patch_quality_eval",
+      "description": "Fixed repositories grade public and hidden correctness, scope precision, and patch economy.",
+      "tests": [
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_reference_patches_pass_public_hidden_scope_and_economy_gates",
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_candidate_cannot_hide_an_untracked_file_from_scope_gate"
+      ]
     }
   ]
 }

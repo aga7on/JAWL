@@ -176,3 +176,18 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Safety and correctness capabilities require a 100% pass rate. Model-level
   task quality, token efficiency, and patch grading are a separate evaluation
   layer and must not dilute this infrastructure gate.
+
+## Fixed-repository patch evaluation contract
+
+- `benchmarks/coding_tasks/manifest.json` defines versioned, reproducible tasks
+  with a clean visible repository, external hidden tests, an allowed-file set,
+  and a changed-line budget.
+- Candidate output is a standard patch per task. The evaluator initializes a
+  temporary Git repository, applies the patch, and grades public regressions,
+  hidden behavior, scope precision, and patch economy independently.
+- Tracked and untracked changes both count toward scope and economy. Reports
+  include patch/diff hashes, timings, bounded failure tails, and optional model
+  trace metrics without exposing hidden tests to the candidate workspace.
+- Reference patches validate the grader only. Comparative model claims require
+  a live JAWL driver and equivalent baselines feeding their patches and token,
+  tool-call, retry, and wall-time metrics into this same evaluator.

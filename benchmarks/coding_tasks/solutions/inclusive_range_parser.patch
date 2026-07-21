@@ -1,0 +1,15 @@
+diff --git a/ranges.py b/ranges.py
+--- a/ranges.py
++++ b/ranges.py
+@@ -2,6 +2,8 @@ def parse_range(spec: str) -> list[int]:
+     """Parse a numeric ``start-end`` range."""
+ 
+     start_text, end_text = spec.split("-", maxsplit=1)
+-    start = int(start_text)
+-    end = int(end_text)
+-    return list(range(start, end))
++    start = int(start_text.strip())
++    end = int(end_text.strip())
++    if start > end:
++        raise ValueError("descending ranges are not supported")
++    return list(range(start, end + 1))

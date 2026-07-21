@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "jawl-coding-task-eval",
+  "tasks": [
+    {
+      "id": "inclusive_range_parser",
+      "prompt": "Make parse_range inclusive, whitespace tolerant, and reject descending ranges with ValueError.",
+      "fixture": "fixtures/inclusive_range_parser",
+      "allowed_files": ["ranges.py"],
+      "max_changed_lines": 12,
+      "solution_patch": "solutions/inclusive_range_parser.patch"
+    },
+    {
+      "id": "non_mutating_deep_merge",
+      "prompt": "Implement recursive dictionary merge without mutating either input; non-dict overrides replace values.",
+      "fixture": "fixtures/non_mutating_deep_merge",
+      "allowed_files": ["merge.py"],
+      "max_changed_lines": 18,
+      "solution_patch": "solutions/non_mutating_deep_merge.patch"
+    }
+  ]
+}

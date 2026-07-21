@@ -1,0 +1,27 @@
+diff --git a/merge.py b/merge.py
+--- a/merge.py
++++ b/merge.py
+@@ -1,9 +1,20 @@
++import copy
+ from typing import Any
+ 
+ 
+ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+-    """Merge override values into a shallow copy of base."""
++    """Recursively merge dictionaries without mutating either input."""
+ 
+-    result = base.copy()
+-    result.update(override)
++    result: dict[str, Any] = {}
++    for key in base.keys() | override.keys():
++        if key in base and key in override:
++            left, right = base[key], override[key]
++            result[key] = (
++                deep_merge(left, right)
++                if isinstance(left, dict) and isinstance(right, dict)
++                else copy.deepcopy(right)
++            )
++        else:
++            value = base[key] if key in base else override[key]
++            result[key] = copy.deepcopy(value)
+     return result
