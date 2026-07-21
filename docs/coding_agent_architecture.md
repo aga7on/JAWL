@@ -29,6 +29,18 @@ event-driven identity, local memory, interfaces, heartbeat, or personality model
 This contract is the foundation for later worktree isolation, durable action
 journaling, checkpoint/rewind, native patch application, and coding evaluation.
 
+## Delegated-work control contract
+
+- Swarm work is persisted before its `asyncio.Task` is created. The registry
+  contains only bounded, redacted summaries and lifecycle metadata.
+- A new process classifies unfinished records as `interrupted`; it does not
+  claim that lost task handles are still running or automatically replay work.
+- Inspection and cancellation are normal guarded skills. Cancellation applies
+  only to an exact active handle in the current process.
+- Worker report IDs and roles must match the runtime-assigned identity.
+- The Swarm manager is a lifecycle component, so graceful shutdown cancels and
+  awaits workers before shared transports close.
+
 ## Declarative lifecycle automation contract
 
 - One hook registry spans tool execution, real context compaction, graceful

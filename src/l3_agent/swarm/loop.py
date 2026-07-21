@@ -68,7 +68,7 @@ class SubagentLoop:
 
         self.report_submitted = False
 
-    async def run(self) -> None:
+    async def run(self) -> str:
         """
         Core subagent ReAct execution cycle.
         """
@@ -79,6 +79,7 @@ class SubagentLoop:
         prompt = self.prompt_builder.build(self.role)
 
         step = 1
+        provider_failed = False
         while step <= self.max_steps and not self.is_done:
             log = f"[Subagent ReAct] Step {step}/{self.max_steps}."
             swarm_logger.info(log)
@@ -105,6 +106,7 @@ class SubagentLoop:
             if raw_answer is None:
                 log = f"[Swarm] Critical LLM connection error on subagent {self.subagent_id}. Forcing crash report."
                 swarm_logger.error(log)
+                provider_failed = True
                 break
 
             # --------------------------------------------------------------
@@ -166,7 +168,7 @@ class SubagentLoop:
             log = f"[Swarm] Subagent {self.subagent_id} reached max steps limit ({self.max_steps}) and was terminated."
             swarm_logger.warning(log)
 
-            await call_skill(
+            report_result = await call_skill(
                 "SubagentReport.submit_final_report",
                 {
                     "subagent_id": self.subagent_id,
@@ -174,6 +176,11 @@ class SubagentLoop:
                     "report": "## Timeout Error\nSubagent reached the maximum step limit and was terminated. Task incomplete.",
                 },
             )
+            self.report_submitted = report_result.is_success
+
+        if provider_failed or not self.is_done:
+            return "failed"
+        return "completed"
 
     # -------------------------------------------------------------------------
     # Private Helpers
@@ -211,6 +218,14 @@ class SubagentLoop:
             if act.tool_name not in self.allowed_skills:
                 return SkillResult.fail(
                     "Access denied. This tool is not authorized for your role."
+                )
+
+            if act.tool_name == "SubagentReport.submit_final_report" and (
+                act.parameters.get("subagent_id") != self.subagent_id
+                or act.parameters.get("role") != self.role.id
+            ):
+                return SkillResult.fail(
+                    "Report identity mismatch. Use the exact assigned subagent ID and role."
                 )
 
             try:

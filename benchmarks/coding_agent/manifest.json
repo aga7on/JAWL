@@ -91,6 +91,20 @@
       ]
     },
     {
+      "id": "durable_delegated_work",
+      "description": "Delegated workers have redacted durable state, restart classification, exact cancellation, identity-bound reports, and shutdown draining.",
+      "tests": [
+        "tests/unit/l3/swarm/test_delegation_registry.py::test_registry_redacts_prompts_and_recovers_unfinished_session",
+        "tests/unit/l3/swarm/test_delegation_registry.py::test_registry_enforces_transitions_filters_and_atomic_json",
+        "tests/unit/l3/swarm/test_delegation_registry.py::test_registry_refuses_corrupt_state_without_overwriting_it",
+        "tests/unit/l3/swarm/test_swarm_spawn.py::test_spawn_success_background_task",
+        "tests/unit/l3/swarm/test_swarm_spawn.py::test_cancel_skill_and_shutdown_await_workers",
+        "tests/unit/l3/swarm/test_swarm_loop.py::test_subagent_report_cannot_spoof_worker_identity",
+        "tests/integration/src/l3/swarm/test_integration_swarm_concurrency.py::test_integration_swarm_concurrency_semaphore",
+        "tests/e2e/l3/swarm/test_e2e_swarm_os.py::test_e2e_swarm_refactoring_task"
+      ]
+    },
+    {
       "id": "durable_interruption_recovery",
       "description": "Lifecycle evidence is redacted and unfinished work is classified after restart.",
       "tests": [

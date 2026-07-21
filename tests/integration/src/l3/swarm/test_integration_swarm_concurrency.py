@@ -39,7 +39,7 @@ async def test_integration_swarm_concurrency_semaphore(
             manager = SwarmManager(
                 executor=MagicMock(), 
                 swarm_config=config, 
-                root_dir=MagicMock()
+                root_dir=tmp_path
             )
 
     # Переменные для отслеживания параллелизма

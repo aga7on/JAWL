@@ -383,6 +383,7 @@ class SystemBuilder:
                 hooks=self.container.lifecycle_hooks,
             )
             register_instance(swarm_manager)
+            self.container.lifecycle_components.append(swarm_manager)
 
         return self
 

@@ -190,3 +190,4 @@ def test_build_l3_agent(
     assert mock_container.lifecycle_hooks.has_handlers()
     assert react_kwargs["context_builder"].hooks is mock_container.lifecycle_hooks
     assert mock_swarm.call_args.kwargs["hooks"] is mock_container.lifecycle_hooks
+    assert mock_swarm.return_value in mock_container.lifecycle_components

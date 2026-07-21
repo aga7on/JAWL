@@ -2,6 +2,27 @@
 
 In JAWL v0.10.0, the **Swarm** subsystem was introduced. It allows the main agent (Orchestrator) to delegate voluminous, resource-heavy, or routine tasks to background subagents (Workers).
 
+## Durable delegated-work control (coding fork)
+
+The coding fork keeps a bounded atomic registry at
+`sandbox/_system/subagents/delegations.json`. It stores a redacted task summary,
+role, timestamps, process-session identity, and one of `queued`, `running`,
+`completed`, `failed`, `cancelled`, or `interrupted`. Raw task prompts are not
+persisted. `queued` or `running` work left by an older process is classified as
+`interrupted` on startup instead of being presented as live work.
+
+The main agent can use `SwarmManager.list_delegations(status, limit)` and
+`SwarmManager.cancel_delegation(delegation_id)`. Cancellation uses the exact
+current-process task handle; it never guesses or signals an unrelated process.
+Graceful system shutdown cancels and awaits every active worker before closing
+the shared LLM clients and EventBus.
+
+Final report calls are identity-bound inside the worker loop: the supplied role
+and subagent ID must match the worker that is executing the action. This prevents
+one worker (or a hallucinated tool payload) from completing another worker's
+record. Existing Markdown reports and `SUBAGENT_TASK_COMPLETED` notifications
+remain compatible.
+
 Main concept: **Subagents are isolated, blind workers.** They do not have access to your chat history, long-term memory (SQL/Vector), or general context. They only receive a specific task and a set of authorized tools, perform the work, and return a strict Markdown report to the main agent.
 
 ---

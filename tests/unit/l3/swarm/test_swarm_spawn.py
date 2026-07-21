@@ -19,13 +19,13 @@ def mock_registry():
 
 
 @pytest.fixture
-def swarm_manager(mock_registry):
+def swarm_manager(mock_registry, tmp_path):
     config = SwarmConfig(enabled=True, subagent_model="cheap-model", max_concurrent_workers=2)
     mock_executor = AsyncMock()
 
     with patch("src.l3_agent.swarm.spawn._REGISTRY", mock_registry):
         with patch("src.l3_agent.swarm.spawn.SwarmPromptBuilder"):
-            return SwarmManager(mock_executor, config, MagicMock())
+            return SwarmManager(mock_executor, config, tmp_path)
 
 
 @pytest.mark.asyncio
@@ -69,6 +69,9 @@ async def test_spawn_success_background_task(mock_loop_class, swarm_manager):
         await task
 
     mock_loop_instance.run.assert_awaited_once()
+    records = swarm_manager.registry.list(status="completed")
+    assert len(records) == 1
+    assert records[0]["task_summary"] == "Fix bugs"
 
 
 @pytest.mark.asyncio
@@ -118,6 +121,8 @@ async def test_delegation_emits_success_and_error_terminal_phases(
         HookPhase.PRE_DELEGATION,
         HookPhase.DELEGATION_ERROR,
     ]
+    assert len(swarm_manager.registry.list(status="completed")) == 1
+    assert len(swarm_manager.registry.list(status="failed")) == 1
 
 
 @pytest.mark.asyncio
@@ -148,20 +153,49 @@ async def test_delegation_cancellation_emits_terminal_phase(
         await task
 
     assert HookPhase.DELEGATION_CANCELLED in phases
+    assert swarm_manager.registry.list(status="cancelled")[0]["task_summary"] == (
+        "cancel me"
+    )
 
 
-def test_swarm_manager_dynamic_docstring(mock_registry):
+@pytest.mark.asyncio
+@patch("src.l3_agent.swarm.spawn.SubagentLoop")
+async def test_cancel_skill_and_shutdown_await_workers(mock_loop_class, swarm_manager):
+    started = asyncio.Event()
+
+    async def wait_forever():
+        started.set()
+        await asyncio.Event().wait()
+
+    loop = MagicMock(run=wait_forever)
+    mock_loop_class.return_value = loop
+    result = await swarm_manager.spawn_subagent("coder", "long task")
+    delegation_id = result.message.split("coder_", 1)[1].split(" ", 1)[0]
+    await started.wait()
+
+    cancelled = await swarm_manager.cancel_delegation(delegation_id)
+    assert cancelled.is_success is True
+    await asyncio.gather(*list(swarm_manager.active_tasks), return_exceptions=True)
+    assert swarm_manager.registry.get(delegation_id)["status"] == "cancelled"
+
+    await swarm_manager.spawn_subagent("coder", "shutdown task")
+    await started.wait()
+    await swarm_manager.stop()
+    assert not swarm_manager.active_tasks
+
+
+def test_swarm_manager_dynamic_docstring(mock_registry, tmp_path):
     config = SwarmConfig(enabled=True, subagent_model="model")
 
     # Сценарий 1: Роли активны
     with patch("src.l3_agent.swarm.spawn._REGISTRY", mock_registry):
-        manager1 = SwarmManager(AsyncMock(), config, MagicMock())
+        manager1 = SwarmManager(AsyncMock(), config, tmp_path / "one")
         assert "coder" in manager1.spawn_subagent.__doc__
         assert "web_researcher" in manager1.spawn_subagent.__doc__
 
     # Сценарий 2: Host OS выключен (нету скиллов для coder)
     empty_registry = {"DeepResearch.deep_research": {"swarm": [Subagents.WEB_RESEARCHER]}}
     with patch("src.l3_agent.swarm.spawn._REGISTRY", empty_registry):
-        manager2 = SwarmManager(AsyncMock(), config, MagicMock())
+        manager2 = SwarmManager(AsyncMock(), config, tmp_path / "two")
         assert "coder" not in manager2.spawn_subagent.__doc__
         assert "web_researcher" in manager2.spawn_subagent.__doc__
