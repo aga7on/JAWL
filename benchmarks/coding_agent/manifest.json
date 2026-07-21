@@ -51,7 +51,9 @@
       "id": "task_workspace_isolation",
       "description": "Concurrent coding tasks receive independent persistent Git worktrees.",
       "tests": [
-        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_parallel_tasks_receive_independent_worktrees"
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_parallel_tasks_receive_independent_worktrees",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_files.py::test_task_scoped_files_read_search_and_patch_without_workspace_path",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_files.py::test_task_scoped_files_reject_workspace_escape"
       ]
     },
     {

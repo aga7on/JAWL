@@ -87,6 +87,10 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Cleanup preserves commits and the task branch. Uncommitted work requires an
   explicit `force=true`; tracked and untracked changes are first saved to a
   recovery Git stash rather than being silently destroyed.
+- `HostOSCodingFiles` resolves bounded read, search, and checked-patch operations
+  from a stable `task_id` plus relative path. Models never need to copy hidden
+  worktree paths between turns, and dependency plans can safely batch
+  workspace→read or patch→verify→evidence→commit while preserving every gate.
 
 ## Durable coding plan contract
 
@@ -232,7 +236,8 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - The driver requires the exact benchmark task ID, extracts the managed branch
   against its recorded base commit, and gates lifecycle compliance separately
   from hidden-test patch quality. It records time, steps, estimated tokens, and
-  provider metrics but never serializes the API key.
+  provider metrics plus bounded protocol/action diagnostics, but never raw
+  chain-of-thought or the API key.
 - A live report is evidence for one endpoint/model/configuration only. Claims of
   parity or superiority require versioned runs against declared baselines under
   the same task, timeout, and grading contract.

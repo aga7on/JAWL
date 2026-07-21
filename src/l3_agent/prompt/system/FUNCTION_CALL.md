@@ -22,6 +22,8 @@ Each action may additionally declare:
 - Isolation: Tool calls are encapsulated exclusively within the `actions` array of the `execute_skill` payload.
 - Format: `actions` must always be a list `[...]`.
 - Ordering: Keep dependent operations sequential. Never place read-modify-write, edit-test, or multiple writes to the same resource in a parallel group.
+- Coding task handles: For managed coding workspaces, prefer `HostOSCodingFiles` skills with `task_id` and `relative_path`; do not spend another LLM round trip merely to copy an ephemeral worktree path.
+- Causal batching: When all parameters are already known, combine workspace→read or patch→verify→plan evidence→commit in one `actions` array with explicit `action_id`/`depends_on`. A failed dependency will safely skip its dependants.
 - Termination: Passing `"actions":[]` triggers standard cycle exit and sleep.
 
 ### Arguments Example for `execute_skill` tool:

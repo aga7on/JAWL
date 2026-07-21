@@ -38,4 +38,6 @@ uses an in-memory tick database and coding-only skill registry, requires a clean
 committed task workspace, exports the base-to-HEAD patch, then sends it through
 the same hidden-test evaluator. Reports under `.jawl-benchmarks/` separate patch
 quality from lifecycle compliance, wall time, ReAct steps, input/output tokens,
-and the final transport metrics. API keys are never written to the report.
+per-call transport metrics, and bounded protocol/action tick diagnostics. Raw
+chain-of-thought is not serialized and credential-shaped text is redacted. API
+keys are never written to the report.

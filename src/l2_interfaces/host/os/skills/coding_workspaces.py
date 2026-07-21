@@ -239,6 +239,25 @@ class HostOSCodingWorkspaces:
             raise ValueError(f"Coding workspace not found for task '{task_id}'.")
         return entry
 
+    def resolve_workspace_path(
+        self, task_id: str, relative_path: str = ".", is_write: bool = False
+    ) -> Path:
+        """Resolve a task-relative path without exposing worktree internals to models."""
+
+        task_id = self._validate_task_id(task_id)
+        relative = Path(relative_path.strip() or ".")
+        if relative.is_absolute() or len(str(relative)) > 1000:
+            raise ValueError("relative_path must be a bounded relative path.")
+        registry = self._load_registry()
+        entry = self._get_entry(registry, task_id)
+        _, workspace = self._entry_paths(entry)
+        resolved = (workspace / relative).resolve()
+        if not resolved.is_relative_to(workspace) or ".git" in relative.parts:
+            raise PermissionError(
+                "Task-relative path must stay inside the managed workspace."
+            )
+        return self.host_os.validate_path(resolved, is_write=is_write)
+
     async def workspace_fingerprint(self, workspace: Path) -> Dict[str, str]:
         """Fingerprint HEAD plus every tracked change and untracked file."""
 

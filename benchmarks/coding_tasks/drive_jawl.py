@@ -31,6 +31,7 @@ from src.l1_databases.sql.management.ticks import SQLTicks
 from src.l2_interfaces.host.os.client import HostOSClient
 from src.l2_interfaces.host.os.skills.coding_context import HostOSCodingContext
 from src.l2_interfaces.host.os.skills.coding_dependencies import HostOSCodingDependencies
+from src.l2_interfaces.host.os.skills.coding_files import HostOSCodingFiles
 from src.l2_interfaces.host.os.skills.coding_lsp import HostOSCodingLanguageServer
 from src.l2_interfaces.host.os.skills.coding_plans import HostOSCodingPlans
 from src.l2_interfaces.host.os.skills.coding_verification import HostOSCodingVerification
@@ -94,9 +95,12 @@ def build_task_prompt(task: Dict[str, Any], task_id: str) -> str:
         "The only candidate-visible repository is sandbox/repo. "
         f"Use the exact coding task_id '{task_id}'. Objective: {task['prompt']} "
         "Create a task-scoped coding workspace, maintain a concrete coding plan, "
-        "inspect bounded context, implement the smallest correct change, run the "
-        "repository verification, satisfy the plan with evidence, and commit the "
-        "verified workspace. Do not modify files outside the managed workspace. "
+        "inspect bounded context through task-scoped coding file skills, implement "
+        "the smallest correct change, run repository verification, satisfy the plan "
+        "with evidence, and commit the verified workspace. Batch causally safe "
+        "operations with action_id/depends_on so workspace creation can precede a "
+        "task-relative read and patch can precede verify/evidence/commit in the same "
+        "action plan. Do not modify files outside the managed workspace. "
         "Conclude the ReAct cycle only after the commit or after recording concrete "
         "failure evidence. Hidden tests are intentionally unavailable."
     )
@@ -194,6 +198,46 @@ async def extract_candidate_patch(
     }
 
 
+def summarize_ticks(tick_rows: List[Any]) -> Dict[str, Any]:
+    """Return bounded protocol/action evidence without serializing chain-of-thought."""
+
+    summaries = []
+    llm_calls = []
+    for row in tick_rows:
+        results = row.results if isinstance(row.results, dict) else {}
+        actions = row.actions if isinstance(row.actions, list) else []
+        metrics = results.get("llm_metrics")
+        if isinstance(metrics, dict) and metrics:
+            llm_calls.append(metrics)
+        summary: Dict[str, Any] = {
+            "step": results.get("step"),
+            "status": results.get("status", "action" if actions else "unknown"),
+            "tool_names": [
+                action.get("tool_name", "unknown")
+                for action in actions[:20]
+                if isinstance(action, dict)
+            ],
+        }
+        for field, limit in (
+            ("error", 1000),
+            ("response_excerpt", 1600),
+            ("execution_report", 1200),
+        ):
+            value = results.get(field)
+            if isinstance(value, str) and value:
+                summary[field] = redact_sensitive_text(value, max_chars=limit)
+        summaries.append(summary)
+    return {
+        "tick_count": len(tick_rows),
+        "action_tick_count": sum(bool(item["tool_names"]) for item in summaries),
+        "protocol_error_count": sum(
+            item["status"] == "protocol_error" for item in summaries
+        ),
+        "tick_summaries": summaries,
+        "llm_calls": llm_calls,
+    }
+
+
 async def run_live_task(
     task: Dict[str, Any],
     output_dir: Path,
@@ -219,16 +263,20 @@ async def run_live_task(
         host = HostOSClient(runtime_root, _host_config(), state, timezone=0)
         workspaces = HostOSCodingWorkspaces(host)
         coding_context = HostOSCodingContext(host)
+        reader = HostOSReader(host)
+        editor = HostOSEditor(host)
+        search = HostOSSearch(host)
         coding_instances = [
-            HostOSReader(host),
+            reader,
             HostOSWriter(host),
-            HostOSEditor(host),
-            HostOSSearch(host),
+            editor,
+            search,
             HostOSWorkspace(host),
             coding_context,
             HostOSCodingLanguageServer(host, coding_context),
             HostOSCodingDependencies(host),
             workspaces,
+            HostOSCodingFiles(host, workspaces, reader, editor, search),
             HostOSCodingPlans(host, workspaces),
             HostOSCodingVerification(host, workspaces),
         ]
@@ -319,6 +367,7 @@ async def run_live_task(
                 for row in tick_rows
                 if isinstance(row.results, dict) and row.results.get("status")
             ]
+            tick_diagnostics = summarize_ticks(tick_rows)
             return {
                 "id": task["id"],
                 "task_id": task_id,
@@ -334,6 +383,7 @@ async def run_live_task(
                     item["total"] for item in tracker.output_history
                 ),
                 "last_llm_metrics": executor.last_call_metrics,
+                **tick_diagnostics,
                 **extraction,
             }
         finally:

@@ -198,24 +198,24 @@ async def test_live_driver_runs_real_react_and_coding_skills_without_network(
                         ],
                     },
                 },
+                {
+                    "tool_name": "HostOSCodingFiles.read_coding_file_range",
+                    "action_id": "inspect",
+                    "depends_on": ["workspace"],
+                    "parameters": {
+                        "task_id": "eval-inclusive_range_parser",
+                        "relative_path": "ranges.py",
+                    },
+                },
             ]
         elif step == 2:
-            registry = json.loads(
-                (
-                    Path.cwd()
-                    / "sandbox"
-                    / "_system"
-                    / "coding_workspaces.json"
-                ).read_text(encoding="utf-8")
-            )
-            workspace = registry["workspaces"]["eval-inclusive_range_parser"][
-                "workspace_path"
-            ]
             actions = [
                 {
-                    "tool_name": "HostOSEditor.apply_file_patch",
+                    "tool_name": "HostOSCodingFiles.apply_coding_file_patch",
+                    "action_id": "patch",
                     "parameters": {
-                        "filepath": str(Path(workspace) / "ranges.py"),
+                        "task_id": "eval-inclusive_range_parser",
+                        "relative_path": "ranges.py",
                         "edits": [
                             {
                                 "search": "    start = int(start_text)",
@@ -233,35 +233,21 @@ async def test_live_driver_runs_real_react_and_coding_skills_without_network(
                             },
                         ],
                     },
-                }
-            ]
-        elif step == 3:
-            actions = [
+                },
                 {
                     "tool_name": "HostOSCodingVerification.run_coding_verification",
+                    "action_id": "verify",
+                    "depends_on": ["patch"],
                     "parameters": {
                         "task_id": "eval-inclusive_range_parser",
                         "checks": ["pytest"],
                         "timeout_sec": 60,
                     },
-                }
-            ]
-        elif step == 4:
-            verification_registry = json.loads(
-                (
-                    Path.cwd()
-                    / "sandbox"
-                    / "_system"
-                    / "coding_workspaces.json"
-                ).read_text(encoding="utf-8")
-            )
-            verification_entry = verification_registry["workspaces"][
-                "eval-inclusive_range_parser"
-            ]
-            assert "last_verification" in verification_entry, verification_entry
-            actions = [
+                },
                 {
                     "tool_name": "HostOSCodingPlans.update_coding_task_step",
+                    "action_id": "complete-step",
+                    "depends_on": ["verify"],
                     "parameters": {
                         "task_id": "eval-inclusive_range_parser",
                         "step_id": "implement",
@@ -271,6 +257,8 @@ async def test_live_driver_runs_real_react_and_coding_skills_without_network(
                 },
                 {
                     "tool_name": "HostOSCodingPlans.update_coding_requirement",
+                    "action_id": "complete-requirement",
+                    "depends_on": ["verify"],
                     "parameters": {
                         "task_id": "eval-inclusive_range_parser",
                         "requirement_id": "req_1",
@@ -278,11 +266,9 @@ async def test_live_driver_runs_real_react_and_coding_skills_without_network(
                         "evidence": "Public pytest verification passed",
                     },
                 },
-            ]
-        elif step == 5:
-            actions = [
                 {
                     "tool_name": "HostOSCodingWorkspaces.commit_coding_workspace",
+                    "depends_on": ["complete-step", "complete-requirement"],
                     "parameters": {
                         "task_id": "eval-inclusive_range_parser",
                         "commit_message": "solve inclusive range task",
@@ -328,7 +314,7 @@ async def test_live_driver_runs_real_react_and_coding_skills_without_network(
     )
     evaluation = evaluate_task(task, "solution", output_dir / "patches")
 
-    assert len(responses) == 6
+    assert len(responses) == 3
     assert result["error"] == ""
     assert result["timed_out"] is False
     assert result["lifecycle_gate_passed"] is True
@@ -337,5 +323,10 @@ async def test_live_driver_runs_real_react_and_coding_skills_without_network(
     assert result["plan_bypassed"] is False
     assert result["input_tokens"] > 0
     assert result["output_tokens"] > 0
+    assert result["tick_count"] == 3
+    assert result["action_tick_count"] == 2
+    assert result["protocol_error_count"] == 0
+    assert result["tick_summaries"][-1]["status"] == "completed"
+    assert len(result["llm_calls"]) == 3
     assert "completed" in result["terminal_statuses"]
     assert evaluation["gate_passed"] is True

@@ -27,6 +27,7 @@ from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorks
 from src.l2_interfaces.host.os.skills.coding_verification import HostOSCodingVerification
 from src.l2_interfaces.host.os.skills.coding_context import HostOSCodingContext
 from src.l2_interfaces.host.os.skills.coding_dependencies import HostOSCodingDependencies
+from src.l2_interfaces.host.os.skills.coding_files import HostOSCodingFiles
 from src.l2_interfaces.host.os.skills.coding_lsp import HostOSCodingLanguageServer
 from src.l2_interfaces.host.os.skills.coding_plans import HostOSCodingPlans
 
@@ -71,16 +72,22 @@ class HostOsPlugin(BaseInterface):
         register_instance(HostOSNetwork(client))
         register_instance(HostOSMonitoring(client, events))
         register_instance(HostOSDeploy(client))
-        register_instance(HostOSReader(client))
+        reader = HostOSReader(client)
+        editor = HostOSEditor(client)
+        search = HostOSSearch(client)
+        register_instance(reader)
         register_instance(HostOSWriter(client))
-        register_instance(HostOSEditor(client))
-        register_instance(HostOSSearch(client))
+        register_instance(editor)
+        register_instance(search)
         register_instance(HostOSArchive(client))
         register_instance(HostOSWorkspace(client))
         register_instance(HostOSMetadata(client))
         register_instance(HostOSDocuments(client))
         coding_workspaces = HostOSCodingWorkspaces(client)
         register_instance(coding_workspaces)
+        register_instance(
+            HostOSCodingFiles(client, coding_workspaces, reader, editor, search)
+        )
         register_instance(HostOSCodingPlans(client, coding_workspaces))
         register_instance(HostOSCodingVerification(client, coding_workspaces))
         coding_context = HostOSCodingContext(client)

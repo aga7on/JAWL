@@ -19,17 +19,29 @@ tasks safely, recoverably, and with measurable evidence.
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
-| LLM protocol | Strong | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, persisted protocol failures, terminal step-limit record | Provider-specific capability auto-probing is not yet implemented |
+| LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, persisted protocol failures, terminal step-limit record | Live QWB calibration exposed repeated format failures and expensive recovery; provider-specific auto-probing/policy is absent |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
-| Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, and isolated real-ReAct live driver with lifecycle, patch, timing, step, token, and provider metrics | No recorded live calibration or comparative baseline runs yet |
+| Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, isolated real-ReAct driver, and a recorded QWB calibration | No equivalent baseline run yet; first QWB run passed patch quality but failed lifecycle/time budget |
 | Planning | Strong | Persistent task-local requirements, dependency steps, revision guards, evidence history, and commit gate | No automatic plan synthesis quality grader |
 
 ## Priority order
 
-1. Run and version live calibration results through QWB, then execute equivalent
-   declared baseline agents before making comparative performance claims.
-2. If live traces show repeated navigation startup cost, add lifecycle-managed
+1. Reduce QWB wrapper protocol failures and excessive ReAct round trips, then
+   rerun the same fixed task before expanding the benchmark set.
+2. Execute equivalent declared baseline agents before making comparative
+   performance claims.
+3. If live traces show repeated navigation startup cost, add lifecycle-managed
    incremental LSP sessions without weakening process and output bounds.
+
+## Recorded live calibration
+
+`benchmarks/coding_tasks/results/2026-07-21-qwb-qwen3.8-max-preview-wrapper.json`
+records the first real QWB run on revision `f8ae5f8`. The one-task patch passed
+public tests, hidden tests, allowed-file scope, and patch economy with score
+`1.0`. The agent nevertheless failed the lifecycle gate: four protocol errors,
+nine ReAct steps, approximately 83.8k input and 24.9k output tokens, and no
+verified commit before the 1,200-second watchdog. This isolates the next work to
+transport/protocol efficiency rather than patch-generation ability.
 
 ## Compatibility guardrail
 

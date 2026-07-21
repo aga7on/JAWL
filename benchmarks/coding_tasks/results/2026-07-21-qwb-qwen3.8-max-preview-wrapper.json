@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "live_calibration_summary",
+  "generated_at": "2026-07-21T12:01:22.577200+00:00",
+  "git_revision": "f8ae5f8",
+  "endpoint": "local-qwb-openai-compatible",
+  "model": "qwen3.8-max-preview",
+  "transport": "wrapper",
+  "task": "inclusive_range_parser",
+  "limits": {
+    "max_react_steps": 10,
+    "task_timeout_seconds": 1200
+  },
+  "result": {
+    "quality_gate_passed": true,
+    "quality_score": 1.0,
+    "lifecycle_gate_passed": false,
+    "timed_out": true,
+    "react_steps_used": 9,
+    "protocol_error_count": 4,
+    "input_tokens_estimated": 83813,
+    "output_tokens_estimated": 24899,
+    "duration_ms": 1200586.1,
+    "changed_files": [
+      "ranges.py"
+    ],
+    "changed_lines": 10,
+    "patch_committed": false,
+    "plan_complete": false
+  },
+  "interpretation": "The model produced a fully correct, scoped and economical patch, but repeated protocol failures and long ReAct turns prevented plan, verification and commit lifecycle completion before the task watchdog. This is a failed lifecycle calibration, not evidence of comparative agent parity."
+}
