@@ -45,6 +45,21 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> Path:
+    resolved = path.resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    temporary = resolved.with_suffix(resolved.suffix + ".tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(resolved)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return resolved
+
+
 def build_command_preflight(
     candidate: str,
     candidate_version: str,
@@ -266,6 +281,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--candidate", required=True)
     parser.add_argument("--candidate-version", default="unspecified")
     parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument(
+        "--preflight-output",
+        type=Path,
+        help="Atomically persist the quota-free preflight JSON report.",
+    )
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument(
@@ -297,8 +317,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))
     if args.preflight_only:
-        print(json.dumps({"schema_version": 1, "preflight": preflight}, ensure_ascii=False))
+        payload = {
+            "schema_version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "preflight": preflight,
+        }
+        if args.preflight_output is not None:
+            output = _write_json_atomic(args.preflight_output, payload)
+            print(f"[external-cli-preflight] report: {output}")
+        print(json.dumps(payload, ensure_ascii=False))
         return 0
+    if args.preflight_output is not None:
+        parser.error("--preflight-output requires --preflight-only")
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -338,11 +368,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         report["execution_passed"] and report["quality_gate_passed"]
     )
     report_path = output_dir / "report.json"
-    temporary = report_path.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    temporary.replace(report_path)
+    _write_json_atomic(report_path, report)
     print(f"[external-cli-eval] report: {report_path}")
     print(json.dumps(report, ensure_ascii=False))
     return 0 if report["gate_passed"] else 1

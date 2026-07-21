@@ -64,13 +64,18 @@ python benchmarks/coding_tasks/drive_cli.py `
   --candidate codex `
   --candidate-version "<output of codex --version>" `
   --preflight-only `
+  --preflight-output benchmarks/coding_tasks/results/codex-preflight.json `
   -- codex exec --ephemeral --ignore-user-config `
      --sandbox workspace-write --color never `
      -C "{repository}" "{prompt}"
 ```
 
 Remove `--preflight-only` only when the account/token cost is intentional. The
-CLI receives no hidden tests or reference patch, but the generic Windows driver
+optional preflight output is written atomically and contains no prompt, hidden
+test contents, credentials, or model output. It records only the candidate
+version, executable/command hashes, placeholder contract, and hidden-grader
+fingerprint needed to reproduce the later comparison. The CLI receives no
+hidden tests or reference patch, but the generic Windows driver
 is not an adversarial filesystem sandbox; use an external container/VM for
 publication-grade hidden-oracle claims.
 

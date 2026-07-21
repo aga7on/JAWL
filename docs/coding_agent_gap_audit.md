@@ -21,7 +21,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph, automatic failure signals, and exact-state revision of unfinished work | Replanning strategy quality is not yet scored on live tasks |
 | Delegated work | Strong | Bounded durable status registry, redacted summaries, exact-revision parent-step binding, restart reconciliation, exact-handle cancel, shutdown draining, identity-bound reports, report hashing, workspace/verification-gated acceptance, and post-persistence terminal events | Delegation strategy and result quality still need model-level comparative scoring |
 | Lifecycle policy | Strong | One ordered bounded registry covers tools, actual context compaction, graceful stop, and delegated-work success/error/cancel; only tool and delegation preflight can deny; passive EventBus observations and shell-free user/repository profiles preserve compatibility | No startup/session boundary hook; delegated result reconciliation still belongs to Swarm |
-| Event steering | Strong | Configurable interrupt/defer/append policy; deferred urgent events preserve in-flight provider responses, skip stale actions, persist a steer tick, and become the next primary trigger; priority-bounded sleep/realtime queues explicitly coalesce only noisy state events and expose overflow without payload leakage | No interactive mid-generation provider steering; safe boundary waits for the active response |
+| Event steering | Strong | Configurable interrupt/defer/append policy; deferred urgent events preserve in-flight provider responses, skip stale actions, persist a steer tick, and become the next primary trigger; priority-bounded sleep/realtime queues explicitly coalesce only noisy state events and expose overflow without payload leakage | The current OpenAI/QWB request is unary; true mid-generation input requires a new authenticated request-scoped provider endpoint, while safe-boundary defer is the strongest non-destructive local behavior |
 | Interruption recovery | Strong | Durable action lifecycle plus automatic idempotent startup projection into exact workspace/plan state; uncertain started actions require replanning, safe-boundary interruptions request resume, and bounded recovery events wake Heartbeat without replay | External side effects outside the managed workspace still require operator/domain-specific inspection |
 | Transactional rewind | Strong | Exact workspace/index snapshot, plan revision, append-only tick timeline branch, optimistic guard, automatic forward checkpoint and compensation | Does not rewind vector/graph stores or external side effects by design |
 | Command isolation | Strong | Disabled-by-default task runner, shell-free argv, exact-state guard, host pre-approval, optional Docker/Podman capability/network/resource isolation, exact named toolchain/container profiles, expiring one-shot approvals, passive desktop/Telegram pushes, and opt-in exact chat/actor-bound Telegram decisions intercepted before agent routing | Host backend remains authorization rather than OS containment; remote review is command-based rather than a richer signed UI |
@@ -35,12 +35,24 @@ tasks safely, recoverably, and with measurable evidence.
 1. Validate `first_step` Thinking plus adaptive context in the next organic or
    deliberately justified live run; avoid repetitive account-consuming
    calibration.
-2. Where a provider supports it, add true mid-generation steering without
-   reintroducing downstream cancellation of completed Thinking work.
-3. Execute preflighted external CLI baselines through `drive_cli.py` before making
+2. Execute preflighted external CLI baselines through `drive_cli.py` before making
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation
    still requires the candidate CLI's sandbox or an external container.
+3. Revisit true mid-generation steering only when QWB/provider transport exposes
+   an authenticated request-ID-bound input endpoint with an acknowledgement;
+   do not emulate it by cancelling or racing a second generation.
+
+## External baseline preflight
+
+The quota-free Codex preflight at
+`benchmarks/coding_tasks/results/2026-07-21-codex-cli-preflight.json` resolves
+the installed `codex-cli 0.145.0-alpha.18`, fingerprints its executable and
+exact command template, and binds them to grader contract
+`df1edf1cb7300cce2cdec636c77182f16661607f6743b7f69013cddb1c8b1f75`.
+No candidate process or model request was executed. This proves readiness for a
+controlled baseline, not comparative quality; the live run still requires an
+explicit decision to spend account quota.
 
 ## Current reference architecture comparison
 

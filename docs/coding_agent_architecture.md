@@ -247,6 +247,15 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   retries only the side-effect-free model request, never an already executed
   local action plan. Final failure metrics distinguish upstream unavailability
   from protocol, authentication, rate-limit, timeout, and cancellation states.
+- The current OpenAI-compatible/QWB call is unary: JAWL submits one complete
+  request and receives one completed response. QWB's internal Qwen SSE is a
+  server-to-bridge stream, not a bidirectional request channel exposed to JAWL.
+  Consequently true mid-generation input steering cannot be implemented in the
+  framework alone. The `defer` policy deliberately preserves the active
+  Thinking request and yields at the first safe response boundary; starting a
+  second request or cancelling the first would discard work rather than steer
+  it. Provider-level steering should be added only after an authenticated,
+  request-ID-bound, acknowledgement-producing upstream extension exists.
 
 ## Dual tool transport contract
 

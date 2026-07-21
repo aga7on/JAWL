@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-21T19:00:35.675966+00:00",
+  "preflight": {
+    "candidate": "codex",
+    "candidate_version": "codex-cli 0.145.0-alpha.18",
+    "executable_name": "codex.exe",
+    "executable_sha256": "20d611ef1c9851f4da1cb4609beb6763904f72275cb91517b2400639ca1c28c4",
+    "command_template_sha256": "53d8346daa2f30642c373b8fabd85a79011fe8a9abb057081f1b44e159e3fb65",
+    "argument_count": 10,
+    "uses_repository_placeholder": true,
+    "uses_prompt_placeholder": true,
+    "contract_fingerprint": "df1edf1cb7300cce2cdec636c77182f16661607f6743b7f69013cddb1c8b1f75",
+    "note": "Preflight resolves and hashes the command but never executes it."
+  }
+}

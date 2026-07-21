@@ -144,6 +144,7 @@ def test_external_cli_preflight_hashes_contract_without_running_candidate(
     tmp_path, capsys
 ):
     marker = tmp_path / "must-not-exist.txt"
+    report_path = tmp_path / "reports" / "preflight.json"
     exit_code = drive_cli_main(
         [
             "--candidate",
@@ -151,6 +152,8 @@ def test_external_cli_preflight_hashes_contract_without_running_candidate(
             "--candidate-version",
             "test-version",
             "--preflight-only",
+            "--preflight-output",
+            str(report_path),
             "--task",
             "inclusive_range_parser",
             "--",
@@ -169,6 +172,9 @@ def test_external_cli_preflight_hashes_contract_without_running_candidate(
     assert preflight["uses_prompt_placeholder"] is True
     assert len(preflight["executable_sha256"]) == 64
     assert len(preflight["contract_fingerprint"]) == 64
+    assert json.loads(report_path.read_text(encoding="utf-8")) == payload
+    assert str(marker) not in report_path.read_text(encoding="utf-8")
+    assert not report_path.with_suffix(".json.tmp").exists()
 
 
 def test_benchmark_contract_changes_with_selected_task_set():
