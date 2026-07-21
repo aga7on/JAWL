@@ -70,6 +70,19 @@ def test_host_os_config_validation():
     with pytest.raises(ValueError):
         HostOSConfig(**data)
 
+    assert HostOSConfig(coding_approval_mode="disabled").coding_approval_mode == (
+        "disabled"
+    )
+    with pytest.raises(ValueError):
+        HostOSConfig(coding_approval_mode=False)
+    with pytest.raises(ValueError, match="profile names must be unique"):
+        HostOSConfig(
+            coding_command_profiles=[
+                {"name": "tests", "argv": ["python", "-m", "pytest"]},
+                {"name": "tests", "argv": ["python", "-m", "pytest", "-q"]},
+            ]
+        )
+
 
 def test_lifecycle_command_hook_config_is_exact_argv_not_shell_text():
     profile = LifecycleCommandHookConfig(

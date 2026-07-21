@@ -241,6 +241,15 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   to host execution occurs when the runtime or image is unavailable.
 - Raw `execute_shell_command` remains ROOT-only for compatibility and is excluded
   from the normal coding-agent workflow.
+- Optional `required` approval mode persists a pending request outside the task
+  worktree. A local operator can approve or deny it through `jawl.py
+  --approvals`; approved requests expire and are consumed exactly once.
+- The approval subject covers task, argv, workspace fingerprint, cwd, timeout,
+  backend, executable/runtime hash, and container image/network/resource policy.
+  A mismatch never degrades to a broader authorization.
+- Named command profiles expose exact user-declared toolchain argv without model
+  interpolation and inherit every backend, fingerprint, approval, timeout, and
+  output bound of the ordinary task command path.
 
 ## Bounded event steering contract
 

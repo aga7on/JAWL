@@ -192,6 +192,17 @@
       ]
     },
     {
+      "id": "interactive_command_approval",
+      "description": "Expiring one-shot approvals bind exact command and runtime policy, redact persisted argv, reject replay, and support named toolchain profiles.",
+      "tests": [
+        "tests/unit/l2/host/os/test_coding_approvals.py::test_approval_is_exact_one_shot_and_registry_redacts_argv",
+        "tests/unit/l2/host/os/test_coding_approvals.py::test_approval_expires_and_ids_are_bounded",
+        "tests/unit/l2/host/os/test_coding_approvals.py::test_local_cli_lists_and_decides_pending_requests",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_execution.py::test_required_approval_is_exact_one_shot_and_policy_preserving",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_execution.py::test_named_toolchain_profile_uses_user_declared_exact_argv"
+      ]
+    },
+    {
       "id": "cross_layer_trace_correlation",
       "description": "Async trace IDs survive child tasks, cancellation, actions, verification, and commits without leaking contexts.",
       "tests": [

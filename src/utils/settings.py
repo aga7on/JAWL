@@ -10,7 +10,7 @@ import shutil
 import yaml
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from yaml.constructor import ConstructorError
 
 from src.utils.logger import main_logger
@@ -18,6 +18,27 @@ from src.utils.logger import main_logger
 # ==========================================
 # Models for interfaces.yaml
 # ==========================================
+
+
+class CodingCommandProfileConfig(BaseModel):
+    name: str = Field(
+        min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    )
+    argv: list[str] = Field(min_length=1, max_length=128)
+    relative_cwd: str = Field(default=".", min_length=1, max_length=1000)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=7200)
+
+    @field_validator("argv")
+    @classmethod
+    def validate_argv(cls, argv: list[str]) -> list[str]:
+        if any(not item or "\x00" in item or len(item) > 4096 for item in argv):
+            raise ValueError(
+                "coding command profile argv items must be non-empty, NUL-free, "
+                "and at most 4096 characters"
+            )
+        if sum(len(item) for item in argv) > 32768:
+            raise ValueError("coding command profile argv exceeds 32768 characters")
+        return argv
 
 
 class HostOSConfig(BaseModel):
@@ -36,6 +57,11 @@ class HostOSConfig(BaseModel):
     execution_timeout_sec: int = 60
     coding_execution_backend: Literal["disabled", "host", "container"] = "disabled"
     coding_host_allowed_commands: list[str] = Field(default_factory=list)
+    coding_approval_mode: Literal["disabled", "required"] = "disabled"
+    coding_approval_ttl_sec: int = Field(default=900, ge=60, le=86400)
+    coding_command_profiles: list[CodingCommandProfileConfig] = Field(
+        default_factory=list, max_length=100
+    )
     coding_container_runtime: Literal["docker", "podman"] = "docker"
     coding_container_image: str = "python:3.11-slim"
     coding_container_network: Literal["none", "bridge"] = "none"
@@ -50,6 +76,13 @@ class HostOSConfig(BaseModel):
     workspace_max_opened_files: int = 10
     recent_file_changes_limit: int = 5
     workspace_max_file_chars: int = 10000
+
+    @model_validator(mode="after")
+    def validate_coding_profile_names(self) -> "HostOSConfig":
+        names = [profile.name for profile in self.coding_command_profiles]
+        if len(names) != len(set(names)):
+            raise ValueError("coding command profile names must be unique")
+        return self
 
 
 class HostTerminalConfig(BaseModel):

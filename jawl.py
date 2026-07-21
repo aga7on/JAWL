@@ -235,6 +235,7 @@ def setup_and_run() -> None:
         from src.cli.menu import main_menu
         from src.cli.screens.logs import logs_screen
         from src.cli.screens.terminal_chat import _open_terminal_chat
+        from src.cli.coding_approvals import run_approval_cli
         import src.main  # noqa: F401
 
     except ModuleNotFoundError as e:
@@ -275,7 +276,10 @@ def setup_and_run() -> None:
 
     log_arg = next((arg for arg in sys.argv if arg.startswith("--logs")), None)
 
-    if log_arg:
+    if "--approvals" in sys.argv:
+        approval_index = sys.argv.index("--approvals")
+        sys.exit(run_approval_cli(root_dir, sys.argv[approval_index + 1 :]))
+    elif log_arg:
         if "-" in log_arg:
             log_type = log_arg.split("-")[-1]
             logs_screen(log_type)

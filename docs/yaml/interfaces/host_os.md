@@ -54,3 +54,33 @@ cancellation terminates the complete local runtime process tree, and the result
 returns before/after workspace fingerprints. Legacy `execute_shell_command`
 remains a separate ROOT-only compatibility path and is not used by the coding
 workflow.
+
+### One-shot approvals and command profiles
+
+Set `coding_approval_mode: required` to require an operator decision for every
+`run_coding_command` and `run_coding_profile` invocation. The agent first calls
+`request_coding_command_approval`; the request is stored in protected
+`sandbox/_system/` state and expires after `coding_approval_ttl_sec`.
+
+Review requests from another terminal:
+
+```powershell
+python jawl.py --approvals list --status pending
+python jawl.py --approvals show <approval-id>
+python jawl.py --approvals approve <approval-id>
+python jawl.py --approvals deny <approval-id>
+```
+
+An approval is one-shot. It is bound to the task, argv, workspace fingerprint,
+relative working directory, timeout, backend, executable/runtime hash, and the
+container image/network/resource policy. Any difference is rejected without
+consuming a matching approval. The registry retains only a bounded redacted argv
+preview, never raw command arguments.
+
+`coding_command_profiles` gives frequently used toolchains stable names and
+exact user-declared argv. `run_coding_profile` does not let the model append or
+replace arguments; profiles inherit the same host allowlist or container policy,
+workspace fingerprint check, output/process bounds, and approval mode. The agent
+can discover redacted profile metadata with `list_coding_command_profiles` and,
+when approval is required, use `request_coding_profile_approval` without ever
+reconstructing the configured argv.

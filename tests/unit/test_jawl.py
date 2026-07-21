@@ -14,6 +14,24 @@ def test_is_venv():
         assert jawl.is_venv() is False
 
 
+@patch("sys.argv", ["jawl.py", "--approvals", "list", "--status", "pending"])
+@patch("jawl.recover_deploy_crashes")
+@patch("jawl.is_venv", return_value=True)
+def test_setup_and_run_dispatches_approval_cli(
+    mock_is_venv, mock_recover, monkeypatch
+):
+    from src.cli import coding_approvals
+
+    called = MagicMock(return_value=0)
+    monkeypatch.setattr(coding_approvals, "run_approval_cli", called)
+
+    with pytest.raises(SystemExit) as exited:
+        jawl.setup_and_run()
+
+    assert exited.value.code == 0
+    assert called.call_args.args[1] == ["list", "--status", "pending"]
+
+
 def test_recover_deploy_crashes(tmp_path):
     """Тест: механизм воскрешения из пепла (интеграционный тест на tmp_path)."""
     root_dir = tmp_path

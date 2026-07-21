@@ -9,6 +9,8 @@ import psutil
 
 from src.l2_interfaces.host.os.skills.coding_execution import HostOSCodingExecution
 from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorkspaces
+from src.l2_interfaces.host.os.coding_approvals import CodingApprovalStore
+from src.utils.settings import CodingCommandProfileConfig
 
 
 def run_git(cwd: Path, *args: str) -> None:
@@ -187,3 +189,109 @@ async def test_host_coding_command_bounds_output_and_kills_timed_out_process_tre
             break
         await asyncio.sleep(0.05)
     assert not psutil.pid_exists(child_pid)
+
+
+@pytest.mark.asyncio
+async def test_required_approval_is_exact_one_shot_and_policy_preserving(os_client):
+    workspaces, workspace = await create_workspace(os_client, "approved-command")
+    approvals = CodingApprovalStore(os_client.system_dir / "test-approvals.json")
+    execution = HostOSCodingExecution(os_client, workspaces, approvals)
+    os_client.config.coding_execution_backend = "host"
+    os_client.config.coding_host_allowed_commands = [sys.executable]
+    os_client.config.coding_approval_mode = "required"
+    fingerprint = await workspaces.workspace_fingerprint(workspace)
+    argv = ["python.exe", "-c", "print('approved')"]
+
+    missing = await execution.run_coding_command(
+        "approved-command", argv, fingerprint["fingerprint"]
+    )
+    assert missing.is_success is False
+    assert "requires a one-shot approval" in missing.message
+
+    requested = await execution.request_coding_command_approval(
+        "approved-command", argv, fingerprint["fingerprint"]
+    )
+    assert requested.is_success is True, requested.message
+    approval_id = json.loads(requested.message)["approval"]["id"]
+    approvals.decide(approval_id, approved=True, actor="test")
+
+    mismatch = await execution.run_coding_command(
+        "approved-command",
+        ["python.exe", "-c", "print('different')"],
+        fingerprint["fingerprint"],
+        approval_id=approval_id,
+    )
+    assert mismatch.is_success is False
+    assert "does not match the exact" in mismatch.message
+
+    executed = await execution.run_coding_command(
+        "approved-command",
+        argv,
+        fingerprint["fingerprint"],
+        approval_id=approval_id,
+    )
+    assert executed.is_success is True, executed.message
+    assert json.loads(executed.message)["stdout"] == "approved"
+
+    replay = await execution.run_coding_command(
+        "approved-command",
+        argv,
+        fingerprint["fingerprint"],
+        approval_id=approval_id,
+    )
+    assert replay.is_success is False
+    assert "consumed" in replay.message
+
+
+@pytest.mark.asyncio
+async def test_named_toolchain_profile_uses_user_declared_exact_argv(os_client):
+    workspaces, workspace = await create_workspace(os_client, "profile-command")
+    approvals = CodingApprovalStore(os_client.system_dir / "profile-approvals.json")
+    execution = HostOSCodingExecution(os_client, workspaces, approvals)
+    os_client.config.coding_execution_backend = "host"
+    os_client.config.coding_host_allowed_commands = [sys.executable]
+    os_client.config.coding_approval_mode = "required"
+    os_client.config.coding_command_profiles = [
+        CodingCommandProfileConfig(
+            name="python-smoke",
+            argv=[
+                "python.exe",
+                "-c",
+                "from pathlib import Path; Path('profile.txt').write_text('ok')",
+            ],
+            timeout_seconds=10,
+        )
+    ]
+    fingerprint = await workspaces.workspace_fingerprint(workspace)
+    profiles = await execution.list_coding_command_profiles()
+    assert profiles.is_success is True
+    assert json.loads(profiles.message)["profiles"] == [
+        {
+            "name": "python-smoke",
+            "executable": "python.exe",
+            "argument_count": 2,
+            "relative_cwd": ".",
+            "timeout_seconds": 10,
+        }
+    ]
+    requested = await execution.request_coding_profile_approval(
+        "profile-command", "python-smoke", fingerprint["fingerprint"]
+    )
+    assert requested.is_success is True, requested.message
+    approval_id = json.loads(requested.message)["approval"]["id"]
+    approvals.decide(approval_id, approved=True, actor="test")
+
+    executed = await execution.run_coding_profile(
+        "profile-command",
+        "python-smoke",
+        fingerprint["fingerprint"],
+        approval_id=approval_id,
+    )
+
+    assert executed.is_success is True, executed.message
+    assert (workspace / "profile.txt").read_text(encoding="utf-8") == "ok"
+    unknown = await execution.run_coding_profile(
+        "profile-command", "unknown", fingerprint["fingerprint"]
+    )
+    assert unknown.is_success is False
+    assert "resolve exactly once" in unknown.message

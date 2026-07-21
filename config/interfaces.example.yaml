@@ -18,6 +18,16 @@ host:
     # executables, or an isolated Docker/Podman container.
     coding_execution_backend: disabled
     coding_host_allowed_commands: []
+    # Optional one-shot local operator approval for every task command.
+    coding_approval_mode: disabled
+    coding_approval_ttl_sec: 900
+    # Exact reusable argv profiles; they still inherit backend/approval policy.
+    coding_command_profiles: []
+    # coding_command_profiles:
+    #   - name: python-tests
+    #     argv: [python.exe, -m, pytest, -q]
+    #     relative_cwd: "."
+    #     timeout_seconds: 60
     coding_container_runtime: docker
     coding_container_image: "python:3.11-slim"
     coding_container_network: none

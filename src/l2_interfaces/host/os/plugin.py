@@ -9,6 +9,7 @@ from src.l2_interfaces.base import BaseInterface
 from src.l2_interfaces.host.os.state import HostOSState
 from src.l2_interfaces.host.os.client import HostOSClient
 from src.l2_interfaces.host.os.events import HostOSEvents
+from src.l2_interfaces.host.os.coding_approvals import CodingApprovalStore
 
 from src.l2_interfaces.host.os.skills.execution import HostOSExecution
 from src.l2_interfaces.host.os.skills.monitoring import HostOSMonitoring
@@ -87,12 +88,18 @@ class HostOsPlugin(BaseInterface):
         register_instance(HostOSDocuments(client))
         coding_workspaces = HostOSCodingWorkspaces(client)
         container.coding_workspaces = coding_workspaces
+        coding_approvals = CodingApprovalStore(
+            client.system_dir / "coding_approvals.json"
+        )
+        container.coding_approvals = coding_approvals
         register_instance(coding_workspaces)
         register_instance(
             HostOSCodingFiles(client, coding_workspaces, reader, editor, search)
         )
         register_instance(HostOSCodingPlans(client, coding_workspaces))
-        register_instance(HostOSCodingExecution(client, coding_workspaces))
+        register_instance(
+            HostOSCodingExecution(client, coding_workspaces, coding_approvals)
+        )
         # Normal bootstrap has L0/L1 ready before interfaces. Keeping this guard
         # also permits intentionally partial interface-only test containers.
         if container.sql is not None:

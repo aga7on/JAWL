@@ -62,3 +62,4 @@ class SystemContainer:
         self.lifecycle_hooks: Optional[Any] = None
         self.lifecycle_command_adapter: Optional[Any] = None
         self.coding_workspaces: Optional[Any] = None
+        self.coding_approvals: Optional[Any] = None
