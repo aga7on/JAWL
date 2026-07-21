@@ -225,10 +225,7 @@ class DeclarativeCommandHooks:
         cwd = workspace if command.working_directory == "workspace" else self.framework_root
         assert cwd is not None
         return_code, output = await self._execute(profile, context, cwd)
-        if (
-            context.phase == HookPhase.PRE_TOOL_USE
-            and return_code == command.deny_exit_code
-        ):
+        if context.phase.can_deny and return_code == command.deny_exit_code:
             return HookDecision.deny(
                 f"Declarative lifecycle hook '{command.name}' denied the action."
             )

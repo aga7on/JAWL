@@ -6,8 +6,10 @@ and merges them in a strict hierarchical order. Ensures optimal performance of t
 LLM attention mechanism by placing critical information closer to attention horizons.
 """
 
+import asyncio
 import json
 import re
+import uuid
 from typing import Any, Dict, List, Literal
 
 from src.l0_state.agent.state import AgentState
@@ -15,6 +17,7 @@ from src.utils.logger import agent_logger
 from src.utils.settings import ContextBudgetConfig, SubconsciousConfig
 
 from src.l3_agent.context.registry import ContextRegistry, ContextSection
+from src.l3_agent.hooks.lifecycle import HookContext, HookPhase, LifecycleHooks
 from src.l3_agent.skills.registry import get_skills_library
 
 
@@ -31,6 +34,7 @@ class ContextBuilder:
         subconscious_config: SubconsciousConfig = None,
         tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
         budget_config: ContextBudgetConfig = None,
+        hooks: LifecycleHooks = None,
     ) -> None:
         """
         Initializes the builder and automatically registers mandatory system providers.
@@ -44,6 +48,7 @@ class ContextBuilder:
         self.subconscious_config = subconscious_config
         self.tool_transport = tool_transport
         self.budget = budget_config or ContextBudgetConfig()
+        self.hooks = hooks or LifecycleHooks()
         self.last_build_metrics: Dict[str, Any] = {}
 
         self.registry.register_provider(
@@ -79,14 +84,56 @@ class ContextBuilder:
         )
         original_chars = len(self._join_blocks(blocks))
         trimmed = {}
+        hook_failures: List[str] = []
         if self.budget.enabled:
-            blocks, trimmed = self._apply_context_budget(blocks)
+            compacted_blocks, trimmed = self._apply_context_budget(blocks)
+            if trimmed:
+                operation_id = f"context-{uuid.uuid4().hex}"
+                parameters = {
+                    "event_name": event_name[:200],
+                    "original_chars": original_chars,
+                    "candidate_chars": len(self._join_blocks(compacted_blocks)),
+                    "trimmed_provider_names": sorted(trimmed)[:100],
+                }
+                hook_failures.extend(
+                    await self._run_observational_hook(
+                        HookContext(
+                            phase=HookPhase.PRE_CONTEXT_COMPACTION,
+                            plan_id=operation_id,
+                            action_id="compact",
+                            tool_name="Context.compaction",
+                            parameters=parameters,
+                        )
+                    )
+                )
+                blocks = compacted_blocks
+                final_chars = len(self._join_blocks(blocks))
+                hook_failures.extend(
+                    await self._run_observational_hook(
+                        HookContext(
+                            phase=HookPhase.POST_CONTEXT_COMPACTION,
+                            plan_id=operation_id,
+                            action_id="compact",
+                            tool_name="Context.compaction",
+                            parameters=parameters,
+                            outcome={
+                                "is_success": True,
+                                "original_chars": original_chars,
+                                "final_chars": final_chars,
+                                "trimmed_provider_count": len(trimmed),
+                            },
+                        )
+                    )
+                )
+            else:
+                blocks = compacted_blocks
         context = self._join_blocks(blocks)
         self.last_build_metrics = {
             "policy": self.budget.skill_policy if self.budget.enabled else "full",
             "original_chars": original_chars,
             "final_chars": len(context),
             "trimmed_providers": trimmed,
+            "hook_failures": hook_failures,
         }
         if trimmed:
             agent_logger.info(
@@ -95,6 +142,19 @@ class ContextBuilder:
                 f"trimmed={','.join(trimmed)}"
             )
         return context
+
+    async def _run_observational_hook(self, context: HookContext) -> List[str]:
+        """Run a non-blocking lifecycle observer without risking context assembly."""
+
+        try:
+            result = await self.hooks.run(context)
+            return list(result.failures)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failure = f"lifecycle infrastructure: {type(exc).__name__}: {exc}"
+            agent_logger.warning(f"[Context] Compaction hook failed: {failure}")
+            return [failure]
 
     # -------------------------------------------------------------------------
     # Service Providers

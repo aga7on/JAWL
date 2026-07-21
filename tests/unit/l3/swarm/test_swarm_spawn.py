@@ -1,8 +1,11 @@
+import asyncio
+
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from src.l3_agent.swarm.spawn import SwarmManager
 from src.utils.settings import SwarmConfig
 from src.l3_agent.swarm.roles import Subagents
+from src.l3_agent.hooks.lifecycle import HookDecision, HookPhase, LifecycleHooks
 
 
 @pytest.fixture
@@ -66,6 +69,85 @@ async def test_spawn_success_background_task(mock_loop_class, swarm_manager):
         await task
 
     mock_loop_instance.run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_spawn_can_be_denied_before_background_task(swarm_manager):
+    async def deny(_context):
+        return HookDecision.deny("operator policy")
+
+    swarm_manager.hooks.subscribe(HookPhase.PRE_DELEGATION, deny)
+
+    result = await swarm_manager.spawn_subagent("coder", "Fix bugs")
+
+    assert result.is_success is False
+    assert "operator policy" in result.message
+    assert not swarm_manager.active_tasks
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.swarm.spawn.SubagentLoop")
+async def test_delegation_emits_success_and_error_terminal_phases(
+    mock_loop_class, swarm_manager
+):
+    phases = []
+
+    async def observe(context):
+        phases.append(context.phase)
+
+    for phase in (
+        HookPhase.PRE_DELEGATION,
+        HookPhase.POST_DELEGATION,
+        HookPhase.DELEGATION_ERROR,
+    ):
+        swarm_manager.hooks.subscribe(phase, observe)
+
+    loop = MagicMock()
+    loop.run = AsyncMock()
+    mock_loop_class.return_value = loop
+    await swarm_manager.spawn_subagent("coder", "first")
+    await asyncio.gather(*list(swarm_manager.active_tasks))
+
+    loop.run = AsyncMock(side_effect=RuntimeError("worker broke"))
+    await swarm_manager.spawn_subagent("coder", "second")
+    await asyncio.gather(*list(swarm_manager.active_tasks))
+
+    assert phases == [
+        HookPhase.PRE_DELEGATION,
+        HookPhase.POST_DELEGATION,
+        HookPhase.PRE_DELEGATION,
+        HookPhase.DELEGATION_ERROR,
+    ]
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.swarm.spawn.SubagentLoop")
+async def test_delegation_cancellation_emits_terminal_phase(
+    mock_loop_class, swarm_manager
+):
+    started = asyncio.Event()
+    phases = []
+
+    async def wait_forever():
+        started.set()
+        await asyncio.Event().wait()
+
+    async def observe(context):
+        phases.append(context.phase)
+
+    swarm_manager.hooks.subscribe(HookPhase.DELEGATION_CANCELLED, observe)
+    loop = MagicMock()
+    loop.run = wait_forever
+    mock_loop_class.return_value = loop
+
+    await swarm_manager.spawn_subagent("coder", "cancel me")
+    task = next(iter(swarm_manager.active_tasks))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert HookPhase.DELEGATION_CANCELLED in phases
 
 
 def test_swarm_manager_dynamic_docstring(mock_registry):

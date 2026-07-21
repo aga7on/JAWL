@@ -5,6 +5,7 @@ Manages startup, operational loops, and graceful shutdown of the SystemContainer
 """
 
 import asyncio
+import uuid
 
 from src.utils.logger import main_logger
 from src.utils.event.bridge import EventBridge
@@ -12,6 +13,7 @@ from src.utils.event.registry import Events
 from src.utils._tools import update_last_active_time
 
 from src.system.container import SystemContainer
+from src.l3_agent.hooks.lifecycle import HookContext, HookPhase
 
 
 class SystemOrchestrator:
@@ -64,6 +66,20 @@ class SystemOrchestrator:
         
         main_logger.info("[System] Initiating JAWL shutdown.")
 
+        operation_id = f"shutdown-{uuid.uuid4().hex}"
+        await self._run_shutdown_hook(
+            HookContext(
+                phase=HookPhase.PRE_SYSTEM_STOP,
+                plan_id=operation_id,
+                action_id="stop",
+                tool_name="System.stop",
+                parameters={
+                    "component_count": len(self.container.lifecycle_components),
+                    "exit_code": self.container.exit_code,
+                },
+            )
+        )
+
         # Обновляем маркер активности перед остановкой, фиксируя точное время выключения
         update_last_active_time()
 
@@ -87,6 +103,20 @@ class SystemOrchestrator:
         if self.container.graph:
             await self.container.graph.disconnect()
 
+        await self._run_shutdown_hook(
+            HookContext(
+                phase=HookPhase.POST_SYSTEM_STOP,
+                plan_id=operation_id,
+                action_id="stop",
+                tool_name="System.stop",
+                parameters={
+                    "component_count": len(self.container.lifecycle_components),
+                    "exit_code": self.container.exit_code,
+                },
+                outcome={"is_success": True},
+            )
+        )
+
         if self.container.event_bus:
             await self.container.event_bus.stop()
 
@@ -98,6 +128,20 @@ class SystemOrchestrator:
             await sub_llm.close()
 
         main_logger.info("[System] Shutdown complete.")
+
+    async def _run_shutdown_hook(self, context: HookContext) -> None:
+        """Keep shutdown progressing even when an observational hook is broken."""
+
+        hooks = self.container.lifecycle_hooks
+        if hooks is None:
+            return
+        try:
+            await hooks.run(context)
+        except asyncio.CancelledError:
+            # Shutdown cleanup must not be abandoned by an observer cancellation.
+            main_logger.warning("[System] Lifecycle shutdown hook was cancelled.")
+        except Exception as exc:
+            main_logger.error(f"[System] Lifecycle shutdown hook failed: {exc}")
 
     async def _watch_for_stop_file(self) -> None:
         """

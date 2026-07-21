@@ -3,6 +3,7 @@ from src.l3_agent.context.builder import ContextBuilder
 from src.l0_state.agent.state import AgentState
 from src.l3_agent.context.registry import ContextRegistry, ContextSection
 from src.utils.settings import ContextBudgetConfig
+from src.l3_agent.hooks.lifecycle import HookPhase, LifecycleHooks
 
 
 @pytest.mark.asyncio
@@ -192,3 +193,62 @@ async def test_context_budget_is_hard_when_skills_and_heartbeat_exceed_it(monkey
     assert {"skills", "heartbeat"} <= set(
         builder.last_build_metrics["trimmed_providers"]
     )
+
+
+@pytest.mark.asyncio
+async def test_context_compaction_emits_observational_boundary_hooks(monkeypatch):
+    monkeypatch.setattr(
+        "src.l3_agent.context.builder.get_skills_library",
+        lambda *args, **kwargs: "large skills\n" + ("x" * 5000),
+    )
+    observed = []
+    hooks = LifecycleHooks(fail_closed=True)
+
+    async def observer(context):
+        observed.append(context)
+        return False
+
+    hooks.subscribe(HookPhase.PRE_CONTEXT_COMPACTION, observer)
+    hooks.subscribe(HookPhase.POST_CONTEXT_COMPACTION, observer)
+    builder = ContextBuilder(
+        AgentState(),
+        ContextRegistry(),
+        budget_config=ContextBudgetConfig(
+            enabled=True,
+            max_dynamic_chars=8000,
+            skills_max_chars=2000,
+            provider_max_chars=1000,
+        ),
+        hooks=hooks,
+    )
+
+    context = await builder.build("TEST_EVENT", {"message": "keep me"}, [])
+
+    assert [item.phase for item in observed] == [
+        HookPhase.PRE_CONTEXT_COMPACTION,
+        HookPhase.POST_CONTEXT_COMPACTION,
+    ]
+    assert observed[0].tool_name == "Context.compaction"
+    assert observed[1].outcome["final_chars"] == len(context)
+    assert builder.last_build_metrics["hook_failures"] == []
+
+
+@pytest.mark.asyncio
+async def test_context_without_trimming_does_not_emit_compaction_hooks():
+    observed = []
+    hooks = LifecycleHooks()
+
+    async def observer(context):
+        observed.append(context.phase)
+
+    hooks.subscribe(HookPhase.PRE_CONTEXT_COMPACTION, observer)
+    builder = ContextBuilder(
+        AgentState(),
+        ContextRegistry(),
+        budget_config=ContextBudgetConfig(enabled=True, max_dynamic_chars=60000),
+        hooks=hooks,
+    )
+
+    await builder.build("TEST_EVENT", {}, [])
+
+    assert observed == []

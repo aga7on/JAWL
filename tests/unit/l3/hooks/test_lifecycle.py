@@ -87,6 +87,23 @@ async def test_observational_hook_failure_cannot_rewrite_outcome():
 
 
 @pytest.mark.asyncio
+async def test_pre_delegation_can_deny_but_compaction_cannot():
+    hooks = LifecycleHooks(fail_closed=True)
+
+    async def deny(_context):
+        return False
+
+    hooks.subscribe(HookPhase.PRE_DELEGATION, deny)
+    hooks.subscribe(HookPhase.PRE_CONTEXT_COMPACTION, deny)
+
+    delegation = await hooks.run(context(HookPhase.PRE_DELEGATION))
+    compaction = await hooks.run(context(HookPhase.PRE_CONTEXT_COMPACTION))
+
+    assert delegation.decision.allowed is False
+    assert compaction.decision.allowed is True
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_observation_uses_event_bus_without_heartbeat_routing():
     bus = EventBus()
     hooks = LifecycleHooks(event_bus=bus)
@@ -105,3 +122,8 @@ async def test_lifecycle_observation_uses_event_bus_without_heartbeat_routing():
     assert LifecycleEvents.PRE_TOOL_USE.name not in {
         event.name for event in Events.all()
     }
+    assert all(
+        LifecycleEvents.for_phase(phase).name
+        not in {event.name for event in Events.all()}
+        for phase in HookPhase
+    )

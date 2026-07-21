@@ -384,7 +384,18 @@ class LifecycleCommandHookConfig(BaseModel):
         min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
     )
     phase: Literal[
-        "pre_tool_use", "post_tool_use", "tool_error", "tool_cancelled"
+        "pre_tool_use",
+        "post_tool_use",
+        "tool_error",
+        "tool_cancelled",
+        "pre_context_compaction",
+        "post_context_compaction",
+        "pre_system_stop",
+        "post_system_stop",
+        "pre_delegation",
+        "post_delegation",
+        "delegation_error",
+        "delegation_cancelled",
     ]
     argv: list[str] = Field(min_length=1, max_length=64)
     tool_patterns: list[str] = Field(

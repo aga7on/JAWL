@@ -150,6 +150,7 @@ def test_build_l3_agent(
 ) -> None:
     """Тест: Сборка L3 Ядра агента (LLM, ReAct, Swarm, Heartbeat)."""
     mock_container.settings.system.lifecycle_hooks.enabled = True
+    mock_container.settings.system.swarm.enabled = True
     mock_container.settings.system.lifecycle_hooks.commands = [
         LifecycleCommandHookConfig(
             name="builder-wiring",
@@ -187,3 +188,5 @@ def test_build_l3_agent(
     assert mock_container.lifecycle_hooks.event_bus is mock_container.event_bus
     assert mock_container.lifecycle_command_adapter is not None
     assert mock_container.lifecycle_hooks.has_handlers()
+    assert react_kwargs["context_builder"].hooks is mock_container.lifecycle_hooks
+    assert mock_swarm.call_args.kwargs["hooks"] is mock_container.lifecycle_hooks

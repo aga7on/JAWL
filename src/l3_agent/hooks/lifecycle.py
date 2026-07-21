@@ -19,6 +19,18 @@ class HookPhase(str, Enum):
     POST_TOOL_USE = "post_tool_use"
     TOOL_ERROR = "tool_error"
     TOOL_CANCELLED = "tool_cancelled"
+    PRE_CONTEXT_COMPACTION = "pre_context_compaction"
+    POST_CONTEXT_COMPACTION = "post_context_compaction"
+    PRE_SYSTEM_STOP = "pre_system_stop"
+    POST_SYSTEM_STOP = "post_system_stop"
+    PRE_DELEGATION = "pre_delegation"
+    POST_DELEGATION = "post_delegation"
+    DELEGATION_ERROR = "delegation_error"
+    DELEGATION_CANCELLED = "delegation_cancelled"
+
+    @property
+    def can_deny(self) -> bool:
+        return self in {self.PRE_TOOL_USE, self.PRE_DELEGATION}
 
 
 class LifecycleEvents:
@@ -48,6 +60,54 @@ class LifecycleEvents:
         level=EventLevel.INFO,
         requires_attention=False,
     )
+    PRE_CONTEXT_COMPACTION = EventConfig(
+        name="LIFECYCLE_PRE_CONTEXT_COMPACTION",
+        description="Dynamic context is about to be compacted.",
+        level=EventLevel.INFO,
+        requires_attention=False,
+    )
+    POST_CONTEXT_COMPACTION = EventConfig(
+        name="LIFECYCLE_POST_CONTEXT_COMPACTION",
+        description="Dynamic context compaction finished.",
+        level=EventLevel.INFO,
+        requires_attention=False,
+    )
+    PRE_SYSTEM_STOP = EventConfig(
+        name="LIFECYCLE_PRE_SYSTEM_STOP",
+        description="Graceful system shutdown started.",
+        level=EventLevel.INFO,
+        requires_attention=False,
+    )
+    POST_SYSTEM_STOP = EventConfig(
+        name="LIFECYCLE_POST_SYSTEM_STOP",
+        description="Managed resources completed graceful shutdown.",
+        level=EventLevel.INFO,
+        requires_attention=False,
+    )
+    PRE_DELEGATION = EventConfig(
+        name="LIFECYCLE_PRE_DELEGATION",
+        description="A delegated worker is awaiting lifecycle preflight.",
+        level=EventLevel.INFO,
+        requires_attention=False,
+    )
+    POST_DELEGATION = EventConfig(
+        name="LIFECYCLE_POST_DELEGATION",
+        description="A delegated worker completed.",
+        level=EventLevel.INFO,
+        requires_attention=False,
+    )
+    DELEGATION_ERROR = EventConfig(
+        name="LIFECYCLE_DELEGATION_ERROR",
+        description="A delegated worker failed.",
+        level=EventLevel.INFO,
+        requires_attention=False,
+    )
+    DELEGATION_CANCELLED = EventConfig(
+        name="LIFECYCLE_DELEGATION_CANCELLED",
+        description="A delegated worker was cancelled.",
+        level=EventLevel.INFO,
+        requires_attention=False,
+    )
 
     @classmethod
     def for_phase(cls, phase: HookPhase) -> EventConfig:
@@ -56,6 +116,14 @@ class LifecycleEvents:
             HookPhase.POST_TOOL_USE: cls.POST_TOOL_USE,
             HookPhase.TOOL_ERROR: cls.TOOL_ERROR,
             HookPhase.TOOL_CANCELLED: cls.TOOL_CANCELLED,
+            HookPhase.PRE_CONTEXT_COMPACTION: cls.PRE_CONTEXT_COMPACTION,
+            HookPhase.POST_CONTEXT_COMPACTION: cls.POST_CONTEXT_COMPACTION,
+            HookPhase.PRE_SYSTEM_STOP: cls.PRE_SYSTEM_STOP,
+            HookPhase.POST_SYSTEM_STOP: cls.POST_SYSTEM_STOP,
+            HookPhase.PRE_DELEGATION: cls.PRE_DELEGATION,
+            HookPhase.POST_DELEGATION: cls.POST_DELEGATION,
+            HookPhase.DELEGATION_ERROR: cls.DELEGATION_ERROR,
+            HookPhase.DELEGATION_CANCELLED: cls.DELEGATION_CANCELLED,
         }[phase]
 
 
@@ -101,9 +169,10 @@ class _RegisteredHook:
 class LifecycleHooks:
     """Run policy hooks in stable priority/order with per-handler timeouts.
 
-    Pre-tool handlers may return ``HookDecision.deny(...)`` or ``False``. Hook
+    Pre-tool and pre-delegation handlers may return ``HookDecision.deny(...)``
+    or ``False``. Hook
     exceptions are isolated and fail open by default; ``fail_closed`` converts
-    a pre-hook timeout/exception into a denial. Post/error hooks are always
+    a deny-capable pre-hook timeout/exception into a denial. Other hooks are always
     observational and cannot rewrite an action outcome.
     """
 
@@ -175,14 +244,14 @@ class LifecycleHooks:
                 failure = f"{hook.name}: {type(exc).__name__}: {exc}"
                 failures.append(failure)
                 agent_logger.warning(f"[Lifecycle Hook] {failure}")
-                if self.fail_closed and context.phase == HookPhase.PRE_TOOL_USE:
+                if self.fail_closed and context.phase.can_deny:
                     decision = HookDecision.deny(
                         f"Lifecycle hook '{hook.name}' failed closed."
                     )
                     break
                 continue
 
-            if context.phase == HookPhase.PRE_TOOL_USE:
+            if context.phase.can_deny:
                 if isinstance(result, HookDecision):
                     decision = result
                 elif result is False:
@@ -213,6 +282,7 @@ class LifecycleHooks:
             plan_id=context.plan_id,
             action_id=context.action_id,
             tool_name=context.tool_name,
+            operation_name=context.tool_name,
             allowed=decision.allowed,
             reason=decision.reason,
             failures=list(failures),

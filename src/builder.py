@@ -291,6 +291,7 @@ class SystemBuilder:
             subconscious_config=self.system_config.subconscious,
             tool_transport=self.container.settings.llm.tool_transport,
             budget_config=self.system_config.context_depth.budget,
+            hooks=self.container.lifecycle_hooks,
         )
 
         token_tracker = TokenTracker()
@@ -379,6 +380,7 @@ class SystemBuilder:
                 executor=sub_llm_executor,
                 swarm_config=self.system_config.swarm,
                 root_dir=self.container.root_dir,
+                hooks=self.container.lifecycle_hooks,
             )
             register_instance(swarm_manager)
 

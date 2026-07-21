@@ -11,6 +11,13 @@ Supported phases:
 * `post_tool_use`: observes successful outcomes.
 * `tool_error`: observes failed outcomes and uncaught runner errors.
 * `tool_cancelled`: observes cancellation during interruption or shutdown.
+* `pre_context_compaction` / `post_context_compaction`: observe an actual
+  dynamic-context reduction. They are not emitted when no provider is trimmed.
+* `pre_system_stop` / `post_system_stop`: bracket graceful resource shutdown;
+  hook failure cannot stop cleanup.
+* `pre_delegation`: may deny a Swarm worker before its background task exists.
+* `post_delegation`, `delegation_error`, and `delegation_cancelled`: record the
+  terminal state of delegated work.
 
 Example:
 
@@ -30,9 +37,9 @@ container.lifecycle_hooks.subscribe(
 
 Handlers run by descending priority and then registration order. Each handler
 has a timeout. Failures are isolated and fail open by default; a runtime may set
-`fail_closed=True` when constructing `LifecycleHooks` for strict policy. Only a
-pre-tool hook can deny execution. Observational hooks cannot rewrite a tool
-result.
+`fail_closed=True` when constructing `LifecycleHooks` for strict policy. Only
+`pre_tool_use` and `pre_delegation` can deny execution. Compaction, shutdown,
+and terminal hooks are observational and cannot rewrite an outcome.
 
 Decisions and hook failures are added to the durable action journal. The same
 lifecycle transitions are published as non-attention EventBus observations and
@@ -83,9 +90,9 @@ timeouts, interpolation, or a framework working directory. Missing task IDs or
 manifests simply skip workspace-scoped hooks. Invalid manifests become hook
 failures and therefore deny pre-tool execution when `fail_closed` is enabled.
 
-Exit code `0` succeeds. For `pre_tool_use`, the configured `deny_exit_code`
-(default `10`) denies the action without classifying the hook as broken. Other
-non-zero codes are failures. Output is drained with a hard retained bound,
+Exit code `0` succeeds. For `pre_tool_use` or `pre_delegation`, the configured
+`deny_exit_code` (default `10`) denies the operation without classifying the
+hook as broken. Other non-zero codes are failures. Output is drained with a hard retained bound,
 redacted before it reaches the action journal, and the whole process tree is
 terminated on timeout or cancellation.
 

@@ -19,7 +19,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
-| Lifecycle policy | Strong | Ordered bounded pre/post/error/cancel hooks, preflight deny, fail-open/fail-closed policy, durable records, passive EventBus observations, and shell-free user/repository command profiles with repository selection but no argv injection | Lifecycle phases do not yet cover compaction, system stop, or delegated-work boundaries |
+| Lifecycle policy | Strong | One ordered bounded registry covers tools, actual context compaction, graceful stop, and delegated-work success/error/cancel; only tool and delegation preflight can deny; passive EventBus observations and shell-free user/repository profiles preserve compatibility | No startup/session boundary hook; delegated result reconciliation still belongs to Swarm |
 | Event steering | Strong | Configurable interrupt/defer/append policy; deferred urgent events preserve in-flight provider responses, skip stale actions, persist a steer tick, and become the next primary trigger; priority-bounded sleep/realtime queues explicitly coalesce only noisy state events and expose overflow without payload leakage | No interactive mid-generation provider steering; safe boundary waits for the active response |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | Transactional rewind | Strong | Exact workspace/index snapshot, plan revision, append-only tick timeline branch, optimistic guard, automatic forward checkpoint and compensation | Does not rewind vector/graph stores or external side effects by design |
@@ -34,17 +34,15 @@ tasks safely, recoverably, and with measurable evidence.
 1. Validate `first_step` Thinking plus adaptive context in the next organic or
    deliberately justified live run; avoid repetitive account-consuming
    calibration.
-2. Extend the declarative lifecycle contract beyond tool calls to compaction,
-   system stop, and delegated-work boundaries.
-3. Add pushed Telegram/desktop approval notifications and reusable named
+2. Add pushed Telegram/desktop approval notifications and reusable named
    container-image sets on top of the local one-shot approval CLI.
-4. Where a provider supports it, add true mid-generation steering without
+3. Where a provider supports it, add true mid-generation steering without
    reintroducing downstream cancellation of completed Thinking work.
-5. Execute preflighted external CLI baselines through `drive_cli.py` before making
+4. Execute preflighted external CLI baselines through `drive_cli.py` before making
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation
    still requires the candidate CLI's sandbox or an external container.
-6. If live traces show repeated navigation startup cost, add lifecycle-managed
+5. If live traces show repeated navigation startup cost, add lifecycle-managed
    incremental LSP sessions without weakening process and output bounds.
 
 ## Current reference architecture comparison
@@ -55,7 +53,7 @@ official documentation shows recurring patterns in leading coding agents:
 | Pattern | Current reference implementations | JAWL fork position |
 | --- | --- | --- |
 | Parallel delegated work | [Codex subagents](https://developers.openai.com/codex/subagents/), [Claude Code subagents](https://code.claude.com/docs/en/sub-agents) | Swarm roles and isolated worktrees exist; delegation quality and reconciliation still need benchmark coverage |
-| Lifecycle control | [Claude Code hooks](https://code.claude.com/docs/en/hooks), [GitHub Copilot hooks](https://docs.github.com/en/copilot/concepts/agents/hooks) | Stable in-process pre/post/error/cancel policy and declarative user/repository commands wrap tool actions; non-tool phases remain |
+| Lifecycle control | [Claude Code hooks](https://code.claude.com/docs/en/hooks), [GitHub Copilot hooks](https://docs.github.com/en/copilot/concepts/agents/hooks) | One stable in-process and declarative policy layer spans tool actions, context compaction, shutdown, and Swarm delegation, with denial restricted to safe preflight boundaries |
 | Recovery and rewind | [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing), [Gemini CLI checkpointing](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/commands.md) | Transactional task-workspace/index/plan rewind plus append-only context timelines, automatic forward recovery, and compensation are implemented; vector/graph memory and external side effects intentionally remain outside rewind scope |
 | Enforced execution boundary | [Gemini CLI sandboxing](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md) | Task argv execution is disabled by default; Docker/Podman adds a real boundary with no host fallback, while exact one-shot approvals and named profiles constrain authorized host/container runs |
 | Repository context economy | [Aider repository map](https://aider.chat/docs/repomap.html) | Bounded map/search/LSP/dependency tools plus the new dynamic budget are competitive substrate; relevance is deterministic rather than learned |

@@ -15,6 +15,7 @@ from src.utils.settings import SwarmConfig
 
 from src.l3_agent.llm.executor import LLMExecutor
 from src.l3_agent.skills.registry import skill, SkillResult, _REGISTRY
+from src.l3_agent.hooks.lifecycle import HookContext, HookPhase, LifecycleHooks
 
 from src.l3_agent.swarm.roles import Subagents, SubagentRole
 from src.l3_agent.swarm.prompt.builder import SwarmPromptBuilder
@@ -30,9 +31,11 @@ class SwarmManager:
         executor: LLMExecutor,
         swarm_config: SwarmConfig,
         root_dir: Path,
+        hooks: LifecycleHooks = None,
     ) -> None:
         self.executor = executor
         self.config = swarm_config
+        self.hooks = hooks or LifecycleHooks()
 
         self.prompt_builder = SwarmPromptBuilder(root_dir)
         self.semaphore = asyncio.Semaphore(self.config.max_concurrent_workers)
@@ -84,6 +87,36 @@ class SwarmManager:
 
         subagent_id = str(uuid.uuid4())[:8]
 
+        hook_parameters = {
+            "role": target_role.id,
+            "subagent_id": subagent_id,
+            "task_description": task_description,
+        }
+        try:
+            pre_hooks = await self.hooks.run(
+                HookContext(
+                    phase=HookPhase.PRE_DELEGATION,
+                    plan_id=f"delegation-{subagent_id}",
+                    action_id=subagent_id,
+                    tool_name="Swarm.delegate",
+                    parameters=hook_parameters,
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            swarm_logger.error(f"[Swarm] Delegation lifecycle preflight failed: {exc}")
+            if self.hooks.fail_closed:
+                return SkillResult.fail(
+                    "Delegation blocked because lifecycle preflight failed closed."
+                )
+        else:
+            if not pre_hooks.decision.allowed:
+                return SkillResult.fail(
+                    "Delegation blocked by lifecycle hook: "
+                    + pre_hooks.decision.reason
+                )
+
         task = asyncio.create_task(
             self._run_subagent_task(subagent_id, target_role, task_description)
         )
@@ -122,6 +155,62 @@ class SwarmManager:
                 )
 
                 await loop.run()
+            await self._observe_delegation(
+                HookPhase.POST_DELEGATION,
+                subagent_id,
+                role,
+                task_description,
+                outcome={"is_success": True},
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._observe_delegation(
+                    HookPhase.DELEGATION_CANCELLED,
+                    subagent_id,
+                    role,
+                    task_description,
+                    outcome={"is_success": False},
+                )
+            )
+            raise
         except Exception:
             log = f"[Swarm] Critical exception in background subagent task {role.id}_{subagent_id}:\n{traceback.format_exc()}"
             swarm_logger.error(log)
+            await self._observe_delegation(
+                HookPhase.DELEGATION_ERROR,
+                subagent_id,
+                role,
+                task_description,
+                outcome={"is_success": False},
+            )
+
+    async def _observe_delegation(
+        self,
+        phase: HookPhase,
+        subagent_id: str,
+        role: SubagentRole,
+        task_description: str,
+        *,
+        outcome: dict,
+    ) -> None:
+        """Emit terminal delegation evidence without altering worker outcomes."""
+
+        try:
+            await self.hooks.run(
+                HookContext(
+                    phase=phase,
+                    plan_id=f"delegation-{subagent_id}",
+                    action_id=subagent_id,
+                    tool_name="Swarm.delegate",
+                    parameters={
+                        "role": role.id,
+                        "subagent_id": subagent_id,
+                        "task_description": task_description,
+                    },
+                    outcome=outcome,
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            swarm_logger.error(f"[Swarm] Delegation lifecycle observer failed: {exc}")

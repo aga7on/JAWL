@@ -77,6 +77,20 @@
       ]
     },
     {
+      "id": "cross_boundary_lifecycle",
+      "description": "One lifecycle registry observes context compaction and shutdown while gating and terminally classifying delegated work.",
+      "tests": [
+        "tests/unit/l3/hooks/test_lifecycle.py::test_pre_delegation_can_deny_but_compaction_cannot",
+        "tests/unit/l3/context/test_context_builder.py::test_context_compaction_emits_observational_boundary_hooks",
+        "tests/unit/l3/context/test_context_builder.py::test_context_without_trimming_does_not_emit_compaction_hooks",
+        "tests/unit/system/test_orchestrator.py::test_orchestrator_stop_hooks_are_observational",
+        "tests/unit/l3/swarm/test_swarm_spawn.py::test_spawn_can_be_denied_before_background_task",
+        "tests/unit/l3/swarm/test_swarm_spawn.py::test_delegation_emits_success_and_error_terminal_phases",
+        "tests/unit/l3/swarm/test_swarm_spawn.py::test_delegation_cancellation_emits_terminal_phase",
+        "tests/unit/test_builder.py::test_build_l3_agent"
+      ]
+    },
+    {
       "id": "durable_interruption_recovery",
       "description": "Lifecycle evidence is redacted and unfinished work is classified after restart.",
       "tests": [

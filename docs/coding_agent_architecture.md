@@ -31,6 +31,16 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 
 ## Declarative lifecycle automation contract
 
+- One hook registry spans tool execution, real context compaction, graceful
+  system stop, and Swarm delegation; coding support does not introduce a
+  parallel lifecycle subsystem.
+- Only `pre_tool_use` and `pre_delegation` are policy gates. Compaction,
+  shutdown, and terminal phases are observational, so an extension cannot veto
+  context assembly or prevent resource cleanup.
+- Lifecycle EventBus records remain passive and outside Heartbeat routing.
+  Generic operation names (`Context.compaction`, `System.stop`, and
+  `Swarm.delegate`) preserve the existing `tool_name` compatibility field.
+
 - Declarative command hooks are disabled by default and use exact argv without
   a shell, interpolation, or repository-provided environment variables.
 - User profiles are resolved and executable-hashed at startup. A managed

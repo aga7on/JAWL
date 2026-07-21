@@ -5,6 +5,7 @@ from src.system.container import SystemContainer
 from src.system.orchestrator import SystemOrchestrator
 from src.utils.settings import SettingsConfig, InterfacesConfig
 from src.utils.event.bus import EventBus
+from src.l3_agent.hooks.lifecycle import HookPhase, LifecycleHooks
 
 
 @pytest.fixture
@@ -93,3 +94,30 @@ async def test_orchestrator_stop_gracefully(mock_container):
     mock_container.sql.disconnect.assert_awaited_once()
     mock_container.vector.disconnect.assert_awaited_once()
     mock_container.graph.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stop_hooks_are_observational(mock_container):
+    observed = []
+    hooks = LifecycleHooks(fail_closed=True)
+
+    async def observe(context):
+        observed.append(context.phase)
+        if context.phase == HookPhase.POST_SYSTEM_STOP:
+            raise RuntimeError("observer broke")
+
+    hooks.subscribe(HookPhase.PRE_SYSTEM_STOP, observe)
+    hooks.subscribe(HookPhase.POST_SYSTEM_STOP, observe)
+    mock_container.lifecycle_hooks = hooks
+    mock_container.sql = MagicMock(disconnect=AsyncMock())
+    mock_container.vector = MagicMock(disconnect=AsyncMock())
+    mock_container.graph = MagicMock(disconnect=AsyncMock())
+    mock_container.llm_client = MagicMock(close=AsyncMock())
+
+    await SystemOrchestrator(mock_container).stop()
+
+    assert observed == [HookPhase.PRE_SYSTEM_STOP, HookPhase.POST_SYSTEM_STOP]
+    mock_container.sql.disconnect.assert_awaited_once()
+    mock_container.vector.disconnect.assert_awaited_once()
+    mock_container.graph.disconnect.assert_awaited_once()
+    mock_container.llm_client.close.assert_awaited_once()

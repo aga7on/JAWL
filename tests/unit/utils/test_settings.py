@@ -102,6 +102,26 @@ def test_lifecycle_command_hook_config_is_exact_argv_not_shell_text():
         )
 
 
+def test_lifecycle_command_hook_config_accepts_cross_boundary_phases():
+    phases = {
+        "pre_context_compaction",
+        "post_context_compaction",
+        "pre_system_stop",
+        "post_system_stop",
+        "pre_delegation",
+        "post_delegation",
+        "delegation_error",
+        "delegation_cancelled",
+    }
+
+    assert {
+        LifecycleCommandHookConfig(
+            name=f"hook-{index}", phase=phase, argv=["python", "hook.py"]
+        ).phase
+        for index, phase in enumerate(sorted(phases))
+    } == phases
+
+
 def test_load_yaml_duplicate_keys(tmp_path: Path):
     """Test: duplicate keys raise ConstructorError."""
     test_file = tmp_path / "test_dup.yaml"

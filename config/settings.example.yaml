@@ -67,6 +67,8 @@ system:
   # Shell-free local lifecycle automation. Commands are disabled unless the
   # user declares exact argv profiles here. A repository may only select a
   # profile with scope: repository through its .jawl/hooks.json manifest.
+  # Supported phases cover tool use, actual context compaction, graceful stop,
+  # and Swarm delegation. Only pre_tool_use and pre_delegation may deny.
   lifecycle_hooks:
     enabled: false
     fail_closed: true
