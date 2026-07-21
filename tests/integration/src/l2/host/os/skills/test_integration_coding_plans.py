@@ -61,6 +61,7 @@ async def test_coding_plan_persists_dependencies_evidence_and_commit_gate(os_cli
     )
     assert initialized.is_success is True, initialized.message
     assert json.loads(initialized.message)["revision"] == 1
+    assert json.loads(initialized.message)["requires_diff_review"] is True
 
     dependency_rejected = await plans.update_coding_task_step(
         "plan-task",
@@ -127,11 +128,41 @@ async def test_coding_plan_persists_dependencies_evidence_and_commit_gate(os_cli
     persisted_payload = json.loads(persisted.message)
     assert persisted_payload["revision"] == 4
     assert persisted_payload["summary"]["ready_for_commit"] is True
+    assert persisted_payload["requires_diff_review"] is True
     history = json.loads(
         (await resumed.get_coding_task_plan("plan-task", section="history")).message
     )
     assert len(history["items"]) == 4
     assert history["has_more"] is False
+
+    unreviewed = await workspaces.commit_coding_workspace(
+        "plan-task", "change value"
+    )
+    assert unreviewed.is_success is False
+    assert "has not been fully reviewed" in unreviewed.message
+    diff = await workspaces.get_coding_workspace_diff(
+        "plan-task", file_path="app.py"
+    )
+    diff_payload = json.loads(diff.message)
+    wrong_review = await workspaces.accept_coding_workspace_diff_review(
+        "plan-task",
+        diff_payload["fingerprint"]["fingerprint"],
+        "0" * 64,
+        file_path="app.py",
+    )
+    assert wrong_review.is_success is False
+    assert "reviewed diff hash" in wrong_review.message
+    accepted = await workspaces.accept_coding_workspace_diff_review(
+        "plan-task",
+        diff_payload["fingerprint"]["fingerprint"],
+        diff_payload["reviewed_diff_sha256"],
+        file_path="app.py",
+    )
+    assert accepted.is_success is True, accepted.message
+    review_status = json.loads(accepted.message)
+    assert review_status["required_by_plan"] is True
+    assert review_status["ready_for_commit"] is True
+    assert review_status["missing_files"] == []
 
     commit_token, _ = begin_trace("test", trace_id="trace-commit")
     try:
@@ -143,8 +174,93 @@ async def test_coding_plan_persists_dependencies_evidence_and_commit_gate(os_cli
     assert committed.is_success is True, committed.message
     commit_payload = json.loads(committed.message)
     assert commit_payload["plan_completion_bypassed"] is False
+    assert commit_payload["diff_review_bypassed"] is False
+    assert len(commit_payload["diff_review_evidence_sha256"]) == 64
+    committed_entry = workspaces._load_registry()["workspaces"]["plan-task"]
+    assert committed_entry["last_commit_diff_review"]["commit"] == (
+        commit_payload["commit"]
+    )
+    assert committed_entry["last_commit_diff_review"][
+        "review_evidence_sha256"
+    ] == commit_payload["diff_review_evidence_sha256"]
     assert commit_payload["trace"]["trace_id"] == "trace-commit"
     assert (await workspaces.remove_coding_workspace("plan-task")).is_success
+
+
+@pytest.mark.asyncio
+async def test_diff_review_gate_preserves_legacy_plans_and_records_explicit_bypass(
+    os_client,
+):
+    create_repository(os_client.sandbox_dir)
+    workspaces = HostOSCodingWorkspaces(os_client)
+    plans = HostOSCodingPlans(os_client, workspaces)
+    verifier = HostOSCodingVerification(os_client, workspaces)
+
+    async def prepare(task_id: str, value: int) -> None:
+        created = await workspaces.create_coding_workspace(
+            "sandbox/project", task_id
+        )
+        workspace = Path(json.loads(created.message)["workspace_path"])
+        initialized = await plans.initialize_coding_task_plan(
+            task_id,
+            "Change one value",
+            ["The new value is committed"],
+            [{"id": "change", "title": "Change and verify the value"}],
+        )
+        assert initialized.is_success is True, initialized.message
+        (workspace / "app.py").write_text(
+            f"value = {value}\n", encoding="utf-8"
+        )
+        verified = await verifier.run_coding_verification(
+            task_id, checks=["git_diff_check", "python_compile"]
+        )
+        assert verified.is_success is True, verified.message
+        step = await plans.update_coding_task_step(
+            task_id,
+            "change",
+            "completed",
+            evidence="Exact diff and verification inspected.",
+            expected_revision=1,
+        )
+        assert step.is_success is True, step.message
+        requirement = await plans.update_coding_requirement(
+            task_id,
+            "req_1",
+            "satisfied",
+            evidence="Verification passed for the exact workspace state.",
+            expected_revision=2,
+        )
+        assert requirement.is_success is True, requirement.message
+
+    await prepare("legacy-review-plan", 2)
+    async with workspaces._lock:
+        registry = workspaces._load_registry()
+        legacy_entry = registry["workspaces"]["legacy-review-plan"]
+        legacy_entry["task_plan"].pop("requires_diff_review")
+        workspaces._save_registry(registry)
+    legacy_commit = await workspaces.commit_coding_workspace(
+        "legacy-review-plan", "legacy compatible commit"
+    )
+    assert legacy_commit.is_success is True, legacy_commit.message
+    assert json.loads(legacy_commit.message)["diff_review_bypassed"] is False
+
+    await prepare("review-bypass-plan", 3)
+    bypass_commit = await workspaces.commit_coding_workspace(
+        "review-bypass-plan",
+        "explicit review bypass",
+        require_diff_review=False,
+    )
+    assert bypass_commit.is_success is True, bypass_commit.message
+    assert json.loads(bypass_commit.message)["diff_review_bypassed"] is True
+    stored = workspaces._load_registry()["workspaces"]["review-bypass-plan"]
+    assert stored["last_commit_diff_review_bypassed"] is True
+
+    assert (
+        await workspaces.remove_coding_workspace("legacy-review-plan")
+    ).is_success
+    assert (
+        await workspaces.remove_coding_workspace("review-bypass-plan")
+    ).is_success
 
 
 @pytest.mark.asyncio

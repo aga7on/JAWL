@@ -259,6 +259,7 @@ async def test_live_driver_extracts_committed_workspace_patch_for_same_grader(tm
     assert extraction["worktree_clean"] is True
     assert extraction["lifecycle_gate_passed"] is False
     assert extraction["verification_bypassed"] is None
+    assert extraction["diff_review_bypassed"] is None
     assert extraction["patch_bytes"] > 0
     assert evaluation["gate_passed"] is True
 
@@ -368,13 +369,50 @@ async def test_live_driver_runs_real_react_and_coding_skills_without_network(
                     },
                 },
                 {
-                    "tool_name": "HostOSCodingWorkspaces.commit_coding_workspace",
+                    "tool_name": "HostOSCodingWorkspaces.get_coding_workspace_diff",
+                    "action_id": "review-diff",
                     "depends_on": ["complete-step", "complete-requirement"],
+                    "parameters": {
+                        "task_id": "eval-inclusive_range_parser",
+                        "file_path": "ranges.py",
+                    },
+                }
+            ]
+        elif step == 3:
+            context = kwargs["messages"][-1]["content"]
+            marker = "* HostOSCodingWorkspaces.get_coding_workspace_diff: "
+            start = context.rfind(marker)
+            assert start >= 0
+            start += len(marker)
+            end = context.find("\n  [action_id=review-diff;", start)
+            assert end > start
+            reviewed = json.loads(context[start:end])
+            actions = [
+                {
+                    "tool_name": (
+                        "HostOSCodingWorkspaces."
+                        "accept_coding_workspace_diff_review"
+                    ),
+                    "action_id": "accept-review",
+                    "parameters": {
+                        "task_id": "eval-inclusive_range_parser",
+                        "expected_workspace_fingerprint": reviewed["fingerprint"][
+                            "fingerprint"
+                        ],
+                        "expected_reviewed_diff_sha256": reviewed[
+                            "reviewed_diff_sha256"
+                        ],
+                        "file_path": "ranges.py",
+                    },
+                },
+                {
+                    "tool_name": "HostOSCodingWorkspaces.commit_coding_workspace",
+                    "depends_on": ["accept-review"],
                     "parameters": {
                         "task_id": "eval-inclusive_range_parser",
                         "commit_message": "solve inclusive range task",
                     },
-                }
+                },
             ]
         else:
             actions = []
@@ -415,19 +453,22 @@ async def test_live_driver_runs_real_react_and_coding_skills_without_network(
     )
     evaluation = evaluate_task(task, "solution", output_dir / "patches")
 
-    assert len(responses) == 3
+    assert len(responses) == 4
     assert result["error"] == ""
     assert result["timed_out"] is False
     assert result["lifecycle_gate_passed"] is True
     assert result["plan_complete"] is True
     assert result["verification_bypassed"] is False
     assert result["plan_bypassed"] is False
+    assert result["diff_review_required"] is True
+    assert result["diff_review_bypassed"] is False
+    assert len(result["diff_review_evidence_sha256"]) == 64
     assert result["input_tokens"] > 0
     assert result["output_tokens"] > 0
-    assert result["tick_count"] == 3
-    assert result["action_tick_count"] == 2
+    assert result["tick_count"] == 4
+    assert result["action_tick_count"] == 3
     assert result["protocol_error_count"] == 0
     assert result["tick_summaries"][-1]["status"] == "completed"
-    assert len(result["llm_calls"]) == 3
+    assert len(result["llm_calls"]) == 4
     assert "completed" in result["terminal_statuses"]
     assert evaluation["gate_passed"] is True

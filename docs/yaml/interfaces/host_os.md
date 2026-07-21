@@ -84,3 +84,17 @@ workspace fingerprint check, output/process bounds, and approval mode. The agent
 can discover redacted profile metadata with `list_coding_command_profiles` and,
 when approval is required, use `request_coding_profile_approval` without ever
 reconstructing the configured argv.
+
+## Durable coding diff review
+
+`get_coding_workspace_diff` returns a `reviewed_diff_sha256`, structured hunk
+hashes, and `hunk_analysis_complete`. Only a complete response can be accepted
+with `accept_coding_workspace_diff_review`; the bridge recomputes it and binds
+the evidence to the exact workspace fingerprint. Large changes can be accepted
+one complete file at a time, but any subsequent workspace change invalidates all
+prior coverage. Raw diff text is not persisted.
+
+New durable coding plans require every changed file to have current review
+coverage before the final commit. Old persisted plans and ad-hoc workspaces keep
+their existing behavior. `require_diff_review=false` is an explicit escape hatch
+for intermediate or unusually large commits and is retained as bypass metadata.

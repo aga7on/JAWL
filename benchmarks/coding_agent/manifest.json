@@ -192,6 +192,16 @@
       ]
     },
     {
+      "id": "durable_exact_state_diff_review",
+      "description": "Complete workspace or per-file diff acceptances are recomputed, bounded, exact-state, stale on mutation, and required by new plans while legacy and explicit bypass behavior remains visible.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_includes_untracked_redacts_secrets_and_bounds_output",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_diff_review_accumulates_files_and_rejects_stale_state",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_coding_plan_persists_dependencies_evidence_and_commit_gate",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_diff_review_gate_preserves_legacy_plans_and_records_explicit_bypass"
+      ]
+    },
+    {
       "id": "verified_state_commit_gate",
       "description": "Only the exact successfully verified workspace fingerprint can be committed.",
       "tests": [

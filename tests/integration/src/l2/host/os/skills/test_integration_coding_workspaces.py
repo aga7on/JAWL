@@ -393,6 +393,15 @@ async def test_workspace_diff_includes_untracked_redacts_secrets_and_bounds_outp
     assert payload["truncated"] is True
     assert payload["hunk_analysis_complete"] is False
     assert payload["hunks"][-1]["complete"] is False
+    incomplete_review = await manager.accept_coding_workspace_diff_review(
+        "diff-review",
+        payload["fingerprint"]["fingerprint"],
+        payload["reviewed_diff_sha256"],
+        file_path="new_file.py",
+        max_chars=1000,
+    )
+    assert incomplete_review.is_success is False
+    assert "response is incomplete" in incomplete_review.message
     assert escaped.is_success is False
     assert (await manager.remove_coding_workspace("diff-review", force=True)).is_success
 
@@ -529,6 +538,97 @@ async def test_workspace_diff_keeps_deleted_file_hunk_identity(os_client):
     assert (
         await manager.remove_coding_workspace("deleted-hunk", force=True)
     ).is_success
+
+
+@pytest.mark.asyncio
+async def test_diff_review_accumulates_files_and_rejects_stale_state(os_client):
+    repository = create_repository(os_client.sandbox_dir)
+    (repository / "second.py").write_text("value = 10\n", encoding="utf-8")
+    run_git(repository, "add", "second.py")
+    run_git(repository, "commit", "-m", "add second source")
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "review-coverage"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "app.py").write_text("value = 2\n", encoding="utf-8")
+    (workspace / "second.py").write_text("value = 20\n", encoding="utf-8")
+
+    app_diff = json.loads(
+        (
+            await manager.get_coding_workspace_diff(
+                "review-coverage", file_path="app.py"
+            )
+        ).message
+    )
+    second_diff = json.loads(
+        (
+            await manager.get_coding_workspace_diff(
+                "review-coverage", file_path="second.py"
+            )
+        ).message
+    )
+    accepted_app = await manager.accept_coding_workspace_diff_review(
+        "review-coverage",
+        app_diff["fingerprint"]["fingerprint"],
+        app_diff["reviewed_diff_sha256"],
+        file_path="app.py",
+    )
+    assert accepted_app.is_success is True, accepted_app.message
+    partial = json.loads(accepted_app.message)
+    assert partial["ready_for_commit"] is False
+    assert partial["covered_files"] == ["app.py"]
+    assert partial["missing_files"] == ["second.py"]
+
+    (workspace / "second.py").write_text("value = 21\n", encoding="utf-8")
+    stale_status = json.loads(
+        (await manager.get_coding_workspace_diff_review_status("review-coverage")).message
+    )
+    assert stale_status["is_current"] is False
+    stale_acceptance = await manager.accept_coding_workspace_diff_review(
+        "review-coverage",
+        second_diff["fingerprint"]["fingerprint"],
+        second_diff["reviewed_diff_sha256"],
+        file_path="second.py",
+    )
+    assert stale_acceptance.is_success is False
+    assert "fingerprint changed since review" in stale_acceptance.message
+
+    verified = await verifier.run_coding_verification(
+        "review-coverage", checks=["git_diff_check", "python_compile"]
+    )
+    assert verified.is_success is True, verified.message
+    for relative_path in ("app.py", "second.py"):
+        diff = json.loads(
+            (
+                await manager.get_coding_workspace_diff(
+                    "review-coverage", file_path=relative_path
+                )
+            ).message
+        )
+        accepted = await manager.accept_coding_workspace_diff_review(
+            "review-coverage",
+            diff["fingerprint"]["fingerprint"],
+            diff["reviewed_diff_sha256"],
+            file_path=relative_path,
+        )
+        assert accepted.is_success is True, accepted.message
+    final_status = json.loads(
+        (await manager.get_coding_workspace_diff_review_status("review-coverage")).message
+    )
+    assert final_status["is_current"] is True
+    assert final_status["ready_for_commit"] is True
+    committed = await manager.commit_coding_workspace(
+        "review-coverage", "review both files", require_diff_review=True
+    )
+    assert committed.is_success is True, committed.message
+    assert json.loads(committed.message)["diff_review_bypassed"] is False
+    registry = manager._load_registry()["workspaces"]["review-coverage"]
+    serialized_review = json.dumps(registry["diff_review"], ensure_ascii=False)
+    assert "reviewed_diff_sha256" in serialized_review
+    assert "diff --git" not in serialized_review
+    assert (await manager.remove_coding_workspace("review-coverage")).is_success
 
 
 @pytest.mark.asyncio

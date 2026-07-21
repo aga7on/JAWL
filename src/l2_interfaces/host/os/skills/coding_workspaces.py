@@ -34,6 +34,8 @@ class HostOSCodingWorkspaces:
         ".ruff_cache",
         "__pycache__",
     }
+    _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+    _MAX_REVIEW_SCOPES = 500
 
     def __init__(
         self,
@@ -232,6 +234,64 @@ class HostOSCodingWorkspaces:
         if repository.is_relative_to(self.worktrees_dir.resolve()):
             raise ValueError("A managed worktree cannot be used as the base repository.")
         return repository
+
+    async def _list_changed_files(
+        self,
+        workspace: Path,
+        *,
+        pathspec: Optional[str] = None,
+        staged: bool = False,
+    ) -> Tuple[List[str], List[str]]:
+        """Return exact UTF-8 tracked/untracked paths without Git quoting."""
+
+        tracked_args = [
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-ext-diff",
+        ]
+        if staged:
+            tracked_args.append("--cached")
+        else:
+            tracked_args.append("HEAD")
+        tracked_args.append("--")
+        if pathspec:
+            tracked_args.append(pathspec)
+        code, tracked_output, err = await self._run_git(
+            workspace, *tracked_args, strip_output=False
+        )
+        if code != 0:
+            raise ValueError(
+                f"Unable to list tracked changes: {err or tracked_output}"
+            )
+        tracked_files = [
+            path.replace("\\", "/")
+            for path in tracked_output.split("\x00")
+            if path
+        ]
+
+        untracked_files: List[str] = []
+        if not staged:
+            code, untracked_output, err = await self._run_git(
+                workspace,
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                *([pathspec] if pathspec else []),
+                strip_output=False,
+            )
+            if code != 0:
+                raise ValueError(f"Unable to list untracked files: {err}")
+            untracked_files = sorted(
+                path.replace("\\", "/")
+                for path in untracked_output.split("\x00")
+                if path
+            )
+        return tracked_files, untracked_files
 
     def _entry_paths(self, entry: Dict[str, Any]) -> Tuple[Path, Path]:
         repository = self.host_os.validate_path(
@@ -504,6 +564,7 @@ class HostOSCodingWorkspaces:
     async def _status_payload(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         repository, workspace = self._entry_paths(entry)
         payload = dict(entry)
+        payload.pop("diff_review", None)
         payload["repository_exists"] = repository.is_dir()
         payload["workspace_exists"] = workspace.is_dir()
         if not workspace.is_dir():
@@ -524,6 +585,10 @@ class HostOSCodingWorkspaces:
         payload["diff_stat"] = truncate_text(diff_stat, max_chars=6000)
         payload["head"] = fingerprint["head"]
         payload["workspace_fingerprint"] = fingerprint["fingerprint"]
+        tracked, untracked = await self._list_changed_files(workspace)
+        payload["diff_review"] = self._diff_review_status(
+            entry, fingerprint, sorted(set(tracked + untracked))
+        )
         return payload
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
@@ -782,55 +847,9 @@ class HostOSCodingWorkspaces:
                         )
                     pathspec = requested.as_posix()
 
-                tracked_args = [
-                    "-c",
-                    "core.quotePath=false",
-                    "diff",
-                    "--name-only",
-                    "-z",
-                    "--no-ext-diff",
-                ]
-                if staged:
-                    tracked_args.append("--cached")
-                else:
-                    tracked_args.append("HEAD")
-                tracked_args.append("--")
-                if pathspec:
-                    tracked_args.append(pathspec)
-                code, tracked_output, err = await self._run_git(
-                    workspace, *tracked_args, strip_output=False
+                tracked_files, untracked_files = await self._list_changed_files(
+                    workspace, pathspec=pathspec, staged=staged
                 )
-                if code != 0:
-                    return SkillResult.fail(
-                        f"Unable to list tracked changes: {err or tracked_output}"
-                    )
-                tracked_files = [
-                    line.replace("\\", "/")
-                    for line in tracked_output.split("\x00")
-                    if line
-                ]
-
-                untracked_files: List[str] = []
-                if not staged:
-                    code, untracked_output, err = await self._run_git(
-                        workspace,
-                        "ls-files",
-                        "--others",
-                        "--exclude-standard",
-                        "-z",
-                        "--",
-                        *([pathspec] if pathspec else []),
-                        strip_output=False,
-                    )
-                    if code != 0:
-                        return SkillResult.fail(
-                            f"Unable to list untracked files: {err}"
-                        )
-                    untracked_files = sorted(
-                        path.replace("\\", "/")
-                        for path in untracked_output.split("\x00")
-                        if path
-                    )
 
                 all_changed_files = sorted(set(tracked_files + untracked_files))
                 if pathspec:
@@ -923,6 +942,7 @@ class HostOSCodingWorkspaces:
                     "file_path": pathspec,
                     "staged": staged,
                     "context_lines": context_lines,
+                    "max_chars": max_chars,
                     "file_offset": effective_offset,
                     "file_limit": file_limit,
                     "changed_file_count": len(all_changed_files),
@@ -940,6 +960,9 @@ class HostOSCodingWorkspaces:
                     "diff_collection_truncated": diff_collection_truncated,
                     "truncated": truncated,
                     "diff": diff_text,
+                    "reviewed_diff_sha256": hashlib.sha256(
+                        diff_text.encode("utf-8")
+                    ).hexdigest(),
                 }
                 hunk_payload = await asyncio.to_thread(
                     self._structured_diff_hunks,
@@ -959,6 +982,215 @@ class HostOSCodingWorkspaces:
             return SkillResult.fail(str(exc))
         except Exception as exc:
             return SkillResult.fail(f"Error reading coding workspace diff: {exc}")
+
+    @staticmethod
+    def _diff_review_status(
+        entry: Dict[str, Any],
+        fingerprint: Dict[str, str],
+        changed_files: List[str],
+    ) -> Dict[str, Any]:
+        review = entry.get("diff_review")
+        plan = entry.get("task_plan")
+        is_current = bool(
+            isinstance(review, dict)
+            and review.get("fingerprint") == fingerprint["fingerprint"]
+            and review.get("head") == fingerprint["head"]
+        )
+        covered = sorted(
+            set(review.get("covered_files", [])) & set(changed_files)
+            if is_current
+            else set()
+        )
+        missing = sorted(set(changed_files) - set(covered))
+        return {
+            "required_by_plan": bool(
+                isinstance(plan, dict) and plan.get("requires_diff_review", False)
+            ),
+            "is_current": is_current,
+            "ready_for_commit": not changed_files or (is_current and not missing),
+            "workspace_fingerprint": fingerprint["fingerprint"],
+            "changed_file_count": len(changed_files),
+            "covered_file_count": len(covered),
+            "covered_files": covered[:500],
+            "missing_files": missing[:500],
+            "file_list_truncated": len(changed_files) > 500,
+            "accepted_scope_count": (
+                len(review.get("scopes", {})) if is_current else 0
+            ),
+            "accepted_at": review.get("accepted_at") if is_current else None,
+        }
+
+    @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def accept_coding_workspace_diff_review(
+        self,
+        task_id: str,
+        expected_workspace_fingerprint: str,
+        expected_reviewed_diff_sha256: str,
+        file_path: Optional[str] = None,
+        context_lines: int = 3,
+        max_chars: int = 30000,
+    ) -> SkillResult:
+        """Persist explicit review evidence for one complete exact-state diff."""
+
+        try:
+            return await self._accept_coding_workspace_diff_review(
+                task_id,
+                expected_workspace_fingerprint,
+                expected_reviewed_diff_sha256,
+                file_path=file_path,
+                context_lines=context_lines,
+                max_chars=max_chars,
+            )
+        except (PermissionError, FileNotFoundError, TimeoutError, ValueError, KeyError) as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Error accepting diff review: {exc}")
+
+    async def _accept_coding_workspace_diff_review(
+        self,
+        task_id: str,
+        expected_workspace_fingerprint: str,
+        expected_reviewed_diff_sha256: str,
+        file_path: Optional[str] = None,
+        context_lines: int = 3,
+        max_chars: int = 30000,
+    ) -> SkillResult:
+        """Persist explicit review evidence for one complete exact-state diff.
+
+        The diff is recomputed before acceptance. Whole-workspace acceptance
+        covers every changed file only when its file page and hunks are complete;
+        otherwise callers accept complete per-file views under the same workspace
+        fingerprint. Raw diff text is never persisted.
+        """
+
+        expected_workspace_fingerprint = str(
+            expected_workspace_fingerprint or ""
+        ).lower()
+        expected_reviewed_diff_sha256 = str(
+            expected_reviewed_diff_sha256 or ""
+        ).lower()
+        if not self._SHA256_PATTERN.fullmatch(expected_workspace_fingerprint):
+            return SkillResult.fail(
+                "expected_workspace_fingerprint must be a SHA-256 value."
+            )
+        if not self._SHA256_PATTERN.fullmatch(expected_reviewed_diff_sha256):
+            return SkillResult.fail(
+                "expected_reviewed_diff_sha256 must be a SHA-256 value."
+            )
+
+        reviewed = await self.get_coding_workspace_diff(
+            task_id,
+            file_path=file_path,
+            staged=False,
+            context_lines=context_lines,
+            max_chars=max_chars,
+            file_offset=0,
+            file_limit=200,
+        )
+        if not reviewed.is_success:
+            return reviewed
+        payload = json.loads(reviewed.message)
+        if not payload.get("changed_files"):
+            return SkillResult.fail("Diff review rejected: workspace has no changes.")
+        if not payload.get("hunk_analysis_complete"):
+            return SkillResult.fail(
+                "Diff review rejected: this response is incomplete. Request "
+                "complete per-file diff output before accepting it."
+            )
+        observed_fingerprint = payload["fingerprint"]["fingerprint"]
+        if observed_fingerprint != expected_workspace_fingerprint:
+            return SkillResult.fail(
+                "Diff review rejected: workspace fingerprint changed since review "
+                f"(expected {expected_workspace_fingerprint}, current "
+                f"{observed_fingerprint})."
+            )
+        observed_review_hash = payload["reviewed_diff_sha256"]
+        if observed_review_hash != expected_reviewed_diff_sha256:
+            return SkillResult.fail(
+                "Diff review rejected: reviewed diff hash does not match the "
+                "recomputed exact-state diff."
+            )
+
+        task_id = self._validate_task_id(task_id)
+        async with self._lock:
+            registry = self._load_registry()
+            entry = self._get_entry(registry, task_id)
+            _, workspace = self._entry_paths(entry)
+            current_fingerprint = await self.workspace_fingerprint(workspace)
+            if current_fingerprint["fingerprint"] != expected_workspace_fingerprint:
+                return SkillResult.fail(
+                    "Diff review rejected: workspace changed while acceptance was "
+                    "being recorded."
+                )
+            tracked, untracked = await self._list_changed_files(workspace)
+            current_files = sorted(set(tracked + untracked))
+            scope = payload.get("file_path") or "*"
+            existing = entry.get("diff_review")
+            if not isinstance(existing, dict) or (
+                existing.get("fingerprint") != expected_workspace_fingerprint
+                or existing.get("head") != current_fingerprint["head"]
+            ):
+                existing = {
+                    "version": 1,
+                    "fingerprint": expected_workspace_fingerprint,
+                    "head": current_fingerprint["head"],
+                    "scopes": {},
+                    "covered_files": [],
+                }
+            scopes = existing.setdefault("scopes", {})
+            scope_key = "workspace" if scope == "*" else f"file:{scope}"
+            if scope_key not in scopes and len(scopes) >= self._MAX_REVIEW_SCOPES:
+                return SkillResult.fail(
+                    "Diff review rejected: accepted scope limit reached; use an "
+                    "explicit commit review bypass for this unusually large change."
+                )
+            now = self._utc_now()
+            scopes[scope_key] = {
+                "file_path": None if scope == "*" else scope,
+                "reviewed_diff_sha256": observed_review_hash,
+                "hunk_review_sha256": payload["hunk_review_sha256"],
+                "hunk_count": payload["hunk_count"],
+                "changed_files": payload["changed_files"][:500],
+                "accepted_at": now,
+                "trace": current_trace(),
+            }
+            if scope == "*":
+                existing["covered_files"] = current_files[:500]
+            else:
+                covered = set(existing.get("covered_files", []))
+                covered.update(payload["changed_files"])
+                existing["covered_files"] = sorted(covered)[:500]
+            existing["accepted_at"] = now
+            entry["diff_review"] = existing
+            status = self._diff_review_status(
+                entry, current_fingerprint, current_files
+            )
+            self._save_registry(registry)
+        return SkillResult.ok(json.dumps(status, ensure_ascii=False))
+
+    @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def get_coding_workspace_diff_review_status(
+        self, task_id: str
+    ) -> SkillResult:
+        """Return bounded exact-state diff-review coverage without raw content."""
+
+        try:
+            task_id = self._validate_task_id(task_id)
+            async with self._lock:
+                entry = self._get_entry(self._load_registry(), task_id)
+                _, workspace = self._entry_paths(entry)
+                fingerprint = await self.workspace_fingerprint(workspace)
+                tracked, untracked = await self._list_changed_files(workspace)
+                status = self._diff_review_status(
+                    entry, fingerprint, sorted(set(tracked + untracked))
+                )
+            return SkillResult.ok(json.dumps(status, ensure_ascii=False))
+        except (PermissionError, FileNotFoundError, TimeoutError, ValueError, KeyError) as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Error reading diff review status: {exc}")
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.SANDBOX)
@@ -985,6 +1217,7 @@ class HostOSCodingWorkspaces:
         commit_message: str,
         require_verified: bool = True,
         require_plan_complete: bool = True,
+        require_diff_review: Optional[bool] = None,
     ) -> SkillResult:
         """Commit task changes locally without pushing or merging them.
 
@@ -993,6 +1226,9 @@ class HostOSCodingWorkspaces:
         that cannot reasonably execute (for example, documentation-only work).
         If the task has a durable coding plan, all steps and requirements must
         be complete unless ``require_plan_complete=false`` is explicit.
+        New plans also require exact-state diff-review coverage by default.
+        Existing plans and ad-hoc workspaces retain their prior behavior unless
+        ``require_diff_review=true`` is explicit; ``false`` records a bypass.
         """
 
         if not commit_message.strip():
@@ -1054,6 +1290,28 @@ class HostOSCodingWorkspaces:
                             "or set require_plan_complete=false explicitly for an "
                             "intermediate checkpoint commit."
                         )
+                plan_requires_review = bool(
+                    plan and plan.get("requires_diff_review", False)
+                )
+                review_required = (
+                    plan_requires_review
+                    if require_diff_review is None
+                    else bool(require_diff_review)
+                )
+                tracked, untracked = await self._list_changed_files(workspace)
+                changed_files = sorted(set(tracked + untracked))
+                review_status = self._diff_review_status(
+                    entry, current_fingerprint, changed_files
+                )
+                review_ready = bool(review_status["ready_for_commit"])
+                if review_required and not review_ready:
+                    return SkillResult.fail(
+                        "Commit rejected: this exact workspace state has not been "
+                        "fully reviewed. Accept complete workspace/per-file diffs "
+                        "with accept_coding_workspace_diff_review first; missing="
+                        f"{review_status['missing_files']}, or explicitly set "
+                        "require_diff_review=false for an intermediate bypass."
+                    )
                 code, status, err = await self._run_git(
                     workspace, "status", "--porcelain=v1", "--untracked-files=all"
                 )
@@ -1100,7 +1358,53 @@ class HostOSCodingWorkspaces:
                 entry["last_commit_at"] = self._utc_now()
                 entry["last_commit_verification_bypassed"] = not is_verified
                 entry["last_commit_plan_bypassed"] = bool(plan and not plan_ready)
+                entry["last_commit_diff_review_bypassed"] = bool(
+                    plan_requires_review and not review_ready
+                )
                 entry["last_commit_trace"] = current_trace()
+                review_evidence_sha256 = None
+                accepted_review = entry.get("diff_review")
+                if review_ready and review_status["is_current"] and isinstance(
+                    accepted_review, dict
+                ):
+                    scope_contract = [
+                        {
+                            "scope": scope,
+                            "reviewed_diff_sha256": evidence.get(
+                                "reviewed_diff_sha256"
+                            ),
+                            "hunk_review_sha256": evidence.get(
+                                "hunk_review_sha256"
+                            ),
+                            "changed_files": evidence.get("changed_files", []),
+                        }
+                        for scope, evidence in sorted(
+                            accepted_review.get("scopes", {}).items()
+                        )
+                    ]
+                    review_evidence_sha256 = hashlib.sha256(
+                        json.dumps(
+                            scope_contract,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    accepted_review["committed_as"] = commit_hash
+                    entry["last_commit_diff_review"] = {
+                        "commit": commit_hash,
+                        "workspace_fingerprint": current_fingerprint[
+                            "fingerprint"
+                        ],
+                        "review_evidence_sha256": review_evidence_sha256,
+                        "covered_file_count": review_status[
+                            "covered_file_count"
+                        ],
+                        "accepted_scope_count": review_status[
+                            "accepted_scope_count"
+                        ],
+                        "accepted_at": review_status["accepted_at"],
+                    }
                 if is_verified:
                     verification["committed_as"] = commit_hash
                     verification["post_commit_fingerprint"] = (
@@ -1119,6 +1423,10 @@ class HostOSCodingWorkspaces:
                         "commit": commit_hash,
                         "verification_bypassed": not is_verified,
                         "plan_completion_bypassed": bool(plan and not plan_ready),
+                        "diff_review_bypassed": bool(
+                            plan_requires_review and not review_ready
+                        ),
+                        "diff_review_evidence_sha256": review_evidence_sha256,
                         "trace": current_trace(),
                         "summary": truncate_text(out, max_chars=3000),
                     },

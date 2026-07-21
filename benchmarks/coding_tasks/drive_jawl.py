@@ -160,6 +160,19 @@ async def extract_candidate_patch(
         )
         verification_bypassed = entry.get("last_commit_verification_bypassed")
         plan_bypassed = entry.get("last_commit_plan_bypassed")
+        review_required = bool(
+            plan and plan.get("requires_diff_review", False)
+        )
+        review_bypassed = entry.get("last_commit_diff_review_bypassed")
+        commit_review = entry.get("last_commit_diff_review")
+        review_complete = bool(
+            not review_required
+            or (
+                review_bypassed is False
+                and isinstance(commit_review, dict)
+                and commit_review.get("commit") == head
+            )
+        )
         lifecycle_ok = bool(
             committed
             and entry.get("last_commit") == head
@@ -168,6 +181,7 @@ async def extract_candidate_patch(
             and verification_bypassed is False
             and plan_bypassed is False
             and plan_complete
+            and review_complete
         )
     else:
         source = "base_repository_fallback"
@@ -184,6 +198,9 @@ async def extract_candidate_patch(
         plan_complete = False
         verification_bypassed = None
         plan_bypassed = None
+        review_required = False
+        review_bypassed = None
+        commit_review = None
         lifecycle_ok = False
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(patch, encoding="utf-8", newline="\n")
@@ -198,6 +215,13 @@ async def extract_candidate_patch(
         "plan_complete": plan_complete,
         "verification_bypassed": verification_bypassed,
         "plan_bypassed": plan_bypassed,
+        "diff_review_required": review_required,
+        "diff_review_bypassed": review_bypassed,
+        "diff_review_evidence_sha256": (
+            commit_review.get("review_evidence_sha256")
+            if isinstance(commit_review, dict)
+            else None
+        ),
         "worktree_clean": not status.strip(),
         "untracked_files": untracked[:20],
         "lifecycle_gate_passed": lifecycle_ok,

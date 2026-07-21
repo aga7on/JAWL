@@ -264,6 +264,9 @@ class HostOSCodingPlans:
             "plan_id": plan["plan_id"],
             "revision": plan["revision"],
             "objective": plan["objective"],
+            "requires_diff_review": bool(
+                plan.get("requires_diff_review", False)
+            ),
             "created_at": plan["created_at"],
             "updated_at": plan["updated_at"],
             "summary": cls._summary(plan),
@@ -721,6 +724,7 @@ class HostOSCodingPlans:
                     "plan_id": uuid.uuid4().hex,
                     "revision": 1,
                     "objective": objective,
+                    "requires_diff_review": True,
                     "requirements": normalized_requirements,
                     "steps": normalized_steps,
                     "created_at": now,

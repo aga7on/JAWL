@@ -356,6 +356,19 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - `hunk_analysis_complete` is false whenever diff collection/text, file paging,
   hunk paging, or the final hunk is incomplete. It is an explicit instruction to
   request narrower/per-file output, not proof that the workspace was reviewed.
+- `accept_coding_workspace_diff_review` recomputes the requested unstaged diff
+  and accepts only a complete response whose reviewed-text hash and workspace
+  fingerprint match. Complete per-file reviews accumulate under that one exact
+  fingerprint; any workspace change makes the entire prior set stale.
+- Durable review state stores only bounded hashes, file coverage, timestamps,
+  and trace correlation, never raw diff text. Status output reports current,
+  covered, and missing files without expanding the persisted scope records. A
+  successful commit retains a compact aggregate evidence hash and its exact
+  pre-commit workspace fingerprint next to the commit identity.
+- Plans created by this fork require current review coverage at final commit.
+  Plans persisted before this contract and ad-hoc workspaces retain legacy
+  behavior; an explicit `require_diff_review=false` bypass remains available for
+  intermediate or unusually large changes and is recorded in commit metadata.
 - The normal coding loop is map -> search -> numbered range or structural symbol
   inspection -> checked patch/replacement -> exact per-file diff -> deterministic
   verification -> verified-state commit.
@@ -392,9 +405,10 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   and OpenAI-compatible client.
 - The driver requires the exact benchmark task ID, extracts the managed branch
   against its recorded base commit, and gates lifecycle compliance separately
-  from hidden-test patch quality. It records time, steps, estimated tokens, and
-  provider metrics plus bounded protocol/action diagnostics, but never raw
-  chain-of-thought or the API key.
+  from hidden-test patch quality. Planned runs must also retain non-bypassed diff
+  review evidence for the extracted commit. It records time, steps, estimated
+  tokens, and provider metrics plus bounded protocol/action diagnostics, but
+  never raw chain-of-thought or the API key.
 - A live report is evidence for one endpoint/model/configuration only. Claims of
   parity or superiority require versioned runs against declared baselines under
   the same task, timeout, and grading contract.

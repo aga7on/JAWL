@@ -24,6 +24,7 @@ Each action may additionally declare:
 - Ordering: Keep dependent operations sequential. Never place read-modify-write, edit-test, or multiple writes to the same resource in a parallel group.
 - Coding task handles: For managed coding workspaces, prefer `HostOSCodingFiles` skills with `task_id` and `relative_path`; do not spend another LLM round trip merely to copy an ephemeral worktree path.
 - Structural edits: Replace a whole definition through `inspect_coding_symbol` -> `replace_coding_symbol` with both exact hashes; use `apply_coding_file_patch` for smaller literal edits. Never treat lexical symbol fallback or `hunk_analysis_complete=false` as proof of a safe edit/review.
+- Diff acceptance: After reading a complete diff, bind it with `accept_coding_workspace_diff_review`; per-file acceptances may accumulate only under one unchanged workspace fingerprint. A changed file invalidates all earlier coverage.
 - Causal batching: When all parameters are already known, combine workspace→read or patch→verify→plan evidence→commit in one `actions` array with explicit `action_id`/`depends_on`. A failed dependency will safely skip its dependants.
 - Proportional planning: Match plan detail to uncertainty and scope. A localized one-file change normally needs one implementation/verification step and only outcome-level requirements; search, read, diff review, and commit are actions, not separate bookkeeping milestones.
 - Termination: Passing `"actions":[]` triggers standard cycle exit and sleep.

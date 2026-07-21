@@ -16,7 +16,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Task isolation | Strong | Persistent branch/worktree per task, dirty-base guard, recovery stash | No automatic branch publication or merge conflict assistant |
 | Context navigation | Strong | Bounded map/search/range reads, syntax-aware occurrences, directed local dependency slices, and allowlisted lifecycle-managed incremental LSP sessions with document sync, process/document LRUs, explicit reset, and zero-index fallback | Workspace-wide out-of-band edits rely on server file watching or explicit session reset |
 | Dynamic context | Good | Hard per-turn budget, task/event-routed skill namespaces, compact omitted-namespace index, exact signatures through `SkillCatalog`, newest-tick and current-trigger retention | Needs organic QWB latency/token validation and learned relevance ranking |
-| Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction, stable hunk hashes, add/delete counts, parser-backed symbol overlap, and explicit incomplete-analysis state | Review acknowledgement is not yet durable or bound to the exact commit state |
+| Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction, stable hunk hashes, parser-backed symbol overlap, explicit incomplete-analysis state, and bounded durable per-file acceptance bound to the exact workspace fingerprint and planned commit | No cryptographic human identity/signature or remote review UI |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph, automatic failure signals, and exact-state revision of unfinished work | Replanning strategy quality is not yet scored on live tasks |
 | Delegated work | Strong | Bounded durable status registry, redacted summaries, exact-revision parent-step binding, restart reconciliation, exact-handle cancel, shutdown draining, identity-bound reports, report hashing, workspace/verification-gated acceptance, and post-persistence terminal events | Delegation strategy and result quality still need model-level comparative scoring |
@@ -43,8 +43,8 @@ tasks safely, recoverably, and with measurable evidence.
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation
    still requires the candidate CLI's sandbox or an external container.
-5. Persist accepted hunk-review evidence against the exact workspace fingerprint
-   and require it at the final commit gate without breaking legacy ad-hoc flows.
+5. Add an allowlisted project-wide transactional rename/refactor primitive on
+   top of retained LSP sessions and parser-guarded file writes.
 
 ## Current reference architecture comparison
 
