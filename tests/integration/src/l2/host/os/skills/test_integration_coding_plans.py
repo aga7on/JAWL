@@ -197,3 +197,117 @@ async def test_coding_plan_rejects_cycles_and_redacts_evidence(os_client):
         assert len(entry["task_plan_archive"]) == 1
         assert entry["task_plan_archive"][0]["archive_reason"] == "explicit_replace"
     assert (await workspaces.remove_coding_workspace("invalid-plan")).is_success
+
+
+@pytest.mark.asyncio
+async def test_delegated_step_requires_exact_report_workspace_and_verification(os_client):
+    create_repository(os_client.sandbox_dir)
+    workspaces = HostOSCodingWorkspaces(os_client)
+    plans = HostOSCodingPlans(os_client, workspaces)
+    verifier = HostOSCodingVerification(os_client, workspaces)
+    created = await workspaces.create_coding_workspace(
+        "sandbox/project", "delegated-task"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    initialized = await plans.initialize_coding_task_plan(
+        task_id="delegated-task",
+        objective="Delegate one exact change",
+        requirements=["The delegated change is independently reviewed"],
+        steps=[{"id": "implement", "title": "Implement the change"}],
+    )
+    assert initialized.is_success is True
+
+    with pytest.raises(ValueError, match="Stale coding plan revision"):
+        await plans.bind_delegation(
+            task_id="delegated-task",
+            step_id="implement",
+            delegation_id="staleone",
+            role="coder",
+            expected_revision=99,
+        )
+
+    binding = await plans.bind_delegation(
+        task_id="delegated-task",
+        step_id="implement",
+        delegation_id="deadbeef",
+        role="coder",
+        expected_revision=1,
+    )
+    assert binding["bound_revision"] == 2
+    bypass = await plans.update_coding_task_step(
+        "delegated-task",
+        "implement",
+        "completed",
+        evidence="Trust the worker without reconciliation.",
+        expected_revision=2,
+    )
+    assert bypass.is_success is False
+    assert "reconcile_coding_delegation" in bypass.message
+    (workspace / "app.py").write_text("value = 2\n", encoding="utf-8")
+    report_dir = os_client.system_dir / "subagents"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report = report_dir / "coder_deadbeef.md"
+    report.write_text("Changed app.py to value 2.", encoding="utf-8")
+
+    result = await plans.record_delegation_result(
+        task_id="delegated-task",
+        step_id="implement",
+        delegation_id="deadbeef",
+        status="completed",
+        report_path="sandbox/_system/subagents/coder_deadbeef.md",
+    )
+    assert result["status"] == "reported"
+    assert result["revision"] == 3
+
+    unverified = await plans.reconcile_coding_delegation(
+        "delegated-task",
+        "implement",
+        "deadbeef",
+        "accept",
+        "Reviewed report and diff.",
+        expected_revision=3,
+    )
+    assert unverified.is_success is False
+    assert "successful verification" in unverified.message
+
+    (workspace / "app.py").write_text("value = 3\n", encoding="utf-8")
+    drifted = await plans.reconcile_coding_delegation(
+        "delegated-task",
+        "implement",
+        "deadbeef",
+        "accept",
+        "Reviewed report and diff.",
+        expected_revision=3,
+    )
+    assert drifted.is_success is False
+    assert "Workspace changed" in drifted.message
+    (workspace / "app.py").write_text("value = 2\n", encoding="utf-8")
+
+    verified = await verifier.run_coding_verification("delegated-task")
+    assert verified.is_success is True, verified.message
+    report.write_text("tampered", encoding="utf-8")
+    tampered = await plans.reconcile_coding_delegation(
+        "delegated-task",
+        "implement",
+        "deadbeef",
+        "accept",
+        "Reviewed report and diff.",
+        expected_revision=3,
+    )
+    assert tampered.is_success is False
+    assert "report changed" in tampered.message
+
+    report.write_text("Changed app.py to value 2.", encoding="utf-8")
+    accepted = await plans.reconcile_coding_delegation(
+        "delegated-task",
+        "implement",
+        "deadbeef",
+        "accept",
+        "Reviewed exact report, diff, and passing verification.",
+        expected_revision=3,
+    )
+    assert accepted.is_success is True, accepted.message
+    accepted_payload = json.loads(accepted.message)
+    assert accepted_payload["status"] == "completed"
+    assert accepted_payload["delegation_status"] == "accepted"
+    assert accepted_payload["revision"] == 4

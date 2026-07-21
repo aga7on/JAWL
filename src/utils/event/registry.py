@@ -255,6 +255,13 @@ class Events:
         requires_attention=True,
     )
 
+    SUBAGENT_TASK_FAILED = EventConfig(
+        name="SUBAGENT_TASK_FAILED",
+        description="Subagent stopped without an accepted successful result.",
+        level=EventLevel.HIGH,
+        requires_attention=True,
+    )
+
     # ============================================
     # Subconscious
     # ============================================

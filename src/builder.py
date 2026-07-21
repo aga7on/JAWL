@@ -373,6 +373,7 @@ class SystemBuilder:
             report_skill = SubagentReport(
                 event_bus=self.container.event_bus,
                 sandbox_dir=self.container.root_dir / "sandbox",
+                notify_on_submit=False,
             )
             register_instance(report_skill)
 
@@ -381,6 +382,8 @@ class SystemBuilder:
                 swarm_config=self.system_config.swarm,
                 root_dir=self.container.root_dir,
                 hooks=self.container.lifecycle_hooks,
+                coding_plans=self.container.coding_plans,
+                event_bus=self.container.event_bus,
             )
             register_instance(swarm_manager)
             self.container.lifecycle_components.append(swarm_manager)

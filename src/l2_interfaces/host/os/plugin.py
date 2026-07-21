@@ -96,7 +96,9 @@ class HostOsPlugin(BaseInterface):
         register_instance(
             HostOSCodingFiles(client, coding_workspaces, reader, editor, search)
         )
-        register_instance(HostOSCodingPlans(client, coding_workspaces))
+        coding_plans = HostOSCodingPlans(client, coding_workspaces)
+        container.coding_plans = coding_plans
+        register_instance(coding_plans)
         register_instance(
             HostOSCodingExecution(client, coding_workspaces, coding_approvals)
         )

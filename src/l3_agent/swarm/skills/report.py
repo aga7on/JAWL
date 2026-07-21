@@ -17,7 +17,12 @@ from src.utils.logger import swarm_logger
 class SubagentReport:
     """Skill designed strictly for subagents to commit final results."""
 
-    def __init__(self, event_bus: EventBus, sandbox_dir: Path) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        sandbox_dir: Path,
+        notify_on_submit: bool = True,
+    ) -> None:
         """
         Initializes report tool.
 
@@ -27,6 +32,7 @@ class SubagentReport:
         """
 
         self.bus = event_bus
+        self.notify_on_submit = notify_on_submit
         self.reports_dir = sandbox_dir / "_system" / "subagents"
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
@@ -69,13 +75,15 @@ class SubagentReport:
         log = f"[Swarm] Subagent {role}_{subagent_id} completed the task. Report compiled."
         swarm_logger.info(log)
 
-        # Signals the main agent that the worker has finished
-        await self.bus.publish(
-            Events.SUBAGENT_TASK_COMPLETED,
-            subagent_id=subagent_id,
-            role=role,
-            message=f"Subagent [{role}_{subagent_id}] completed the delegated task. Report saved to '{file_path}'.",
-        )
+        # Legacy/direct use can notify here. The assembled runtime disables this
+        # path so SwarmManager notifies only after durable parent reconciliation.
+        if self.notify_on_submit:
+            await self.bus.publish(
+                Events.SUBAGENT_TASK_COMPLETED,
+                subagent_id=subagent_id,
+                role=role,
+                message=f"Subagent [{role}_{subagent_id}] completed the delegated task. Report saved to '{file_path}'.",
+            )
 
         return SkillResult.ok(
             "Report successfully committed. Now return an empty actions list [] to gracefully conclude the cycle."

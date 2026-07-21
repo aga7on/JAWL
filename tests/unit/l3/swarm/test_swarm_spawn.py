@@ -6,6 +6,7 @@ from src.l3_agent.swarm.spawn import SwarmManager
 from src.utils.settings import SwarmConfig
 from src.l3_agent.swarm.roles import Subagents
 from src.l3_agent.hooks.lifecycle import HookDecision, HookPhase, LifecycleHooks
+from src.l3_agent.swarm.registry import DelegationRegistry
 
 
 @pytest.fixture
@@ -86,6 +87,103 @@ async def test_spawn_can_be_denied_before_background_task(swarm_manager):
     assert result.is_success is False
     assert "operator policy" in result.message
     assert not swarm_manager.active_tasks
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.swarm.spawn.SubagentLoop")
+async def test_spawn_binds_and_records_parent_coding_step(
+    mock_loop_class, swarm_manager
+):
+    timeline = []
+
+    async def record_result(**_kwargs):
+        timeline.append("plan")
+        return {}
+
+    async def publish(*_args, **_kwargs):
+        timeline.append("event")
+
+    coding_plans = MagicMock()
+    coding_plans.bind_delegation = AsyncMock(
+        return_value={"bound_revision": 8, "base_workspace_fingerprint": "abc"}
+    )
+    coding_plans.record_delegation_result = AsyncMock(side_effect=record_result)
+    swarm_manager.coding_plans = coding_plans
+    event_bus = MagicMock()
+    event_bus.publish = AsyncMock(side_effect=publish)
+    swarm_manager.event_bus = event_bus
+    loop = MagicMock(run=AsyncMock(return_value="completed"))
+    mock_loop_class.return_value = loop
+
+    result = await swarm_manager.spawn_subagent(
+        "coder",
+        "Implement parser",
+        parent_task_id="task-one",
+        parent_step_id="implement",
+        expected_plan_revision=7,
+    )
+    assert result.is_success is True, result.message
+    await asyncio.gather(*list(swarm_manager.active_tasks))
+
+    coding_plans.bind_delegation.assert_awaited_once()
+    coding_plans.record_delegation_result.assert_awaited_once()
+    event_bus.publish.assert_awaited_once()
+    terminal_payload = event_bus.publish.call_args.kwargs
+    assert terminal_payload["parent_task_id"] == "task-one"
+    assert terminal_payload["parent_step_id"] == "implement"
+    assert terminal_payload["parent_reconciled"] is True
+    assert timeline == ["plan", "event"]
+    assert "[BOUND CODING PLAN]" in mock_loop_class.call_args.kwargs[
+        "task_description"
+    ]
+    persisted = swarm_manager.registry.list()[0]
+    assert persisted["parent"] == {
+        "task_id": "task-one",
+        "step_id": "implement",
+        "expected_revision": 7,
+    }
+
+
+@pytest.mark.asyncio
+async def test_spawn_rejects_partial_parent_binding(swarm_manager):
+    result = await swarm_manager.spawn_subagent(
+        "coder", "Task", parent_task_id="task-one"
+    )
+
+    assert result.is_success is False
+    assert "requires parent_task_id" in result.message
+
+
+@pytest.mark.asyncio
+async def test_start_reconciles_prior_session_interruption(swarm_manager):
+    path = swarm_manager.registry.path
+    swarm_manager.registry.create(
+        "oldagent",
+        "coder",
+        "old task",
+        {
+            "task_id": "task-one",
+            "step_id": "implement",
+            "expected_revision": 4,
+        },
+    )
+    recovered = DelegationRegistry(path, session_id="new-session")
+    coding_plans = MagicMock()
+    coding_plans.record_delegation_result = AsyncMock(return_value={})
+    swarm_manager.registry = recovered
+    swarm_manager.coding_plans = coding_plans
+
+    await swarm_manager.start()
+
+    coding_plans.record_delegation_result.assert_awaited_once_with(
+        task_id="task-one",
+        step_id="implement",
+        delegation_id="oldagent",
+        status="interrupted",
+        detail="Interrupted delegated worker recovered after process restart.",
+    )
+    assert recovered.get("oldagent")["parent_reconciled"] is True
+    assert recovered.unreconciled_interruptions() == []
 
 
 @pytest.mark.asyncio

@@ -10,10 +10,12 @@ import json
 import uuid
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from src.utils.logger import swarm_logger
 from src.utils.settings import SwarmConfig
+from src.utils.event.bus import EventBus
+from src.utils.event.registry import Events
 
 from src.l3_agent.llm.executor import LLMExecutor
 from src.l3_agent.skills.registry import skill, SkillResult, _REGISTRY
@@ -36,11 +38,15 @@ class SwarmManager:
         root_dir: Path,
         hooks: LifecycleHooks = None,
         registry: Optional[DelegationRegistry] = None,
+        coding_plans: Optional[Any] = None,
+        event_bus: Optional[EventBus] = None,
     ) -> None:
         self.executor = executor
         self.config = swarm_config
         self.hooks = hooks or LifecycleHooks()
         self.root_dir = Path(root_dir).resolve()
+        self.coding_plans = coding_plans
+        self.event_bus = event_bus
 
         self.registry_error = ""
         try:
@@ -89,7 +95,14 @@ class SwarmManager:
             self.spawn_subagent.__doc__ = f"{base_doc}\n\n{roles_str}"
 
     @skill()
-    async def spawn_subagent(self, role: str, task_description: str) -> SkillResult:
+    async def spawn_subagent(
+        self,
+        role: str,
+        task_description: str,
+        parent_task_id: str = "",
+        parent_step_id: str = "",
+        expected_plan_revision: Optional[int] = None,
+    ) -> SkillResult:
         """
         Spawns a background subagent worker for the delegated task.
         """
@@ -114,12 +127,38 @@ class SwarmManager:
                 f"Role '{role}' is currently unavailable. Active roles: {active_ids}"
             )
 
+        parent_requested = bool(
+            parent_task_id or parent_step_id or expected_plan_revision is not None
+        )
+        parent: Optional[dict[str, Any]] = None
+        if parent_requested:
+            if (
+                not parent_task_id
+                or not parent_step_id
+                or expected_plan_revision is None
+            ):
+                return SkillResult.fail(
+                    "Parent binding requires parent_task_id, parent_step_id, and "
+                    "expected_plan_revision together."
+                )
+            if self.coding_plans is None:
+                return SkillResult.fail(
+                    "Parent coding-plan binding is unavailable because the Host OS "
+                    "coding plan service is disabled."
+                )
+            parent = {
+                "task_id": parent_task_id,
+                "step_id": parent_step_id,
+                "expected_revision": expected_plan_revision,
+            }
+
         subagent_id = uuid.uuid4().hex[:8]
 
         hook_parameters = {
             "role": target_role.id,
             "subagent_id": subagent_id,
             "task_description": task_description,
+            **({"parent": parent} if parent else {}),
         }
         try:
             pre_hooks = await self.hooks.run(
@@ -152,17 +191,57 @@ class SwarmManager:
                 subagent_id,
                 target_role.id,
                 task_description,
+                parent,
             )
         except (OSError, ValueError) as exc:
             return SkillResult.fail(f"Could not persist delegation: {exc}")
 
+        if parent is not None:
+            try:
+                binding = await self.coding_plans.bind_delegation(
+                    task_id=parent["task_id"],
+                    step_id=parent["step_id"],
+                    delegation_id=subagent_id,
+                    role=target_role.id,
+                    expected_revision=parent["expected_revision"],
+                )
+                parent = {**parent, **binding}
+            except (OSError, PermissionError, FileNotFoundError, ValueError, KeyError) as exc:
+                await self._transition(
+                    subagent_id,
+                    "failed",
+                    detail=f"Parent plan binding failed: {exc}",
+                )
+                return SkillResult.fail(f"Could not bind parent coding plan: {exc}")
+
+        effective_task = task_description
+        if parent is not None:
+            effective_task = (
+                "[BOUND CODING PLAN]\n"
+                f"task_id: {parent['task_id']}\n"
+                f"step_id: {parent['step_id']}\n"
+                "Work only through task-scoped coding skills for this task.\n\n"
+                + task_description
+            )
+
         try:
             task = asyncio.create_task(
-                self._run_subagent_task(subagent_id, target_role, task_description)
+                self._run_subagent_task(
+                    subagent_id,
+                    target_role,
+                    effective_task,
+                    parent=parent,
+                )
             )
         except Exception as exc:
             await self._transition(
                 subagent_id, "failed", detail=f"Task creation failed: {type(exc).__name__}"
+            )
+            await self._record_parent_result(
+                parent,
+                subagent_id,
+                "failed",
+                detail="Worker task creation failed.",
             )
             return SkillResult.fail(f"Could not start delegated worker: {exc}")
         self.active_tasks.add(task)
@@ -219,7 +298,56 @@ class SwarmManager:
         return SkillResult.ok(f"Cancellation requested for delegation {record['id']}.")
 
     async def start(self) -> None:
-        """Lifecycle component compatibility; recovery happens in the constructor."""
+        """Reconcile interrupted prior-session workers into their parent plans."""
+
+        if self.registry is None or self.coding_plans is None:
+            return
+        while True:
+            try:
+                records = await asyncio.to_thread(
+                    self.registry.unreconciled_interruptions, 100
+                )
+            except (OSError, ValueError) as exc:
+                swarm_logger.error(
+                    f"[Swarm] Could not inspect interrupted delegations: {exc}"
+                )
+                return
+            if not records:
+                return
+            for record in records:
+                parent = record.get("parent")
+                detail = "Interrupted delegated worker recovered after process restart."
+                try:
+                    await self.coding_plans.record_delegation_result(
+                        task_id=parent["task_id"],
+                        step_id=parent["step_id"],
+                        delegation_id=record["id"],
+                        status="interrupted",
+                        detail=detail,
+                    )
+                    reconciliation = "Parent plan marked interrupted."
+                except (
+                    OSError,
+                    PermissionError,
+                    FileNotFoundError,
+                    ValueError,
+                    KeyError,
+                ) as exc:
+                    reconciliation = f"Parent reconciliation failed: {exc}"
+                    swarm_logger.error(
+                        f"[Swarm] {reconciliation} ({record['id']})"
+                    )
+                try:
+                    await asyncio.to_thread(
+                        self.registry.mark_parent_reconciled,
+                        record["id"],
+                        reconciliation,
+                    )
+                except (OSError, ValueError) as exc:
+                    swarm_logger.error(
+                        f"[Swarm] Could not persist parent reconciliation marker: {exc}"
+                    )
+                    return
 
     async def stop(self) -> None:
         """Cancel and await all workers before LLM clients and EventBus close."""
@@ -231,7 +359,12 @@ class SwarmManager:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run_subagent_task(
-        self, subagent_id: str, role: SubagentRole, task_description: str
+        self,
+        subagent_id: str,
+        role: SubagentRole,
+        task_description: str,
+        *,
+        parent: Optional[dict[str, Any]] = None,
     ) -> None:
         """
         Background task thread. Runs the subagent ReAct loop under semaphore limits.
@@ -267,6 +400,19 @@ class SwarmManager:
                 await self._transition(
                     subagent_id, "failed", detail="Worker returned an incomplete report."
                 )
+                parent_reconciled = await self._record_parent_result(
+                    parent,
+                    subagent_id,
+                    "failed",
+                    detail="Worker returned an incomplete report.",
+                )
+                await self._publish_terminal(
+                    subagent_id,
+                    role,
+                    "failed",
+                    parent,
+                    parent_reconciled,
+                )
                 await self._observe_delegation(
                     HookPhase.DELEGATION_ERROR,
                     subagent_id,
@@ -284,6 +430,20 @@ class SwarmManager:
                 await self._transition(
                     subagent_id, "completed", report_path=persisted_report
                 )
+                parent_reconciled = await self._record_parent_result(
+                    parent,
+                    subagent_id,
+                    "completed",
+                    report_path=persisted_report,
+                )
+                await self._publish_terminal(
+                    subagent_id,
+                    role,
+                    "completed",
+                    parent,
+                    parent_reconciled,
+                    report_path=persisted_report,
+                )
                 await self._observe_delegation(
                     HookPhase.POST_DELEGATION,
                     subagent_id,
@@ -295,6 +455,23 @@ class SwarmManager:
             if running_record_task is not None:
                 await asyncio.shield(running_record_task)
             await asyncio.shield(self._transition(subagent_id, "cancelled"))
+            parent_reconciled = await asyncio.shield(
+                self._record_parent_result(
+                    parent,
+                    subagent_id,
+                    "cancelled",
+                    detail="Delegated worker was cancelled.",
+                )
+            )
+            await asyncio.shield(
+                self._publish_terminal(
+                    subagent_id,
+                    role,
+                    "cancelled",
+                    parent,
+                    parent_reconciled,
+                )
+            )
             await asyncio.shield(
                 self._observe_delegation(
                     HookPhase.DELEGATION_CANCELLED,
@@ -314,6 +491,19 @@ class SwarmManager:
                 subagent_id,
                 "failed",
                 detail="Worker raised an internal exception.",
+            )
+            parent_reconciled = await self._record_parent_result(
+                parent,
+                subagent_id,
+                "failed",
+                detail="Worker raised an internal exception.",
+            )
+            await self._publish_terminal(
+                subagent_id,
+                role,
+                "failed",
+                parent,
+                parent_reconciled,
             )
             await self._observe_delegation(
                 HookPhase.DELEGATION_ERROR,
@@ -375,4 +565,75 @@ class SwarmManager:
         except (OSError, ValueError) as exc:
             swarm_logger.error(
                 f"[Swarm] Could not persist delegation {subagent_id} -> {status}: {exc}"
+            )
+
+    async def _record_parent_result(
+        self,
+        parent: Optional[dict[str, Any]],
+        subagent_id: str,
+        status: str,
+        *,
+        detail: str = "",
+        report_path: str = "",
+    ) -> bool:
+        if parent is None or self.coding_plans is None:
+            return parent is None
+        try:
+            await self.coding_plans.record_delegation_result(
+                task_id=parent["task_id"],
+                step_id=parent["step_id"],
+                delegation_id=subagent_id,
+                status=status,
+                detail=detail,
+                report_path=report_path,
+            )
+            return True
+        except (OSError, PermissionError, FileNotFoundError, ValueError, KeyError) as exc:
+            swarm_logger.error(
+                f"[Swarm] Could not reconcile delegation {subagent_id} into "
+                f"parent plan: {exc}"
+            )
+            return False
+
+    async def _publish_terminal(
+        self,
+        subagent_id: str,
+        role: SubagentRole,
+        status: str,
+        parent: Optional[dict[str, Any]],
+        parent_reconciled: bool,
+        *,
+        report_path: str = "",
+    ) -> None:
+        if self.event_bus is None:
+            return
+        event = (
+            Events.SUBAGENT_TASK_COMPLETED
+            if status == "completed"
+            else Events.SUBAGENT_TASK_FAILED
+        )
+        payload = {
+            "subagent_id": subagent_id,
+            "role": role.id,
+            "status": status,
+            "parent_reconciled": parent_reconciled,
+            **({"report_path": report_path} if report_path else {}),
+            **(
+                {
+                    "parent_task_id": parent["task_id"],
+                    "parent_step_id": parent["step_id"],
+                }
+                if parent
+                else {}
+            ),
+            "message": (
+                f"Subagent [{role.id}_{subagent_id}] finished with status "
+                f"'{status}'."
+            ),
+        }
+        try:
+            await self.event_bus.publish(event, **payload)
+        except Exception as exc:
+            swarm_logger.error(
+                f"[Swarm] Could not publish terminal worker event: {exc}"
             )

@@ -40,6 +40,15 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Worker report IDs and roles must match the runtime-assigned identity.
 - The Swarm manager is a lifecycle component, so graceful shutdown cancels and
   awaits workers before shared transports close.
+- A worker may bind to one exact task-plan revision and step. Binding moves the
+  step to `in_progress` only after dependency and active-worker checks.
+- Reports are proposals, not completion authority. Acceptance is a main-agent
+  operation guarded by report hash, report location, result-time workspace
+  fingerprint, current fingerprint, plan revision, dependencies, and exact-state
+  verification.
+- Completion/failure events are published only after the parent result is
+  durable. Restarted workers reconcile to `interrupted` on both registry and
+  parent-plan sides.
 
 ## Declarative lifecycle automation contract
 

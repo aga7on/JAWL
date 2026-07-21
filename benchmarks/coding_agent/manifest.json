@@ -105,6 +105,18 @@
       ]
     },
     {
+      "id": "parent_plan_delegation_reconciliation",
+      "description": "Delegated reports bind to exact parent-plan revisions and require immutable report, workspace, and verification evidence before step completion.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_delegated_step_requires_exact_report_workspace_and_verification",
+        "tests/unit/l3/swarm/test_swarm_spawn.py::test_spawn_binds_and_records_parent_coding_step",
+        "tests/unit/l3/swarm/test_swarm_spawn.py::test_spawn_rejects_partial_parent_binding",
+        "tests/unit/l3/swarm/test_swarm_spawn.py::test_start_reconciles_prior_session_interruption",
+        "tests/unit/l3/swarm/test_swarm_loop.py::test_subagent_report_cannot_spoof_worker_identity",
+        "tests/unit/test_builder.py::test_build_l3_agent"
+      ]
+    },
+    {
       "id": "durable_interruption_recovery",
       "description": "Lifecycle evidence is redacted and unfinished work is classified after restart.",
       "tests": [

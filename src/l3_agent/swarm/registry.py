@@ -118,7 +118,13 @@ class DelegationRegistry:
     def _public(record: Dict[str, Any]) -> Dict[str, Any]:
         return dict(record)
 
-    def create(self, delegation_id: str, role: str, task_description: str) -> Dict[str, Any]:
+    def create(
+        self,
+        delegation_id: str,
+        role: str,
+        task_description: str,
+        parent: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         delegation_id = self._validate_id(delegation_id)
         now = time.time()
         with self._lock():
@@ -139,6 +145,25 @@ class DelegationRegistry:
                 "started_at": None,
                 "finished_at": None,
             }
+            if parent:
+                if set(parent) != {"task_id", "step_id", "expected_revision"}:
+                    raise ValueError("Delegation parent metadata has unsupported fields.")
+                task_id = str(parent["task_id"])
+                step_id = str(parent["step_id"])
+                expected_revision = parent["expected_revision"]
+                if (
+                    not self._ID.fullmatch(task_id)
+                    or not self._ID.fullmatch(step_id)
+                    or not isinstance(expected_revision, int)
+                    or isinstance(expected_revision, bool)
+                    or expected_revision < 1
+                ):
+                    raise ValueError("Delegation parent metadata is invalid.")
+                record["parent"] = {
+                    "task_id": task_id,
+                    "step_id": step_id,
+                    "expected_revision": expected_revision,
+                }
             records[delegation_id] = record
             terminal = sorted(
                 (
@@ -213,3 +238,31 @@ class DelegationRegistry:
             records = [record for record in records if record.get("status") == status]
         records.sort(key=lambda item: float(item.get("created_at", 0)), reverse=True)
         return [self._public(record) for record in records[:limit]]
+
+    def unreconciled_interruptions(self, limit: int = 100) -> List[Dict[str, Any]]:
+        if limit < 1 or limit > 100:
+            raise ValueError("limit must be between 1 and 100")
+        with self._lock():
+            records = [
+                record
+                for record in self._load()["delegations"].values()
+                if record.get("status") == "interrupted"
+                and record.get("parent")
+                and not record.get("parent_reconciled")
+            ]
+        records.sort(key=lambda item: float(item.get("created_at", 0)))
+        return [self._public(record) for record in records[:limit]]
+
+    def mark_parent_reconciled(self, delegation_id: str, detail: str = "") -> None:
+        delegation_id = self._validate_id(delegation_id)
+        with self._lock():
+            payload = self._load()
+            record = payload["delegations"].get(delegation_id)
+            if record is None:
+                raise ValueError(f"Delegation not found ({delegation_id}).")
+            record["parent_reconciled"] = True
+            if detail:
+                record["parent_reconciliation_detail"] = truncate_text(
+                    redact_sensitive_text(detail), 1000
+                )
+            self._atomic_write(payload)

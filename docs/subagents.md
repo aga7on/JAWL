@@ -23,6 +23,32 @@ one worker (or a hallucinated tool payload) from completing another worker's
 record. Existing Markdown reports and `SUBAGENT_TASK_COMPLETED` notifications
 remain compatible.
 
+### Binding a worker to a coding plan
+
+`spawn_subagent` accepts the optional triplet `parent_task_id`,
+`parent_step_id`, and `expected_plan_revision`. All three are required together.
+The bind checks the exact plan revision, step dependencies, workspace existence,
+and absence of another active worker. The assigned task context is then pinned
+to that task and step.
+
+A successful worker report becomes `reported`; it does not complete the plan
+step by itself. The main agent must call
+`HostOSCodingPlans.reconcile_coding_delegation` with an explicit `accept` or
+`reject` decision and bounded review evidence. Acceptance checks that:
+
+* the report still exists under protected report storage and its SHA-256 is
+  unchanged;
+* the worktree fingerprint has not changed since the worker finished;
+* the exact current worktree passed coding verification, unless the caller
+  explicitly disables that requirement;
+* dependencies and expected plan revision remain current.
+
+Only then is the step marked complete. Runtime notifications are emitted after
+parent-plan result persistence, so a Heartbeat awakened by
+`SUBAGENT_TASK_COMPLETED` cannot observe the old pre-report plan state. Failed,
+cancelled, and interrupted workers use `SUBAGENT_TASK_FAILED`. Startup also
+reconciles prior-session interruptions into their bound plans.
+
 Main concept: **Subagents are isolated, blind workers.** They do not have access to your chat history, long-term memory (SQL/Vector), or general context. They only receive a specific task and a set of authorized tools, perform the work, and return a strict Markdown report to the main agent.
 
 ---
