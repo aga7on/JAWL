@@ -1,11 +1,30 @@
 import asyncio
 import json
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from src.l2_interfaces.host.os.skills.coding_context import HostOSCodingContext
 from src.l2_interfaces.host.os.skills.coding_lsp import HostOSCodingLanguageServer
+from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorkspaces
+from src.l2_interfaces.host.os.skills.files.editor import HostOSEditor
+
+
+def git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, timeout=30
+    )
+
+
+def create_rename_repository(root: Path, name: str) -> Path:
+    repository = root / name
+    repository.mkdir()
+    git(repository, "init", "-b", "main")
+    git(repository, "config", "user.name", "Test User")
+    git(repository, "config", "user.email", "test@example.com")
+    return repository
 
 
 FAKE_LSP_SOURCE = r'''import json
@@ -54,6 +73,21 @@ while True:
                 "end": {"line": 0, "character": 10}
             }
         }]})
+    elif method == "textDocument/prepareRename":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "start": {"line": 0, "character": 4},
+            "end": {"line": 0, "character": 10}
+        }})
+    elif method == "textDocument/rename":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"changes": {
+            sys.argv[1]: [{
+                "range": {
+                    "start": {"line": 0, "character": 4},
+                    "end": {"line": 0, "character": 10}
+                },
+                "newText": message["params"]["newName"]
+            }]
+        }}})
     elif method == "shutdown":
         send({"jsonrpc": "2.0", "id": message["id"], "result": None})
     elif method == "exit":
@@ -540,3 +574,441 @@ async def test_lsp_bounds_open_documents_with_did_close(os_client, tmp_path):
         assert events.count("textDocument/didClose") == 1
     finally:
         await resolver.stop()
+
+
+@pytest.mark.asyncio
+async def test_lsp_real_stdio_rename_preview_and_apply(os_client, tmp_path):
+    repository = create_rename_repository(os_client.sandbox_dir, "stdio_rename_repo")
+    (repository / "main.py").write_text(
+        "def target():\n    return 1\n", encoding="utf-8"
+    )
+    git(repository, "add", "--all")
+    git(repository, "commit", "-m", "initial")
+    workspaces = HostOSCodingWorkspaces(os_client)
+    created = await workspaces.create_coding_workspace(
+        "sandbox/stdio_rename_repo", "stdio-rename"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    source_file = workspace / "main.py"
+    server_script = tmp_path / "fake_rename_lsp.py"
+    server_log = tmp_path / "fake_rename_lsp.log"
+    server_script.write_text(FAKE_LSP_SOURCE, encoding="utf-8")
+    editor = HostOSEditor(os_client)
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        server_commands={
+            ".py": (
+                sys.executable,
+                str(server_script),
+                source_file.as_uri(),
+                str(server_log),
+            )
+        },
+        workspaces=workspaces,
+        editor=editor,
+    )
+    await resolver.start()
+    try:
+        preview = await resolver.preview_coding_symbol_rename(
+            "stdio-rename", "main.py", 1, 5, "renamed"
+        )
+        assert preview.is_success is True, preview.message
+        payload = json.loads(preview.message)
+        assert payload["old_name"] == "target"
+        assert payload["new_name"] == "renamed"
+        assert payload["file_count"] == 1
+        assert payload["edit_count"] == 1
+        assert "def renamed" in payload["diff"]
+        assert source_file.read_text(encoding="utf-8").startswith("def target")
+
+        applied = await resolver.apply_coding_symbol_rename(
+            "stdio-rename",
+            "main.py",
+            1,
+            5,
+            "renamed",
+            payload["workspace_fingerprint"],
+            payload["rename_preview_sha256"],
+        )
+        assert applied.is_success is True, applied.message
+        result = json.loads(applied.message)
+        assert result["before_fingerprint"] != result["after_fingerprint"]
+        assert len(result["checkpoints"]["main.py"]) == 32
+        assert source_file.read_text(encoding="utf-8").startswith("def renamed")
+        events = server_log.read_text(encoding="utf-8").splitlines()
+        assert events.count("textDocument/prepareRename") == 2
+        assert events.count("textDocument/rename") == 2
+    finally:
+        await resolver.stop()
+        await workspaces.remove_coding_workspace("stdio-rename", force=True)
+
+
+@pytest.mark.asyncio
+async def test_lsp_rename_is_multifile_utf16_and_exact_state_guarded(
+    os_client, monkeypatch
+):
+    repository = create_rename_repository(os_client.sandbox_dir, "multi_rename_repo")
+    main_source = (
+        "from lib import target\n"
+        'emoji = "😀"; value = target()\n'
+    )
+    lib_source = "def target():\n    return 1\n"
+    (repository / "main.py").write_text(main_source, encoding="utf-8")
+    (repository / "lib.py").write_text(lib_source, encoding="utf-8")
+    git(repository, "add", "--all")
+    git(repository, "commit", "-m", "initial")
+    workspaces = HostOSCodingWorkspaces(os_client)
+    created = await workspaces.create_coding_workspace(
+        "sandbox/multi_rename_repo", "multi-rename"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    editor = HostOSEditor(os_client)
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        server_commands={".py": ("fake-language-server",)},
+        workspaces=workspaces,
+        editor=editor,
+    )
+
+    def text_edit(text, line, new_text="renamed"):
+        start_column = text.index("target") + 1
+        start = resolver._lsp_character(text, start_column)
+        return {
+            "range": {
+                "start": {"line": line, "character": start},
+                "end": {"line": line, "character": start + len("target")},
+            },
+            "newText": new_text,
+        }
+
+    async def fake_rename(*args, **kwargs):
+        return (
+            {
+                "changes": {
+                    (workspace / "main.py").as_uri(): [
+                        text_edit(main_source.splitlines()[0], 0),
+                        text_edit(main_source.splitlines()[1], 1),
+                    ],
+                    (workspace / "lib.py").as_uri(): [
+                        text_edit(lib_source.splitlines()[0], 0)
+                    ],
+                }
+            },
+            "fake-language-server",
+            {"session_mode": "incremental", "document_sync": "unchanged"},
+        )
+
+    monkeypatch.setattr(resolver, "_rename_server", fake_rename)
+    preview = await resolver.preview_coding_symbol_rename(
+        "multi-rename", "main.py", 2, main_source.splitlines()[1].index("target") + 1,
+        "renamed",
+    )
+    assert preview.is_success is True, preview.message
+    payload = json.loads(preview.message)
+    assert payload["file_count"] == 2
+    assert payload["edit_count"] == 3
+    assert [item["path"] for item in payload["files"]] == ["lib.py", "main.py"]
+
+    forged = await resolver.apply_coding_symbol_rename(
+        "multi-rename",
+        "main.py",
+        2,
+        main_source.splitlines()[1].index("target") + 1,
+        "renamed",
+        payload["workspace_fingerprint"],
+        "0" * 64,
+    )
+    assert forged.is_success is False
+    assert "differ from preview" in forged.message
+    (workspace / "unrelated.txt").write_text("race\n", encoding="utf-8")
+    stale = await resolver.apply_coding_symbol_rename(
+        "multi-rename",
+        "main.py",
+        2,
+        main_source.splitlines()[1].index("target") + 1,
+        "renamed",
+        payload["workspace_fingerprint"],
+        payload["rename_preview_sha256"],
+    )
+    assert stale.is_success is False
+    assert "fingerprint changed" in stale.message
+    (workspace / "unrelated.txt").unlink()
+
+    applied = await resolver.apply_coding_symbol_rename(
+        "multi-rename",
+        "main.py",
+        2,
+        main_source.splitlines()[1].index("target") + 1,
+        "renamed",
+        payload["workspace_fingerprint"],
+        payload["rename_preview_sha256"],
+    )
+    assert applied.is_success is True, applied.message
+    assert "def renamed" in (workspace / "lib.py").read_text(encoding="utf-8")
+    updated_main = (workspace / "main.py").read_text(encoding="utf-8")
+    assert "import renamed" in updated_main
+    assert "value = renamed()" in updated_main
+    compile(updated_main, "main.py", "exec")
+    removed = await workspaces.remove_coding_workspace("multi-rename", force=True)
+    assert removed.is_success is True, removed.message
+
+
+@pytest.mark.asyncio
+async def test_lsp_rename_rejects_fallback_external_resource_and_overlap(
+    os_client, monkeypatch
+):
+    repository = create_rename_repository(os_client.sandbox_dir, "unsafe_rename_repo")
+    (repository / "main.py").write_text(
+        "def target():\n    return 1\n", encoding="utf-8"
+    )
+    git(repository, "add", "--all")
+    git(repository, "commit", "-m", "initial")
+    workspaces = HostOSCodingWorkspaces(os_client)
+    created = await workspaces.create_coding_workspace(
+        "sandbox/unsafe_rename_repo", "unsafe-rename"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        workspaces=workspaces,
+        editor=HostOSEditor(os_client),
+    )
+    monkeypatch.setattr(resolver, "_server_command", lambda suffix: None)
+    unavailable = await resolver.preview_coding_symbol_rename(
+        "unsafe-rename", "main.py", 1, 5, "renamed"
+    )
+    assert unavailable.is_success is False
+    assert "refuses lexical fallback" in unavailable.message
+
+    monkeypatch.setattr(
+        resolver, "_server_command", lambda suffix: ("fake-language-server",)
+    )
+    outside = os_client.sandbox_dir / "outside.py"
+    outside.write_text("target = 1\n", encoding="utf-8")
+
+    async def external(*args, **kwargs):
+        return (
+            {"changes": {outside.as_uri(): []}},
+            "fake-language-server",
+            {},
+        )
+
+    monkeypatch.setattr(resolver, "_rename_server", external)
+    escaped = await resolver.preview_coding_symbol_rename(
+        "unsafe-rename", "main.py", 1, 5, "renamed"
+    )
+    assert escaped.is_success is False
+    assert "outside the task workspace" in escaped.message
+
+    async def resource_operation(*args, **kwargs):
+        return (
+            {
+                "documentChanges": [
+                    {
+                        "kind": "rename",
+                        "oldUri": (workspace / "main.py").as_uri(),
+                        "newUri": (workspace / "moved.py").as_uri(),
+                    }
+                ]
+            },
+            "fake-language-server",
+            {},
+        )
+
+    monkeypatch.setattr(resolver, "_rename_server", resource_operation)
+    resource = await resolver.preview_coding_symbol_rename(
+        "unsafe-rename", "main.py", 1, 5, "renamed"
+    )
+    assert resource.is_success is False
+    assert "resource operations are not permitted" in resource.message
+
+    async def overlapping(*args, **kwargs):
+        return (
+            {
+                "changes": {
+                    (workspace / "main.py").as_uri(): [
+                        {
+                            "range": {
+                                "start": {"line": 0, "character": 4},
+                                "end": {"line": 0, "character": 10},
+                            },
+                            "newText": "renamed",
+                        },
+                        {
+                            "range": {
+                                "start": {"line": 0, "character": 5},
+                                "end": {"line": 0, "character": 9},
+                            },
+                            "newText": "other",
+                        },
+                    ]
+                }
+            },
+            "fake-language-server",
+            {},
+        )
+
+    monkeypatch.setattr(resolver, "_rename_server", overlapping)
+    overlap = await resolver.preview_coding_symbol_rename(
+        "unsafe-rename", "main.py", 1, 5, "renamed"
+    )
+    assert overlap.is_success is False
+    assert "overlapping text edits" in overlap.message
+    assert (workspace / "main.py").read_text(encoding="utf-8").startswith(
+        "def target"
+    )
+    removed = await workspaces.remove_coding_workspace("unsafe-rename")
+    assert removed.is_success is True, removed.message
+
+
+@pytest.mark.asyncio
+async def test_lsp_rename_rolls_back_partial_multifile_write(
+    os_client, monkeypatch
+):
+    repository = create_rename_repository(os_client.sandbox_dir, "rollback_rename_repo")
+    for name in ("a.py", "b.py"):
+        (repository / name).write_text("target = 1\n", encoding="utf-8")
+    git(repository, "add", "--all")
+    git(repository, "commit", "-m", "initial")
+    workspaces = HostOSCodingWorkspaces(os_client)
+    created = await workspaces.create_coding_workspace(
+        "sandbox/rollback_rename_repo", "rollback-rename"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    editor = HostOSEditor(os_client)
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        server_commands={".py": ("fake-language-server",)},
+        workspaces=workspaces,
+        editor=editor,
+    )
+
+    async def fake_rename(*args, **kwargs):
+        edit = {
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 6},
+            },
+            "newText": "renamed",
+        }
+        return (
+            {
+                "changes": {
+                    (workspace / "a.py").as_uri(): [edit],
+                    (workspace / "b.py").as_uri(): [edit],
+                }
+            },
+            "fake-language-server",
+            {},
+        )
+
+    monkeypatch.setattr(resolver, "_rename_server", fake_rename)
+    preview = await resolver.preview_coding_symbol_rename(
+        "rollback-rename", "a.py", 1, 1, "renamed"
+    )
+    assert preview.is_success is True, preview.message
+    payload = json.loads(preview.message)
+    atomic_write = editor._atomic_write
+
+    def fail_second(path, content):
+        if path.name == "b.py":
+            raise OSError("simulated second-file failure")
+        atomic_write(path, content)
+
+    monkeypatch.setattr(editor, "_atomic_write", fail_second)
+    applied = await resolver.apply_coding_symbol_rename(
+        "rollback-rename",
+        "a.py",
+        1,
+        1,
+        "renamed",
+        payload["workspace_fingerprint"],
+        payload["rename_preview_sha256"],
+    )
+    assert applied.is_success is False
+    assert "all written files were rolled back" in applied.message
+    assert (workspace / "a.py").read_text(encoding="utf-8") == "target = 1\n"
+    assert (workspace / "b.py").read_text(encoding="utf-8") == "target = 1\n"
+    assert len(list(editor.checkpoints_dir.iterdir())) == 2
+    removed = await workspaces.remove_coding_workspace("rollback-rename")
+    assert removed.is_success is True, removed.message
+
+
+@pytest.mark.asyncio
+async def test_lsp_rename_rollback_preserves_concurrent_external_change(
+    os_client, monkeypatch
+):
+    repository = create_rename_repository(os_client.sandbox_dir, "conflict_rename_repo")
+    for name in ("a.py", "b.py"):
+        (repository / name).write_text("target = 1\n", encoding="utf-8")
+    git(repository, "add", "--all")
+    git(repository, "commit", "-m", "initial")
+    workspaces = HostOSCodingWorkspaces(os_client)
+    created = await workspaces.create_coding_workspace(
+        "sandbox/conflict_rename_repo", "conflict-rename"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    editor = HostOSEditor(os_client)
+    resolver = HostOSCodingLanguageServer(
+        os_client,
+        HostOSCodingContext(os_client),
+        server_commands={".py": ("fake-language-server",)},
+        workspaces=workspaces,
+        editor=editor,
+    )
+
+    async def fake_rename(*args, **kwargs):
+        edit = {
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 6},
+            },
+            "newText": "renamed",
+        }
+        return (
+            {
+                "changes": {
+                    (workspace / "a.py").as_uri(): [edit],
+                    (workspace / "b.py").as_uri(): [edit],
+                }
+            },
+            "fake-language-server",
+            {},
+        )
+
+    monkeypatch.setattr(resolver, "_rename_server", fake_rename)
+    preview = await resolver.preview_coding_symbol_rename(
+        "conflict-rename", "a.py", 1, 1, "renamed"
+    )
+    assert preview.is_success is True, preview.message
+    payload = json.loads(preview.message)
+    atomic_write = editor._atomic_write
+
+    def race_then_fail(path, content):
+        if path.name == "b.py":
+            (workspace / "a.py").write_text("external = 2\n", encoding="utf-8")
+            raise OSError("simulated second-file failure after external write")
+        atomic_write(path, content)
+
+    monkeypatch.setattr(editor, "_atomic_write", race_then_fail)
+    applied = await resolver.apply_coding_symbol_rename(
+        "conflict-rename",
+        "a.py",
+        1,
+        1,
+        "renamed",
+        payload["workspace_fingerprint"],
+        payload["rename_preview_sha256"],
+    )
+    assert applied.is_success is False
+    assert "rollback was incomplete" in applied.message
+    assert "changed after rename write" in applied.message
+    assert (workspace / "a.py").read_text(encoding="utf-8") == "external = 2\n"
+    assert (workspace / "b.py").read_text(encoding="utf-8") == "target = 1\n"
+    assert len(list(editor.checkpoints_dir.iterdir())) == 2
+    removed = await workspaces.remove_coding_workspace("conflict-rename", force=True)
+    assert removed.is_success is True, removed.message

@@ -36,6 +36,17 @@
       ]
     },
     {
+      "id": "transactional_project_symbol_rename",
+      "description": "Allowlisted LSP rename is previewed and recomputed under exact workspace/edit hashes, handles UTF-16 multi-file edits, rejects unsafe WorkspaceEdit forms, and rolls back partial writes without clobbering concurrent changes.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_real_stdio_rename_preview_and_apply",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_rename_is_multifile_utf16_and_exact_state_guarded",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_rename_rejects_fallback_external_resource_and_overlap",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_rename_rolls_back_partial_multifile_write",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_lsp.py::test_lsp_rename_rollback_preserves_concurrent_external_change"
+      ]
+    },
+    {
       "id": "adaptive_dynamic_context",
       "description": "Repeated prompts stay bounded while preserving the current trigger, newest evidence, and exact on-demand skill discovery.",
       "tests": [

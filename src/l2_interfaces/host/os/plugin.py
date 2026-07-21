@@ -120,7 +120,12 @@ class HostOsPlugin(BaseInterface):
             HostOSCodingVerification(client, coding_workspaces, coding_plans)
         )
         register_instance(coding_context)
-        coding_lsp = HostOSCodingLanguageServer(client, coding_context)
+        coding_lsp = HostOSCodingLanguageServer(
+            client,
+            coding_context,
+            workspaces=coding_workspaces,
+            editor=editor,
+        )
         container.coding_lsp = coding_lsp
         register_instance(coding_lsp)
         register_instance(HostOSCodingDependencies(client))

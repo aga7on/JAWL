@@ -120,6 +120,18 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   participate in system startup/shutdown. Eviction, timeout, cancellation, and
   shutdown close the protocol and terminate the process tree; syntax fallback
   remains available.
+- `preview_coding_symbol_rename` requests `prepareRename` and `rename` from an
+  allowlisted retained server, then normalizes only bounded textual
+  `WorkspaceEdit` operations inside the exact managed task workspace. UTF-16
+  positions, duplicate edits, overlaps, resource operations, external paths,
+  non-UTF-8 files, and transaction-size limits are handled fail-closed; lexical
+  rename fallback is deliberately forbidden.
+- `apply_coding_symbol_rename` recomputes the server edit and requires both the
+  original workspace fingerprint and a canonical preview hash. It checkpoints
+  every affected file before atomic writes, verifies each file immediately
+  before its write, rolls back a partial transaction, and preserves rather than
+  overwrites any concurrent external change while reporting recovery checkpoint
+  IDs.
 - Python/JavaScript/TypeScript/Rust/Go/C/C++ server commands are discovered from
   a fixed executable allowlist; the model cannot supply a process command. When
   no server is installed, initialization fails, or no in-project result exists,
