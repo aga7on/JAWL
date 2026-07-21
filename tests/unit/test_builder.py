@@ -163,6 +163,7 @@ def test_build_l3_agent(
     # Подготавливаем фиктивные данные для сборки
     mock_container.sql = MagicMock()
     mock_container.vector = MagicMock()
+    mock_container.coding_plans = MagicMock()
 
     env_vars = {"LLM_API_URL": "http://mock", "LLM_API_KEYS": ["key1"]}
 
@@ -193,3 +194,8 @@ def test_build_l3_agent(
     assert mock_swarm.call_args.kwargs["coding_plans"] is mock_container.coding_plans
     assert mock_swarm.call_args.kwargs["event_bus"] is mock_container.event_bus
     assert mock_swarm.return_value in mock_container.lifecycle_components
+    assert mock_container.action_journal is not None
+    assert any(
+        component.__class__.__name__ == "CodingActionReconciliation"
+        for component in mock_container.lifecycle_components
+    )

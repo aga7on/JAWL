@@ -153,8 +153,18 @@ class ActionJournal:
                 ),
                 None,
             )
+            reconciled = next(
+                (
+                    event
+                    for event in reversed(plan_events)
+                    if event.get("event") == "plan_reconciled"
+                ),
+                None,
+            )
             if finished:
                 plan_state = finished.get("state", "completed")
+            elif reconciled:
+                plan_state = "reconciled"
             elif started.get("session_id") == self.session_id:
                 plan_state = "in_progress"
             else:
@@ -162,6 +172,35 @@ class ActionJournal:
             if state and plan_state != state:
                 continue
 
+            terminal_action_ids = {
+                str(event.get("action_id"))
+                for event in plan_events
+                if event.get("event")
+                in {"action_finished", "action_cancelled", "action_blocked"}
+                and event.get("action_id")
+            }
+            uncertain_actions = []
+            seen_actions = set()
+            for event in plan_events:
+                action_id = str(event.get("action_id") or "")
+                if (
+                    event.get("event") != "action_started"
+                    or not action_id
+                    or action_id in terminal_action_ids
+                    or action_id in seen_actions
+                ):
+                    continue
+                seen_actions.add(action_id)
+                uncertain_actions.append(
+                    {
+                        "action_id": action_id[:100],
+                        "tool_name": str(event.get("tool_name") or "")[:200],
+                        "task_id": str(event.get("task_id") or "")[:63],
+                    }
+                )
+            raw_task_ids = started.get("task_ids", [])
+            if not isinstance(raw_task_ids, list):
+                raw_task_ids = []
             summary: Dict[str, Any] = {
                 "plan_id": plan_id,
                 "session_id": started.get("session_id"),
@@ -170,9 +209,21 @@ class ActionJournal:
                 "state": plan_state,
                 "action_count": len(started.get("actions", [])),
                 "last_event": plan_events[-1].get("event"),
+                "task_ids": [
+                    str(task_id)[:63]
+                    for task_id in raw_task_ids[:50]
+                    if task_id
+                ],
+                "uncertain_actions": uncertain_actions[:100],
             }
             if finished:
                 summary["outcomes"] = finished.get("outcomes", [])
+            if reconciled:
+                summary["reconciliation"] = {
+                    "status": reconciled.get("status"),
+                    "recorded_at": reconciled.get("timestamp"),
+                    "task_ids": reconciled.get("task_ids", []),
+                }
             if include_events:
                 summary["events"] = plan_events
             plans.append(summary)

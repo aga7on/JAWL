@@ -21,8 +21,9 @@ class ActionJournalSkills:
     ) -> SkillResult:
         """Inspect recent action plans, failures, cancellations, and interruptions.
 
-        Use ``state='interrupted'`` after a framework restart. Journal entries are
-        evidence for inspection; physical side effects are never replayed blindly.
+        Use ``state='interrupted'`` for unresolved prior-session work and
+        ``state='reconciled'`` for coding plans already projected into durable
+        workspace recovery state. Physical side effects are never replayed blindly.
         """
 
         try:

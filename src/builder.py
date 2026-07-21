@@ -37,6 +37,9 @@ from src.l3_agent.skills.registry import (
     register_instance,
 )
 from src.l3_agent.skills.journal_skills import ActionJournalSkills
+from src.l3_agent.skills.coding_reconciliation import (
+    CodingActionReconciliation,
+)
 from src.l3_agent.skills.catalog import SkillCatalog
 from src.l3_agent.skills.event_queue import EventQueueSkills
 from src.l3_agent.hooks.lifecycle import LifecycleHooks
@@ -210,6 +213,15 @@ class SystemBuilder:
         action_journal = configure_action_journal(
             self.container.local_data_dir / "agent" / "action_journal.jsonl"
         )
+        self.container.action_journal = action_journal
+        if self.container.coding_plans is not None:
+            self.container.lifecycle_components.append(
+                CodingActionReconciliation(
+                    action_journal,
+                    self.container.coding_plans,
+                    self.container.event_bus,
+                )
+            )
         hook_config = self.system_config.lifecycle_hooks
         lifecycle_hooks = LifecycleHooks(
             event_bus=self.container.event_bus,

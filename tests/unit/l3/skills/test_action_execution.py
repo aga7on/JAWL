@@ -429,6 +429,50 @@ async def test_new_session_identifies_unfinished_plan_as_interrupted(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_action_journal_identifies_uncertain_actions_and_reconciliation(
+    tmp_path,
+):
+    journal_path = tmp_path / "action_journal.jsonl"
+    old_session = ActionJournal(journal_path)
+    await old_session.record(
+        "plan_started",
+        plan_id="coding-plan",
+        task_ids=["task-7"],
+        actions=[{"action_id": "write", "tool_name": "patch"}],
+    )
+    await old_session.record(
+        "action_started",
+        plan_id="coding-plan",
+        action_id="write",
+        tool_name="patch",
+        task_id="task-7",
+    )
+
+    current_session = ActionJournal(journal_path)
+    interrupted = await current_session.recent_plans(
+        state="interrupted", include_events=True
+    )
+    assert interrupted[0]["task_ids"] == ["task-7"]
+    assert interrupted[0]["uncertain_actions"] == [
+        {
+            "action_id": "write",
+            "tool_name": "patch",
+            "task_id": "task-7",
+        }
+    ]
+
+    await current_session.record(
+        "plan_reconciled",
+        plan_id="coding-plan",
+        status="inspection_required",
+        task_ids=["task-7"],
+    )
+    assert await current_session.recent_plans(state="interrupted") == []
+    reconciled = await current_session.recent_plans(state="reconciled")
+    assert reconciled[0]["reconciliation"]["status"] == "inspection_required"
+
+
+@pytest.mark.asyncio
 async def test_action_journal_inspection_skill_validates_limit(tmp_path):
     journal = ActionJournal(tmp_path / "action_journal.jsonl")
     skills = ActionJournalSkills(journal)

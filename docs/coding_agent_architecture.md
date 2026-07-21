@@ -329,6 +329,28 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   interpolation and inherit every backend, fingerprint, approval, timeout, and
   output bound of the ordinary task command path.
 
+## Startup coding reconciliation contract
+
+- The append-only action journal distinguishes a prior-session plan from one in
+  the current process and derives only bounded task IDs plus actions that have a
+  durable start record but no finish/cancel/block record. Raw parameters never
+  enter recovery events.
+- A lifecycle-managed startup reconciler projects each interrupted coding action
+  plan into its managed workspace registry together with the exact current HEAD
+  and workspace fingerprint. It never invokes or replays a tool.
+- An uncertain started action records `inspection_required`, adds one idempotent
+  `action_interruption` reason to the durable coding plan, and therefore blocks
+  commit until the remaining graph is deliberately revised. An interruption
+  before any action started records `resume_required` without manufacturing a
+  replanning failure.
+- The journal receives a terminal `plan_reconciled` marker only after every
+  referenced task was projected successfully. Repeated startup is idempotent;
+  partial infrastructure failure remains `interrupted` for a future retry.
+- A bounded `CODING_ACTION_RECOVERY_REQUIRED` event wakes the existing Heartbeat
+  with task/plan IDs, state, counts, and fingerprints but no action arguments.
+  The agent must inspect workspace, plan, diff, and journal evidence before it
+  continues.
+
 ## Bounded event steering contract
 
 - Heartbeat sleep events, active ReAct realtime events, and safe-boundary steer

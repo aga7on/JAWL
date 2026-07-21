@@ -153,6 +153,13 @@ class Events:
         requires_attention=False,
     )
 
+    CODING_ACTION_RECOVERY_REQUIRED = EventConfig(
+        name="CODING_ACTION_RECOVERY_REQUIRED",
+        description="A prior coding action plan needs inspect-first recovery.",
+        level=EventLevel.HIGH,
+        requires_attention=True,
+    )
+
     # ============================================
     # WEB HOOKS
     # ============================================

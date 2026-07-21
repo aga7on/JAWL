@@ -159,6 +159,16 @@
       ]
     },
     {
+      "id": "automatic_startup_coding_reconciliation",
+      "description": "Startup projects interrupted action plans into exact durable workspace state, distinguishes uncertain side effects from safe boundaries, wakes Heartbeat without raw parameters, never replays tools, and is idempotent.",
+      "tests": [
+        "tests/unit/l3/skills/test_action_execution.py::test_action_journal_identifies_uncertain_actions_and_reconciliation",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_reconciliation.py::test_startup_reconciliation_marks_uncertain_action_and_is_idempotent",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_reconciliation.py::test_startup_reconciliation_safe_boundary_requests_resume_not_replan",
+        "tests/unit/test_builder.py::test_build_l3_agent"
+      ]
+    },
+    {
       "id": "safe_event_steering",
       "description": "Urgent events can defer at a safe boundary without cancelling an in-flight provider response or executing its stale actions.",
       "tests": [

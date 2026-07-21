@@ -244,6 +244,104 @@ class HostOSCodingPlans:
             append_history=True,
         )
 
+    async def record_startup_action_recovery(
+        self,
+        *,
+        task_id: str,
+        action_plan_id: str,
+        uncertain_actions: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Reconcile one prior-session action plan without replaying side effects."""
+
+        task_id = self.workspaces._validate_task_id(task_id)
+        action_plan_id = self._bounded_text(
+            action_plan_id, "action_plan_id", 200
+        )
+        if not isinstance(uncertain_actions, list) or len(uncertain_actions) > 100:
+            raise ValueError("uncertain_actions must be a list of at most 100 items.")
+        normalized = []
+        for index, item in enumerate(uncertain_actions):
+            if not isinstance(item, dict):
+                raise ValueError(f"uncertain_actions[{index}] must be an object.")
+            action_id = self._bounded_text(
+                str(item.get("action_id") or ""),
+                f"uncertain_actions[{index}].action_id",
+                100,
+            )
+            tool_name = self._bounded_text(
+                str(item.get("tool_name") or "unknown"),
+                f"uncertain_actions[{index}].tool_name",
+                200,
+            )
+            normalized.append(
+                {"action_id": action_id, "tool_name": tool_name}
+            )
+
+        async with self.workspaces._lock:
+            registry = self.workspaces._load_registry()
+            entry = self.workspaces._get_entry(registry, task_id)
+            recoveries = entry.setdefault("action_recoveries", [])
+            if not isinstance(recoveries, list):
+                recoveries = []
+                entry["action_recoveries"] = recoveries
+            existing = next(
+                (
+                    item
+                    for item in reversed(recoveries)
+                    if isinstance(item, dict)
+                    and item.get("action_plan_id") == action_plan_id
+                ),
+                None,
+            )
+            if existing is not None:
+                return {**existing, "idempotent": True}
+            _, workspace = self.workspaces._entry_paths(entry)
+            fingerprint = await self.workspaces.workspace_fingerprint(workspace)
+            state = "inspection_required" if normalized else "resume_required"
+            now = self.workspaces._utc_now()
+            recovery = {
+                "action_plan_id": action_plan_id,
+                "state": state,
+                "uncertain_actions": normalized,
+                "workspace_fingerprint": fingerprint["fingerprint"],
+                "head": fingerprint["head"],
+                "recorded_at": now,
+            }
+            recoveries.append(recovery)
+            entry["action_recoveries"] = recoveries[-20:]
+            entry["last_action_recovery"] = recovery
+            plan = entry.get("task_plan")
+            if plan:
+                if normalized:
+                    self._mark_replan_required(
+                        plan,
+                        trigger="action_interruption",
+                        source_id=f"action-plan:{action_plan_id}",
+                        evidence=(
+                            "Framework restart left action side effects uncertain: "
+                            + ", ".join(
+                                f"{item['action_id']} ({item['tool_name']})"
+                                for item in normalized
+                            )
+                        )[:1000],
+                        workspace_fingerprint=fingerprint["fingerprint"],
+                    )
+                self._append_history(
+                    plan,
+                    "startup_action_recovery",
+                    {
+                        "action_plan_id": action_plan_id,
+                        "state": state,
+                        "uncertain_action_ids": [
+                            item["action_id"] for item in normalized
+                        ],
+                        "workspace_fingerprint": fingerprint["fingerprint"],
+                    },
+                )
+                recovery["plan_revision"] = plan["revision"]
+            self.workspaces._save_registry(registry)
+            return {**recovery, "idempotent": False}
+
     @classmethod
     def _view_payload(
         cls,
