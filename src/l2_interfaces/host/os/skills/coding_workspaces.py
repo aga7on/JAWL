@@ -127,6 +127,87 @@ class HostOSCodingWorkspaces:
                 await process.wait()
             raise
 
+    async def _run_git_bounded(
+        self,
+        cwd: Path,
+        *args: str,
+        max_stdout_bytes: int,
+        max_stderr_bytes: int = 65536,
+        timeout: float = 120,
+    ) -> Tuple[int, str, str, bool, bool]:
+        """Run Git while draining pipes but retaining bounded byte prefixes."""
+
+        if max_stdout_bytes < 1 or max_stderr_bytes < 1:
+            raise ValueError("Git output byte limits must be positive.")
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        process = None
+        tasks: List[asyncio.Task] = []
+
+        async def read_bounded(
+            stream: asyncio.StreamReader, limit: int
+        ) -> Tuple[bytes, bool]:
+            retained = bytearray()
+            truncated = False
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk:
+                    break
+                remaining = limit - len(retained)
+                if remaining > 0:
+                    retained.extend(chunk[:remaining])
+                if len(chunk) > max(0, remaining):
+                    truncated = True
+            return bytes(retained), truncated
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                *args,
+                cwd=str(cwd),
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            assert process.stdout is not None and process.stderr is not None
+            tasks = [
+                asyncio.create_task(read_bounded(process.stdout, max_stdout_bytes)),
+                asyncio.create_task(read_bounded(process.stderr, max_stderr_bytes)),
+                asyncio.create_task(process.wait()),
+            ]
+            stdout_result, stderr_result, return_code = await asyncio.wait_for(
+                asyncio.gather(*tasks), timeout=timeout
+            )
+            stdout, stdout_truncated = stdout_result
+            stderr, stderr_truncated = stderr_result
+            return (
+                return_code,
+                stdout.decode("utf-8", errors="replace").strip(),
+                stderr.decode("utf-8", errors="replace").strip(),
+                stdout_truncated,
+                stderr_truncated,
+            )
+        except FileNotFoundError as exc:
+            raise FileNotFoundError("'git' utility was not found.") from exc
+        except asyncio.TimeoutError as exc:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise TimeoutError(
+                f"Git command timed out after {timeout:g} seconds."
+            ) from exc
+        except asyncio.CancelledError:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
     async def _resolve_repository(self, repository_path: str) -> Path:
         requested = self.host_os.validate_path(repository_path, is_write=True)
         if not requested.is_dir():
@@ -573,9 +654,18 @@ class HostOSCodingWorkspaces:
                 diff_args.append("--")
                 diff_args.extend(selected_tracked)
                 diff_text = ""
+                diff_collection_truncated = False
                 if selected_tracked:
-                    code, diff_text, err = await self._run_git(
-                        workspace, *diff_args
+                    (
+                        code,
+                        diff_text,
+                        err,
+                        diff_collection_truncated,
+                        _,
+                    ) = await self._run_git_bounded(
+                        workspace,
+                        *diff_args,
+                        max_stdout_bytes=max_chars * 4,
                     )
                     if code != 0:
                         return SkillResult.fail(
@@ -602,12 +692,20 @@ class HostOSCodingWorkspaces:
                         diff_text += ("\n" if diff_text else "") + preview
 
                 diff_text = redact_sensitive_text(diff_text)
-                original_chars = len(diff_text)
-                truncated = original_chars > max_chars
+                collected_chars = len(diff_text)
+                original_chars = (
+                    None if diff_collection_truncated else collected_chars
+                )
+                truncated = diff_collection_truncated or collected_chars > max_chars
                 if truncated:
+                    reason = (
+                        "Git output byte limit reached; request a smaller file/range."
+                        if diff_collection_truncated
+                        else "Request changed files individually."
+                    )
                     diff_text = (
                         diff_text[:max_chars]
-                        + "\n... [Diff truncated. Request changed files individually.]"
+                        + f"\n... [Diff truncated. {reason}]"
                     )
                 fingerprint = await self.workspace_fingerprint(workspace)
                 payload = {
@@ -629,6 +727,8 @@ class HostOSCodingWorkspaces:
                     ),
                     "fingerprint": fingerprint,
                     "original_diff_chars": original_chars,
+                    "collected_diff_chars": collected_chars,
+                    "diff_collection_truncated": diff_collection_truncated,
                     "truncated": truncated,
                     "diff": diff_text,
                 }

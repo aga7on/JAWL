@@ -50,7 +50,8 @@
       "tests": [
         "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_includes_untracked_redacts_secrets_and_bounds_output",
         "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_untracked_diff_preview_reads_with_hard_bound",
-        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_paginates_changed_files"
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_paginates_changed_files",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_bounds_tracked_git_output_during_collection"
       ]
     },
     {

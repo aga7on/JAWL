@@ -140,6 +140,9 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Diff text is bounded and common credential forms are redacted before it enters
   model context. Untracked previews are read with a hard byte bound, including
   when an accidentally large artifact appears in the worktree.
+- Tracked Git stdout/stderr is drained concurrently but retained only up to hard
+  byte limits, so a huge single-file diff cannot be buffered fully before the
+  character-level response bound is applied.
 - A truncated task-wide diff or file-list page is only a change index. The agent
   must page through every affected file before verification; staged and unstaged
   views remain separately addressable.

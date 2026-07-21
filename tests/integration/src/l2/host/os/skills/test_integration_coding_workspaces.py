@@ -442,3 +442,31 @@ async def test_workspace_diff_paginates_changed_files(os_client):
     assert last["changed_files"] == ["new_4.py"]
     assert last["file_page_has_more"] is False
     assert (await manager.remove_coding_workspace("diff-pagination", force=True)).is_success
+
+
+@pytest.mark.asyncio
+async def test_workspace_diff_bounds_tracked_git_output_during_collection(os_client):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "large-tracked-diff"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "app.py").write_text(
+        "value = '" + "x" * 200_000 + "'\n", encoding="utf-8"
+    )
+
+    result = await manager.get_coding_workspace_diff(
+        "large-tracked-diff", file_path="app.py", max_chars=1000
+    )
+    payload = json.loads(result.message)
+
+    assert result.is_success is True
+    assert payload["diff_collection_truncated"] is True
+    assert payload["original_diff_chars"] is None
+    assert payload["collected_diff_chars"] <= 4000
+    assert "Git output byte limit reached" in payload["diff"]
+    assert len(payload["diff"]) < 1200
+    assert (
+        await manager.remove_coding_workspace("large-tracked-diff", force=True)
+    ).is_success
