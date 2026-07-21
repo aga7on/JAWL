@@ -21,15 +21,15 @@ tasks safely, recoverably, and with measurable evidence.
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | LLM protocol | Strong | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, persisted protocol failures, terminal step-limit record | Provider-specific capability auto-probing is not yet implemented |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
-| Evaluation | Good | Deterministic capability gate plus fixed repositories with public/hidden correctness, scope, patch-economy, timing, and optional trace metrics | No live model driver or comparative baseline runs |
+| Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, and isolated real-ReAct live driver with lifecycle, patch, timing, step, token, and provider metrics | No recorded live calibration or comparative baseline runs yet |
 | Planning | Strong | Persistent task-local requirements, dependency steps, revision guards, evidence history, and commit gate | No automatic plan synthesis quality grader |
 
 ## Priority order
 
 1. Add an optional LSP adapter for project-resolved definitions and references
    while retaining the current zero-index occurrence and dependency fallbacks.
-2. Add a live-model adapter that provisions each fixed task through JAWL,
-   exports the committed diff and trace metrics, and supports fair baseline runs.
+2. Run and version live calibration results through QWB, then execute equivalent
+   declared baseline agents before making comparative performance claims.
 
 ## Compatibility guardrail
 

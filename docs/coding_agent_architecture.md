@@ -217,3 +217,15 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Reference patches validate the grader only. Comparative model claims require
   a live JAWL driver and equivalent baselines feeding their patches and token,
   tool-call, retry, and wall-time metrics into this same evaluator.
+- `benchmarks/coding_tasks/drive_jawl.py` provides that live JAWL path without
+  starting Telegram, desktop automation, or the production Heartbeat. Each task
+  receives a temporary Host OS root, candidate-visible repository, coding-only
+  skill registry, in-memory ticks, real `ReactLoop`, selected tool transport,
+  and OpenAI-compatible client.
+- The driver requires the exact benchmark task ID, extracts the managed branch
+  against its recorded base commit, and gates lifecycle compliance separately
+  from hidden-test patch quality. It records time, steps, estimated tokens, and
+  provider metrics but never serializes the API key.
+- A live report is evidence for one endpoint/model/configuration only. Claims of
+  parity or superiority require versioned runs against declared baselines under
+  the same task, timeout, and grading contract.

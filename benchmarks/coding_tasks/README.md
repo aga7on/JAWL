@@ -22,5 +22,20 @@ all four. An optional `--tool-metrics metrics.json` payload is copied into the
 report so a model driver can attach token, tool-call, retry, and trace totals.
 
 Reference solutions validate the grader; they are not a model benchmark result.
-The next adapter should provision the fixture, send the manifest prompt to JAWL,
-export its committed task diff, and feed that patch plus trace metrics here.
+
+Run the real isolated JAWL ReAct loop through an OpenAI-compatible endpoint:
+
+```powershell
+python benchmarks/coding_tasks/drive_jawl.py `
+  --api-url http://127.0.0.1:8000/v1 `
+  --api-key local_dummy_key `
+  --model qwen3.8-max-preview `
+  --transport wrapper
+```
+
+The live driver copies only the visible repository into a temporary JAWL root,
+uses an in-memory tick database and coding-only skill registry, requires a clean
+committed task workspace, exports the base-to-HEAD patch, then sends it through
+the same hidden-test evaluator. Reports under `.jawl-benchmarks/` separate patch
+quality from lifecycle compliance, wall time, ReAct steps, input/output tokens,
+and the final transport metrics. API keys are never written to the report.

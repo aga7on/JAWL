@@ -83,6 +83,7 @@
       "tests": [
         "tests/unit/l3/skills/test_skills_registry.py::test_native_schema_is_reversible_typed_and_hybrid_compatible",
         "tests/unit/l3/skills/test_skills_registry.py::test_native_schema_enforces_selection_limit",
+        "tests/unit/l3/skills/test_skills_registry.py::test_guard_resolves_deferred_annotations_from_wrapped_skill_globals",
         "tests/unit/l3/llm/test_executor.py::test_executor_converts_native_tool_call_and_plain_completion",
         "tests/unit/l3/react/test_react_loop.py::test_react_executes_resolved_native_tool_and_dynamic_schema"
       ]
@@ -110,7 +111,10 @@
       "description": "Fixed repositories grade public and hidden correctness, scope precision, and patch economy.",
       "tests": [
         "tests/integration/benchmarks/test_coding_task_eval.py::test_reference_patches_pass_public_hidden_scope_and_economy_gates",
-        "tests/integration/benchmarks/test_coding_task_eval.py::test_candidate_cannot_hide_an_untracked_file_from_scope_gate"
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_candidate_cannot_hide_an_untracked_file_from_scope_gate",
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_live_driver_prompt_exposes_contract_but_not_hidden_oracle",
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_live_driver_extracts_committed_workspace_patch_for_same_grader",
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_live_driver_runs_real_react_and_coding_skills_without_network"
       ]
     }
   ]

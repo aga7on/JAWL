@@ -19,6 +19,9 @@ from typing import Any, Dict, List, Optional
 EVAL_ROOT = Path(__file__).resolve().parent
 REPOSITORY_ROOT = EVAL_ROOT.parents[1]
 MANIFEST_PATH = EVAL_ROOT / "manifest.json"
+FIXTURE_IGNORE = shutil.ignore_patterns(
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "*.pyc", "*.pyo"
+)
 
 
 def run_command(
@@ -126,7 +129,7 @@ def evaluate_task(
     fixture = (EVAL_ROOT / task["fixture"]).resolve()
     with tempfile.TemporaryDirectory(prefix=f"jawl-eval-{task['id']}-") as temporary:
         workspace = Path(temporary) / "repo"
-        shutil.copytree(fixture / "repo", workspace)
+        shutil.copytree(fixture / "repo", workspace, ignore=FIXTURE_IGNORE)
         git(workspace, "init", "-b", "main")
         git(workspace, "config", "user.name", "JAWL Eval")
         git(workspace, "config", "user.email", "eval@jawl.local")
