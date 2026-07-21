@@ -115,6 +115,7 @@ async def test_build_l1_databases(
 
     # Проверяем создание и коннект
     mock_sql_cls.assert_called_once()
+    assert "tool_transport" not in mock_sql_cls.call_args.kwargs
     mock_sql_instance.connect.assert_awaited_once()
 
     mock_vector_cls.assert_called_once()

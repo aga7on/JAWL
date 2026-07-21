@@ -110,7 +110,6 @@ class SystemBuilder:
             max_custom_drives=self.system_config.db.sql.drives.max_custom_drives,
             fundamental_config=self.system_config.db.sql.drives.fundamental.model_dump(),
             hypotheses_enabled=self.system_config.db.sql.hypotheses.enabled,
-            tool_transport=self.container.settings.llm.tool_transport,
             max_clusters_hypotheses=self.system_config.db.sql.hypotheses.max_clusters,
             max_hypotheses=self.system_config.db.sql.hypotheses.max_hypotheses,
             timezone=self.system_config.timezone,
