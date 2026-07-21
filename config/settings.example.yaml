@@ -64,6 +64,27 @@ system:
     low_multiplier: 0.7
     background_multiplier: 0.8
 
+  # Shell-free local lifecycle automation. Commands are disabled unless the
+  # user declares exact argv profiles here. A repository may only select a
+  # profile with scope: repository through its .jawl/hooks.json manifest.
+  lifecycle_hooks:
+    enabled: false
+    fail_closed: true
+    handler_timeout_seconds: 15
+    command_timeout_seconds: 10
+    max_output_chars: 8000
+    commands: []
+    # Example user-approved repository profile:
+    # commands:
+    #   - name: python-tests
+    #     phase: post_tool_use
+    #     argv: [python, -m, pytest, -q]
+    #     tool_patterns: ["HostOSCodingFiles.*"]
+    #     scope: repository
+    #     working_directory: workspace
+    #     priority: 0
+    #     deny_exit_code: 10
+
   # Подробнее: docs/yaml/settings/context.md
   context_depth:
     high_ticks: 4

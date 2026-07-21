@@ -64,6 +64,19 @@
       ]
     },
     {
+      "id": "declarative_lifecycle_commands",
+      "description": "User-approved exact argv hooks are metadata-only, repository-selectable without command injection, redacted, and process-tree bounded.",
+      "tests": [
+        "tests/unit/l3/hooks/test_commands.py::test_user_command_receives_only_bounded_metadata_and_scrubbed_environment",
+        "tests/unit/l3/hooks/test_commands.py::test_repository_can_only_select_preapproved_workspace_profile",
+        "tests/unit/l3/hooks/test_commands.py::test_pre_command_can_deny_without_becoming_a_hook_failure",
+        "tests/unit/l3/hooks/test_commands.py::test_command_timeout_is_bounded_and_fails_closed",
+        "tests/unit/l3/hooks/test_commands.py::test_failed_command_output_is_bounded_and_redacted",
+        "tests/unit/l3/hooks/test_commands.py::test_repository_profile_cannot_execute_from_framework_directory",
+        "tests/unit/test_builder.py::test_build_l3_agent"
+      ]
+    },
+    {
       "id": "durable_interruption_recovery",
       "description": "Lifecycle evidence is redacted and unfinished work is classified after restart.",
       "tests": [

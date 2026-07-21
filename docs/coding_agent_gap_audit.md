@@ -19,7 +19,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
-| Lifecycle policy | Good | Ordered bounded pre/post/error/cancel hooks, preflight deny, fail-open/fail-closed policy, durable records, passive EventBus observations | No declarative repository/user command-hook adapter yet |
+| Lifecycle policy | Strong | Ordered bounded pre/post/error/cancel hooks, preflight deny, fail-open/fail-closed policy, durable records, passive EventBus observations, and shell-free user/repository command profiles with repository selection but no argv injection | Lifecycle phases do not yet cover compaction, system stop, or delegated-work boundaries |
 | Event steering | Strong | Configurable interrupt/defer/append policy; deferred urgent events preserve in-flight provider responses, skip stale actions, persist a steer tick, and become the next primary trigger; priority-bounded sleep/realtime queues explicitly coalesce only noisy state events and expose overflow without payload leakage | No interactive mid-generation provider steering; safe boundary waits for the active response |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | Transactional rewind | Strong | Exact workspace/index snapshot, plan revision, append-only tick timeline branch, optimistic guard, automatic forward checkpoint and compensation | Does not rewind vector/graph stores or external side effects by design |
@@ -34,8 +34,8 @@ tasks safely, recoverably, and with measurable evidence.
 1. Validate `first_step` Thinking plus adaptive context in the next organic or
    deliberately justified live run; avoid repetitive account-consuming
    calibration.
-2. Add declarative repository/user command adapters on the lifecycle contract,
-   then extend the same contract to compaction, stop, and delegated work.
+2. Extend the declarative lifecycle contract beyond tool calls to compaction,
+   system stop, and delegated-work boundaries.
 3. Add an interactive approval channel and image/toolchain profiles on top of
    the new disabled/pre-approved/container command policy.
 4. Where a provider supports it, add true mid-generation steering without

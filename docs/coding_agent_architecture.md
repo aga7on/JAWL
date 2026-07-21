@@ -29,6 +29,21 @@ event-driven identity, local memory, interfaces, heartbeat, or personality model
 This contract is the foundation for later worktree isolation, durable action
 journaling, checkpoint/rewind, native patch application, and coding evaluation.
 
+## Declarative lifecycle automation contract
+
+- Declarative command hooks are disabled by default and use exact argv without
+  a shell, interpolation, or repository-provided environment variables.
+- User profiles are resolved and executable-hashed at startup. A managed
+  repository can only select profiles explicitly marked `scope: repository`;
+  `.jawl/hooks.json` never supplies commands or arguments.
+- Repository-selected hooks run only in the resolved task worktree. Hook stdin
+  contains bounded action metadata and parameter names, not parameter values or
+  outcome messages, and inherits only a minimal environment allowlist.
+- Output is drained under a retained bound and redacted. Timeout or cancellation
+  terminates the process tree; a changed executable fails before launch.
+- The adapter is an authorization boundary, not containment. Commands needing
+  untrusted-code isolation remain subject to the separate container policy.
+
 ## Safe editing contract
 
 - The legacy `patch_file` skill remains available to existing prompts.

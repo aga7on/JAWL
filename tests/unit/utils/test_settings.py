@@ -8,6 +8,7 @@ from src.utils.settings import (
     load_yaml,
     load_config,
     HostOSConfig,
+    LifecycleCommandHookConfig,
     _log_missing_defaults,
     SystemConfig,
 )
@@ -68,6 +69,24 @@ def test_host_os_config_validation():
     }
     with pytest.raises(ValueError):
         HostOSConfig(**data)
+
+
+def test_lifecycle_command_hook_config_is_exact_argv_not_shell_text():
+    profile = LifecycleCommandHookConfig(
+        name="python-tests",
+        phase="post_tool_use",
+        argv=["python", "-m", "pytest", "-q"],
+        scope="repository",
+        working_directory="workspace",
+    )
+
+    assert profile.argv == ["python", "-m", "pytest", "-q"]
+    with pytest.raises(ValueError):
+        LifecycleCommandHookConfig(
+            name="invalid-shell-text",
+            phase="post_tool_use",
+            argv="python -m pytest",
+        )
 
 
 def test_load_yaml_duplicate_keys(tmp_path: Path):

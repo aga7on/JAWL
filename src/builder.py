@@ -40,6 +40,7 @@ from src.l3_agent.skills.journal_skills import ActionJournalSkills
 from src.l3_agent.skills.catalog import SkillCatalog
 from src.l3_agent.skills.event_queue import EventQueueSkills
 from src.l3_agent.hooks.lifecycle import LifecycleHooks
+from src.l3_agent.hooks.commands import DeclarativeCommandHooks
 from src.l3_agent.swarm.skills.report import SubagentReport
 from src.l3_agent.swarm.spawn import SwarmManager
 from src.l3_agent.tot.generator import ToTGenerator
@@ -209,9 +210,23 @@ class SystemBuilder:
         action_journal = configure_action_journal(
             self.container.local_data_dir / "agent" / "action_journal.jsonl"
         )
-        self.container.lifecycle_hooks = configure_lifecycle_hooks(
-            LifecycleHooks(event_bus=self.container.event_bus)
+        hook_config = self.system_config.lifecycle_hooks
+        lifecycle_hooks = LifecycleHooks(
+            event_bus=self.container.event_bus,
+            timeout_seconds=hook_config.handler_timeout_seconds,
+            fail_closed=hook_config.fail_closed,
         )
+        if hook_config.enabled:
+            workspace_resolver = None
+            if self.container.coding_workspaces is not None:
+                workspace_resolver = self.container.coding_workspaces.resolve_workspace_path
+            self.container.lifecycle_command_adapter = DeclarativeCommandHooks(
+                hook_config,
+                framework_root=self.container.root_dir,
+                workspace_resolver=workspace_resolver,
+            )
+            self.container.lifecycle_command_adapter.register(lifecycle_hooks)
+        self.container.lifecycle_hooks = configure_lifecycle_hooks(lifecycle_hooks)
         register_instance(ActionJournalSkills(action_journal))
 
         llm_api_keys = env_vars.get("LLM_API_KEYS", [])

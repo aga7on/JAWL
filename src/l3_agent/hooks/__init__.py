@@ -7,6 +7,7 @@ from src.l3_agent.hooks.lifecycle import (
     HookRun,
     LifecycleHooks,
 )
+from src.l3_agent.hooks.commands import DeclarativeCommandHooks
 
 __all__ = [
     "HookContext",
@@ -14,4 +15,5 @@ __all__ = [
     "HookPhase",
     "HookRun",
     "LifecycleHooks",
+    "DeclarativeCommandHooks",
 ]

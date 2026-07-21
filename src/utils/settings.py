@@ -346,6 +346,34 @@ class EventAccelerationConfig(BaseModel):
     background_multiplier: float = 0.8
 
 
+class LifecycleCommandHookConfig(BaseModel):
+    name: str = Field(
+        min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    )
+    phase: Literal[
+        "pre_tool_use", "post_tool_use", "tool_error", "tool_cancelled"
+    ]
+    argv: list[str] = Field(min_length=1, max_length=64)
+    tool_patterns: list[str] = Field(
+        default_factory=lambda: ["*"], min_length=1, max_length=64
+    )
+    scope: Literal["user", "repository"] = "user"
+    working_directory: Literal["framework", "workspace"] = "framework"
+    priority: int = Field(default=0, ge=-1000, le=1000)
+    deny_exit_code: int = Field(default=10, ge=1, le=255)
+
+
+class LifecycleHooksConfig(BaseModel):
+    enabled: bool = False
+    fail_closed: bool = True
+    handler_timeout_seconds: float = Field(default=15.0, gt=0, le=300)
+    command_timeout_seconds: float = Field(default=10.0, gt=0, le=300)
+    max_output_chars: int = Field(default=8000, ge=500, le=100000)
+    commands: list[LifecycleCommandHookConfig] = Field(
+        default_factory=list, max_length=100
+    )
+
+
 class TasksConfig(BaseModel):
     enabled: bool = True
     max_tasks: int = 10
@@ -486,6 +514,7 @@ class SystemConfig(BaseModel):
     event_acceleration: EventAccelerationConfig = Field(
         default_factory=EventAccelerationConfig
     )
+    lifecycle_hooks: LifecycleHooksConfig = Field(default_factory=LifecycleHooksConfig)
     context_depth: ContextDepthConfig = Field(default_factory=ContextDepthConfig)
     swarm: SwarmConfig = Field(default_factory=SwarmConfig)
     tree_of_thoughts: TreeOfThoughtsConfig = Field(default_factory=TreeOfThoughtsConfig)

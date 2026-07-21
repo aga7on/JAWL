@@ -5,13 +5,19 @@ Unit-тесты для сборщика системы (SystemBuilder).
 прокидывает нужные зависимости и возвращает полностью укомплектованный SystemContainer.
 """
 
+import sys
+
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from src.system.container import SystemContainer
 from src.builder import SystemBuilder
-from src.utils.settings import SettingsConfig, InterfacesConfig
+from src.utils.settings import (
+    InterfacesConfig,
+    LifecycleCommandHookConfig,
+    SettingsConfig,
+)
 
 
 @pytest.fixture
@@ -143,6 +149,14 @@ def test_build_l3_agent(
     mock_llm, mock_react, mock_heartbeat, mock_swarm, mock_container: SystemContainer
 ) -> None:
     """Тест: Сборка L3 Ядра агента (LLM, ReAct, Swarm, Heartbeat)."""
+    mock_container.settings.system.lifecycle_hooks.enabled = True
+    mock_container.settings.system.lifecycle_hooks.commands = [
+        LifecycleCommandHookConfig(
+            name="builder-wiring",
+            phase="pre_tool_use",
+            argv=[sys.executable, "-c", "pass"],
+        )
+    ]
     builder = SystemBuilder(mock_container)
 
     # Подготавливаем фиктивные данные для сборки
@@ -171,3 +185,5 @@ def test_build_l3_agent(
     )
     assert mock_container.lifecycle_hooks is not None
     assert mock_container.lifecycle_hooks.event_bus is mock_container.event_bus
+    assert mock_container.lifecycle_command_adapter is not None
+    assert mock_container.lifecycle_hooks.has_handlers()

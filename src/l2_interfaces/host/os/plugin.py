@@ -86,6 +86,7 @@ class HostOsPlugin(BaseInterface):
         register_instance(HostOSMetadata(client))
         register_instance(HostOSDocuments(client))
         coding_workspaces = HostOSCodingWorkspaces(client)
+        container.coding_workspaces = coding_workspaces
         register_instance(coding_workspaces)
         register_instance(
             HostOSCodingFiles(client, coding_workspaces, reader, editor, search)

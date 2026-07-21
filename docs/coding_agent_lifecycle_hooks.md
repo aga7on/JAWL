@@ -45,3 +45,50 @@ context without applying the framework's credential redaction. Synchronous
 handlers are moved off the event loop, but Python cannot forcibly stop a worker
 thread after timeout; long-running hooks should therefore be asynchronous or
 use a killable subprocess adapter.
+
+## Declarative command profiles
+
+`system.lifecycle_hooks` can register exact, shell-free argv profiles without a
+Python extension. The feature is disabled by default. Executables are resolved
+once at startup, hashed, invoked by absolute path, and re-hashed before every
+run. Commands receive a minimal environment and bounded JSON metadata on stdin;
+parameter values and outcome messages are intentionally omitted.
+
+```yaml
+system:
+  lifecycle_hooks:
+    enabled: true
+    fail_closed: true
+    handler_timeout_seconds: 15
+    command_timeout_seconds: 10
+    max_output_chars: 8000
+    commands:
+      - name: python-tests
+        phase: post_tool_use
+        argv: [python, -m, pytest, -q]
+        tool_patterns: ["HostOSCodingFiles.*"]
+        scope: repository
+        working_directory: workspace
+```
+
+A managed task repository opts into that pre-approved profile with:
+
+```json
+{"version": 1, "hooks": ["python-tests"]}
+```
+
+The file must be `.jawl/hooks.json` inside the managed worktree. It can select
+only names already declared by the user; it cannot provide argv, environment,
+timeouts, interpolation, or a framework working directory. Missing task IDs or
+manifests simply skip workspace-scoped hooks. Invalid manifests become hook
+failures and therefore deny pre-tool execution when `fail_closed` is enabled.
+
+Exit code `0` succeeds. For `pre_tool_use`, the configured `deny_exit_code`
+(default `10`) denies the action without classifying the hook as broken. Other
+non-zero codes are failures. Output is drained with a hard retained bound,
+redacted before it reaches the action journal, and the whole process tree is
+terminated on timeout or cancellation.
+
+These profiles are authorization, not an OS sandbox. A repository profile runs
+only because the user has approved the exact command; use the container task
+execution policy when the command itself needs filesystem or network isolation.

@@ -60,3 +60,5 @@ class SystemContainer:
         self.context_registry: Optional[ContextRegistry] = None
         self.subconscious_orchestrator: Optional[Any] = None
         self.lifecycle_hooks: Optional[Any] = None
+        self.lifecycle_command_adapter: Optional[Any] = None
+        self.coding_workspaces: Optional[Any] = None
