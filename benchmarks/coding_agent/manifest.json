@@ -232,6 +232,16 @@
       ]
     },
     {
+      "id": "fail_closed_flaky_verification",
+      "description": "Bounded opt-in stability runs repeat only test profiles, durably retain attempt evidence across cancellation, classify uniform and mixed outcomes, trigger replanning, and never let flaky evidence satisfy the exact-state commit gate.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_flaky_verification_is_classified_and_cannot_open_commit_gate",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_stability_runs_repeat_only_test_profiles",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_cancelled_stability_run_persists_completed_attempt_evidence",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_repository_verification_policy_selects_only_allowlisted_profiles"
+      ]
+    },
+    {
       "id": "protocol_failure_observability",
       "description": "Multiple tool calls survive transport and failed or exhausted ReAct steps leave durable evidence.",
       "tests": [

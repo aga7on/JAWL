@@ -100,6 +100,33 @@ configuration validation, a named profile is rejected by the host backend, and
 the complete resolved policy is part of the one-shot approval fingerprint. A
 policy changed after approval therefore cannot reuse that approval.
 
+## Coding verification stability
+
+`run_coding_verification` accepts only built-in verification profile names. Set
+`stability_runs` from `1` to `3` to repeat test profiles (`pytest`, npm, Cargo,
+Go, .NET, Maven, or Gradle) while keeping deterministic Git diff and compile
+checks single-run. The default remains `1`, preserving prior runtime cost.
+
+Repositories can make this policy durable without adding executable text:
+
+```json
+{
+  "version": 1,
+  "checks": ["git_diff_check", "python_compile", "pytest"],
+  "timeout_sec": 300,
+  "stop_on_failure": true,
+  "stability_runs": 2
+}
+```
+
+The file must be `.jawl/verification.json`. Unknown fields, commands, and
+environment overrides fail closed. Each completed attempt is persisted before
+the next starts. Uniform repeated outcomes are labelled `stable_pass` or
+`stable_fail`; mixed outcomes make the entire run `flaky`. A flaky run is never
+treated as current verification, triggers the same replanning path as a failed
+run, and cannot authorize a commit. Workspace mutation during any attempt still
+takes precedence and marks the result `stale`.
+
 ## Durable coding diff review
 
 `get_coding_workspace_diff` returns a `reviewed_diff_sha256`, structured hunk

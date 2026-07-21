@@ -288,7 +288,15 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Automatic detection supports Git diff checks and Python, Node, Rust, Go, .NET,
   Maven, and Gradle projects; profiles may also be selected explicitly.
 - Output is tail-bounded, timeouts terminate the full process tree, and every run
-  is persisted with pass/fail/stale/cancelled/interrupted state.
+  is persisted with pass/fail/flaky/stale/cancelled/interrupted state.
+- Optional `stability_runs` from 1 through 3 repeats only test-bearing profiles;
+  deterministic diff/compile checks remain single-run. Every completed attempt
+  is durably summarized with outcome, timing, truncation flags, and redacted
+  output hashes. The first failure remains as bounded diagnostic output.
+- Mixed pass/fail outcomes classify the check and whole run as `flaky`. This is
+  deliberately not a success: it requests plan revision, never becomes current
+  verification, and cannot satisfy the verified-state commit gate. Uniform
+  reruns become `stable_pass` or `stable_fail` evidence.
 - A successful run records HEAD plus a SHA-256 fingerprint of staged changes,
   unstaged changes, and untracked files. Conventional Python caches are the only
   excluded artifacts.
@@ -296,7 +304,8 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Task commits require a current successful fingerprint by default. An explicit
   bypass remains available for justified non-executable changes and is recorded.
 - Repositories may declare `.jawl/verification.json` with version, built-in
-  profile names, timeout, and stop-on-failure behavior. Unknown fields,
+  profile names, timeout, stop-on-failure behavior, and bounded stability runs.
+  Unknown fields,
   environment overrides, and arbitrary commands are rejected; the policy hash
   is stored with each run.
 

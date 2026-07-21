@@ -58,6 +58,15 @@ class HostOSCodingVerification:
         "maven_test",
         "gradle_test",
     }
+    _TEST_CHECKS = {
+        "pytest",
+        "npm_test",
+        "cargo_test",
+        "go_test",
+        "dotnet_test",
+        "maven_test",
+        "gradle_test",
+    }
     _POLICY_PATH = Path(".jawl/verification.json")
     _PYTHON_SYNTAX_CHECK = r"""import pathlib
 import sys
@@ -174,7 +183,13 @@ if errors:
             raise ValueError(f"Verification policy is invalid JSON: {exc}") from exc
         if not isinstance(policy, dict):
             raise ValueError("Verification policy root must be an object.")
-        allowed_fields = {"version", "checks", "timeout_sec", "stop_on_failure"}
+        allowed_fields = {
+            "version",
+            "checks",
+            "timeout_sec",
+            "stop_on_failure",
+            "stability_runs",
+        }
         unknown = set(policy) - allowed_fields
         if unknown:
             raise ValueError(
@@ -197,12 +212,23 @@ if errors:
         stop_on_failure = policy.get("stop_on_failure", True)
         if not isinstance(stop_on_failure, bool):
             raise ValueError("Verification policy stop_on_failure must be boolean.")
+        stability_runs = policy.get("stability_runs", 1)
+        if (
+            not isinstance(stability_runs, int)
+            or isinstance(stability_runs, bool)
+            or stability_runs < 1
+            or stability_runs > 3
+        ):
+            raise ValueError(
+                "Verification policy stability_runs must be an integer between 1 and 3."
+            )
         return {
             "path": self._POLICY_PATH.as_posix(),
             "sha256": hashlib.sha256(raw).hexdigest(),
             "checks": checks,
             "timeout_sec": timeout_sec,
             "stop_on_failure": stop_on_failure,
+            "stability_runs": stability_runs,
         }
 
     @staticmethod
@@ -340,6 +366,90 @@ if errors:
             "passed": not timed_out and process.returncode == 0,
         }
 
+    @staticmethod
+    def _failed_attempt(check: str, message: str) -> Dict[str, Any]:
+        now = HostOSCodingVerification._utc_now()
+        clean_message = redact_sensitive_text(str(message))
+        message_truncated = len(clean_message) > 4000
+        if message_truncated:
+            clean_message = clean_message[:3984] + "... [truncated]"
+        return {
+            "check": check,
+            "command": [],
+            "started_at": now,
+            "finished_at": now,
+            "duration_sec": 0.0,
+            "exit_code": None,
+            "timed_out": False,
+            "stdout": "",
+            "stderr": clean_message,
+            "stdout_truncated": False,
+            "stderr_truncated": message_truncated,
+            "passed": False,
+        }
+
+    @staticmethod
+    def _attempt_summary(result: Dict[str, Any], attempt: int) -> Dict[str, Any]:
+        stdout = str(result.get("stdout", ""))
+        stderr = str(result.get("stderr", ""))
+        return {
+            "attempt": attempt,
+            "passed": bool(result.get("passed")),
+            "exit_code": result.get("exit_code"),
+            "timed_out": bool(result.get("timed_out")),
+            "duration_sec": result.get("duration_sec", 0.0),
+            "started_at": result.get("started_at"),
+            "finished_at": result.get("finished_at"),
+            "stdout_truncated": bool(result.get("stdout_truncated")),
+            "stderr_truncated": bool(result.get("stderr_truncated")),
+            "stdout_sha256": hashlib.sha256(stdout.encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(stderr.encode("utf-8")).hexdigest(),
+        }
+
+    @classmethod
+    def _classify_attempts(
+        cls,
+        check: str,
+        attempts: List[Dict[str, Any]],
+        requested_runs: int,
+        *,
+        include_attempt_metadata: bool,
+    ) -> Dict[str, Any]:
+        # Preserve the compact legacy result contract when stability checking is
+        # not enabled. Besides compatibility, this keeps routine verification
+        # evidence from crowding newer action results out of bounded ReAct
+        # context. The richer summaries are useful only for repeated runs.
+        if not include_attempt_metadata and len(attempts) == 1:
+            return dict(attempts[0])
+        outcomes = [bool(attempt.get("passed")) for attempt in attempts]
+        if len(outcomes) == 1:
+            classification = "passed" if outcomes[0] else "failed"
+        elif all(outcomes):
+            classification = "stable_pass"
+        elif not any(outcomes):
+            classification = "stable_fail"
+        else:
+            classification = "flaky"
+        diagnostic = next(
+            (attempt for attempt in attempts if not attempt.get("passed")),
+            attempts[0],
+        )
+        result = dict(diagnostic)
+        result.update(
+            {
+                "check": check,
+                "passed": bool(outcomes and all(outcomes)),
+                "classification": classification,
+                "attempt_count": len(attempts),
+                "requested_stability_runs": requested_runs,
+                "attempts": [
+                    cls._attempt_summary(attempt, index)
+                    for index, attempt in enumerate(attempts, start=1)
+                ],
+            }
+        )
+        return result
+
     async def _persist_run(
         self,
         task_id: str,
@@ -378,16 +488,26 @@ if errors:
         checks: Optional[List[VerificationCheck]] = None,
         timeout_sec: Optional[int] = None,
         stop_on_failure: Optional[bool] = None,
+        stability_runs: Optional[int] = None,
     ) -> SkillResult:
         """Run standard verification profiles in a task worktree.
 
         With no explicit checks, a versioned ``.jawl/verification.json`` policy
         is used when present; it may select only built-in allowlisted profiles,
         never arbitrary commands. Otherwise ``auto`` detects the project stack.
+        ``stability_runs`` repeats only test profiles up to three times; mixed
+        pass/fail outcomes are persisted as fail-closed ``flaky`` evidence.
         """
 
         if timeout_sec is not None and (timeout_sec < 1 or timeout_sec > 1800):
             return SkillResult.fail("timeout_sec must be between 1 and 1800.")
+        if stability_runs is not None and (
+            not isinstance(stability_runs, int)
+            or isinstance(stability_runs, bool)
+            or stability_runs < 1
+            or stability_runs > 3
+        ):
+            return SkillResult.fail("stability_runs must be an integer between 1 and 3.")
         run_persisted = False
         try:
             task_id, entry, workspace = await self._resolve_task(task_id)
@@ -402,6 +522,11 @@ if errors:
                 stop_on_failure
                 if stop_on_failure is not None
                 else (policy["stop_on_failure"] if policy else True)
+            )
+            effective_stability_runs = (
+                stability_runs
+                if stability_runs is not None
+                else (policy["stability_runs"] if policy else 1)
             )
             normalized_checks = await self._normalize_checks(
                 workspace, requested_checks
@@ -422,6 +547,7 @@ if errors:
                 "policy": policy,
                 "timeout_sec": effective_timeout,
                 "stop_on_failure": effective_stop,
+                "stability_runs": effective_stability_runs,
             }
             await self._persist_run(task_id, run, start=True)
             run_persisted = True
@@ -430,39 +556,54 @@ if errors:
                 for check in normalized_checks:
                     try:
                         command = self._command_for(check, workspace)
-                        result = await self._run_command(
-                            check, command, workspace, effective_timeout
-                        )
                     except FileNotFoundError as exc:
-                        result = {
-                            "check": check,
-                            "command": [],
-                            "started_at": self._utc_now(),
-                            "finished_at": self._utc_now(),
-                            "duration_sec": 0.0,
-                            "exit_code": None,
-                            "timed_out": False,
-                            "stdout": "",
-                            "stderr": str(exc),
-                            "stdout_truncated": False,
-                            "stderr_truncated": False,
-                            "passed": False,
-                        }
+                        attempts = [self._failed_attempt(check, str(exc))]
                     except Exception as exc:
-                        result = {
+                        attempts = [
+                            self._failed_attempt(
+                                check, f"Verification process error: {exc}"
+                            )
+                        ]
+                    else:
+                        requested_runs = (
+                            effective_stability_runs
+                            if check in self._TEST_CHECKS
+                            else 1
+                        )
+                        attempts = []
+                        run["active_check"] = {
                             "check": check,
-                            "command": [],
-                            "started_at": self._utc_now(),
-                            "finished_at": self._utc_now(),
-                            "duration_sec": 0.0,
-                            "exit_code": None,
-                            "timed_out": False,
-                            "stdout": "",
-                            "stderr": f"Verification process error: {exc}",
-                            "stdout_truncated": False,
-                            "stderr_truncated": False,
-                            "passed": False,
+                            "requested_stability_runs": requested_runs,
+                            "attempts": [],
                         }
+                        await self._persist_run(task_id, run)
+                        for attempt_number in range(1, requested_runs + 1):
+                            try:
+                                attempt = await self._run_command(
+                                    check, command, workspace, effective_timeout
+                                )
+                            except Exception as exc:
+                                attempt = self._failed_attempt(
+                                    check, f"Verification process error: {exc}"
+                                )
+                            attempts.append(attempt)
+                            active = run["active_check"]
+                            active["attempts"].append(
+                                self._attempt_summary(attempt, attempt_number)
+                            )
+                            if not attempt["passed"]:
+                                active["last_failure"] = attempt
+                            await self._persist_run(task_id, run)
+                    requested_runs = (
+                        effective_stability_runs if check in self._TEST_CHECKS else 1
+                    )
+                    result = self._classify_attempts(
+                        check,
+                        attempts,
+                        requested_runs,
+                        include_attempt_metadata=effective_stability_runs > 1,
+                    )
+                    run.pop("active_check", None)
                     run["results"].append(result)
                     await self._persist_run(task_id, run)
                     if effective_stop and not result["passed"]:
@@ -480,15 +621,25 @@ if errors:
             all_passed = len(run["results"]) == len(normalized_checks) and all(
                 result["passed"] for result in run["results"]
             )
+            has_flaky = any(
+                result.get("classification") == "flaky"
+                for result in run["results"]
+            )
             unchanged = fingerprint_before == fingerprint_after
-            if all_passed and unchanged:
-                run["state"] = "passed"
-            elif not unchanged:
+            if not unchanged:
                 run["state"] = "stale"
                 run["error"] = (
                     "Workspace changed during verification; run checks again on "
                     "the final state."
                 )
+            elif has_flaky:
+                run["state"] = "flaky"
+                run["error"] = (
+                    "A test profile produced mixed pass/fail outcomes across "
+                    "stability runs. Verification remains fail-closed."
+                )
+            elif all_passed:
+                run["state"] = "passed"
             else:
                 run["state"] = "failed"
             await self._persist_run(task_id, run, final=True)

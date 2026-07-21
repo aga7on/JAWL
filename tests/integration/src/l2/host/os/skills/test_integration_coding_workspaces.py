@@ -11,6 +11,7 @@ from src.l2_interfaces.host.os.skills.coding_workspaces import (
 from src.l2_interfaces.host.os.skills.coding_verification import (
     HostOSCodingVerification,
 )
+from src.l2_interfaces.host.os.skills.coding_plans import HostOSCodingPlans
 
 
 def run_git(cwd: Path, *args: str) -> str:
@@ -35,6 +36,23 @@ def create_repository(root: Path, name: str = "project") -> Path:
     run_git(repository, "add", "--all")
     run_git(repository, "commit", "-m", "initial")
     return repository
+
+
+def verification_attempt(check: str, passed: bool, label: str) -> dict:
+    return {
+        "check": check,
+        "command": ["test-runner"],
+        "started_at": f"2026-01-01T00:00:0{label}+00:00",
+        "finished_at": f"2026-01-01T00:00:0{label}+00:00",
+        "duration_sec": 0.01,
+        "exit_code": 0 if passed else 1,
+        "timed_out": False,
+        "stdout": f"attempt-{label}",
+        "stderr": "" if passed else f"failure-{label}",
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+        "passed": passed,
+    }
 
 
 @pytest.mark.asyncio
@@ -252,6 +270,164 @@ async def test_verification_detects_workspace_change_during_checks(os_client, mo
     assert verification.is_success is False
     assert json.loads(verification.message)["state"] == "stale"
     assert (await manager.remove_coding_workspace("moving-target", force=True)).is_success
+
+
+@pytest.mark.asyncio
+async def test_flaky_verification_is_classified_and_cannot_open_commit_gate(
+    os_client, monkeypatch
+):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    plans = HostOSCodingPlans(os_client, manager)
+    verifier = HostOSCodingVerification(os_client, manager, plans)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "flaky-verification"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "app.py").write_text("value = 2\n", encoding="utf-8")
+    initialized = await plans.initialize_coding_task_plan(
+        "flaky-verification",
+        "Verify a deterministic change",
+        ["Tests are stable"],
+        [{"id": "verify", "title": "Run stable tests", "depends_on": []}],
+    )
+    assert initialized.is_success is True, initialized.message
+    outcomes = iter([False, True, True])
+    calls = []
+
+    async def mixed_runner(check, command, worktree, timeout_sec):
+        passed = next(outcomes)
+        calls.append((check, tuple(command), worktree, timeout_sec))
+        return verification_attempt(check, passed, str(len(calls)))
+
+    monkeypatch.setattr(verifier, "_run_command", mixed_runner)
+    verification = await verifier.run_coding_verification(
+        "flaky-verification", checks=["pytest"], stability_runs=3
+    )
+    payload = json.loads(verification.message)
+    result = payload["results"][0]
+
+    assert verification.is_success is False
+    assert payload["state"] == "flaky"
+    assert payload["stability_runs"] == 3
+    assert result["classification"] == "flaky"
+    assert result["passed"] is False
+    assert [attempt["passed"] for attempt in result["attempts"]] == [
+        False,
+        True,
+        True,
+    ]
+    assert result["stderr"] == "failure-1"
+    status = json.loads(
+        (await verifier.get_coding_verification_status("flaky-verification")).message
+    )
+    assert status["is_current"] is False
+    plan = json.loads(
+        (await plans.get_coding_task_plan("flaky-verification")).message
+    )
+    assert plan["replanning"]["required"] is True
+    assert plan["replanning"]["latest_reasons"][-1]["trigger"] == (
+        "verification_failure"
+    )
+    rejected = await manager.commit_coding_workspace(
+        "flaky-verification", "must remain uncommitted"
+    )
+    assert rejected.is_success is False
+    assert "has not passed coding verification" in rejected.message
+    assert len(calls) == 3
+    assert (
+        await manager.remove_coding_workspace("flaky-verification", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
+async def test_stability_runs_repeat_only_test_profiles(os_client, monkeypatch):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    await manager.create_coding_workspace("sandbox/project", "stable-verification")
+    calls = []
+
+    async def passing_runner(check, command, worktree, timeout_sec):
+        calls.append(check)
+        return verification_attempt(check, True, str(len(calls)))
+
+    monkeypatch.setattr(verifier, "_run_command", passing_runner)
+    verification = await verifier.run_coding_verification(
+        "stable-verification",
+        checks=["git_diff_check", "pytest"],
+        stability_runs=3,
+    )
+    payload = json.loads(verification.message)
+
+    assert verification.is_success is True, verification.message
+    assert payload["state"] == "passed"
+    assert calls == ["git_diff_check", "pytest", "pytest", "pytest"]
+    assert payload["results"][0]["classification"] == "passed"
+    assert payload["results"][0]["attempt_count"] == 1
+    assert payload["results"][1]["classification"] == "stable_pass"
+    assert payload["results"][1]["attempt_count"] == 3
+
+    async def failing_runner(check, command, worktree, timeout_sec):
+        return verification_attempt(check, False, "1")
+
+    monkeypatch.setattr(verifier, "_run_command", failing_runner)
+    failed = await verifier.run_coding_verification(
+        "stable-verification", checks=["pytest"], stability_runs=2
+    )
+    failed_payload = json.loads(failed.message)
+    assert failed.is_success is False
+    assert failed_payload["state"] == "failed"
+    assert failed_payload["results"][0]["classification"] == "stable_fail"
+    assert failed_payload["results"][0]["attempt_count"] == 2
+    assert (
+        await manager.remove_coding_workspace("stable-verification", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stability_run_persists_completed_attempt_evidence(
+    os_client, monkeypatch
+):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    await manager.create_coding_workspace("sandbox/project", "cancelled-stability")
+    second_started = asyncio.Event()
+    calls = 0
+
+    async def cancellable_runner(check, command, worktree, timeout_sec):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return verification_attempt(check, False, "1")
+        second_started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(verifier, "_run_command", cancellable_runner)
+    task = asyncio.create_task(
+        verifier.run_coding_verification(
+            "cancelled-stability", checks=["pytest"], stability_runs=3
+        )
+    )
+    await asyncio.wait_for(second_started.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    status = json.loads(
+        (await verifier.get_coding_verification_status("cancelled-stability")).message
+    )
+    last = status["last_verification"]
+    assert last["state"] == "cancelled"
+    assert last["active_check"]["check"] == "pytest"
+    assert [
+        attempt["passed"] for attempt in last["active_check"]["attempts"]
+    ] == [False]
+    assert last["active_check"]["last_failure"]["stderr"] == "failure-1"
+    assert (
+        await manager.remove_coding_workspace("cancelled-stability", force=True)
+    ).is_success
 
 
 @pytest.mark.asyncio
@@ -679,6 +855,7 @@ async def test_repository_verification_policy_selects_only_allowlisted_profiles(
                 "checks": ["git_diff_check", "python_compile"],
                 "timeout_sec": 45,
                 "stop_on_failure": False,
+                "stability_runs": 2,
             }
         ),
         encoding="utf-8",
@@ -691,6 +868,8 @@ async def test_repository_verification_policy_selects_only_allowlisted_profiles(
     assert payload["checks"] == ["git_diff_check", "python_compile"]
     assert payload["timeout_sec"] == 45
     assert payload["stop_on_failure"] is False
+    assert payload["stability_runs"] == 2
+    assert payload["policy"]["stability_runs"] == 2
     assert payload["policy"]["path"] == ".jawl/verification.json"
     assert len(payload["policy"]["sha256"]) == 64
 
@@ -707,6 +886,28 @@ async def test_repository_verification_policy_selects_only_allowlisted_profiles(
     rejected = await verifier.run_coding_verification("verification-policy")
     assert rejected.is_success is False
     assert "Arbitrary commands" in rejected.message
+
+    policy_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "checks": ["pytest"],
+                "stability_runs": 4,
+            }
+        ),
+        encoding="utf-8",
+    )
+    rejected_stability = await verifier.run_coding_verification(
+        "verification-policy"
+    )
+    assert rejected_stability.is_success is False
+    assert "stability_runs" in rejected_stability.message
+
+    rejected_argument = await verifier.run_coding_verification(
+        "verification-policy", checks=["pytest"], stability_runs=True
+    )
+    assert rejected_argument.is_success is False
+    assert "stability_runs" in rejected_argument.message
     assert (
         await manager.remove_coding_workspace("verification-policy", force=True)
     ).is_success
