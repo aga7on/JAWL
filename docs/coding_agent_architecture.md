@@ -65,3 +65,17 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - A plan left unfinished by an older process session is reported as interrupted.
 - Journal inspection never automatically replays uncertain side effects. Recovery
   begins by comparing journal evidence with the persistent task workspace.
+
+## Verification contract
+
+- `run_coding_verification` executes bounded standard profiles inside the task
+  worktree without accepting arbitrary shell text.
+- Automatic detection supports Git diff checks and Python, Node, Rust, Go, .NET,
+  Maven, and Gradle projects; profiles may also be selected explicitly.
+- Output is tail-bounded, timeouts terminate the full process tree, and every run
+  is persisted with pass/fail/stale/cancelled/interrupted state.
+- A successful run records HEAD plus a SHA-256 fingerprint of tracked changes and
+  untracked files. Conventional Python caches are the only excluded artifacts.
+- A workspace mutation during or after verification invalidates the result.
+- Task commits require a current successful fingerprint by default. An explicit
+  bypass remains available for justified non-executable changes and is recorded.

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,13 @@ class HostOSCodingWorkspaces:
     """Creates and manages isolated Git branches and worktrees per task."""
 
     _TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")
+    _FINGERPRINT_IGNORED_PARTS = {
+        ".coverage",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "__pycache__",
+    }
 
     def __init__(self, host_os_client: HostOSClient) -> None:
         self.host_os = host_os_client
@@ -148,6 +156,92 @@ class HostOSCodingWorkspaces:
         if entry is None:
             raise ValueError(f"Coding workspace not found for task '{task_id}'.")
         return entry
+
+    async def workspace_fingerprint(self, workspace: Path) -> Dict[str, str]:
+        """Fingerprint HEAD plus every tracked change and untracked file."""
+
+        code, head, err = await self._run_git(workspace, "rev-parse", "HEAD")
+        if code != 0:
+            raise ValueError(f"Unable to resolve workspace HEAD: {err}")
+        code, diff, err = await self._run_git(
+            workspace, "diff", "--binary", "HEAD", "--"
+        )
+        if code != 0:
+            raise ValueError(f"Unable to fingerprint workspace diff: {err}")
+        code, untracked_output, err = await self._run_git(
+            workspace, "ls-files", "--others", "--exclude-standard", "-z"
+        )
+        if code != 0:
+            raise ValueError(f"Unable to list untracked workspace files: {err}")
+        untracked = sorted(
+            path
+            for path in untracked_output.split("\x00")
+            if path
+            and not any(
+                part in self._FINGERPRINT_IGNORED_PARTS
+                or part.endswith((".pyc", ".pyo"))
+                for part in Path(path).parts
+            )
+        )
+
+        def _hash() -> str:
+            digest = hashlib.sha256()
+            digest.update(b"jawl-workspace-v1\x00")
+            digest.update(head.encode("utf-8"))
+            digest.update(b"\x00diff\x00")
+            digest.update(diff.encode("utf-8"))
+            for relative_path in untracked:
+                candidate = workspace / relative_path
+                digest.update(b"\x00untracked\x00")
+                digest.update(relative_path.encode("utf-8", errors="surrogatepass"))
+                digest.update(b"\x00")
+                if candidate.is_symlink():
+                    digest.update(os.readlink(candidate).encode("utf-8"))
+                    continue
+                resolved = candidate.resolve()
+                if not resolved.is_relative_to(workspace.resolve()):
+                    raise PermissionError(
+                        f"Untracked path escaped coding workspace ({relative_path})."
+                    )
+                if not candidate.is_file():
+                    digest.update(b"[missing-or-non-file]")
+                    continue
+                with open(candidate, "rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        digest.update(chunk)
+            return digest.hexdigest()
+
+        return {
+            "head": head,
+            "fingerprint": await asyncio.to_thread(_hash),
+        }
+
+    def _cleanup_generated_python_caches(self, workspace: Path) -> None:
+        """Remove only conventional generated Python cache artifacts."""
+
+        cache_directories = {
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            "__pycache__",
+        }
+        workspace_root = workspace.resolve()
+        candidates = sorted(
+            workspace.rglob("*"), key=lambda path: len(path.parts), reverse=True
+        )
+        for candidate in candidates:
+            if candidate.name in cache_directories and candidate.is_dir():
+                resolved = candidate.resolve()
+                if resolved.is_relative_to(workspace_root):
+                    shutil.rmtree(resolved, ignore_errors=True)
+                continue
+            if candidate.is_file() and (
+                candidate.name == ".coverage"
+                or candidate.suffix.lower() in {".pyc", ".pyo"}
+            ):
+                resolved = candidate.resolve()
+                if resolved.is_relative_to(workspace_root):
+                    resolved.unlink(missing_ok=True)
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.SANDBOX)
@@ -341,9 +435,17 @@ class HostOSCodingWorkspaces:
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.SANDBOX)
     async def commit_coding_workspace(
-        self, task_id: str, commit_message: str
+        self,
+        task_id: str,
+        commit_message: str,
+        require_verified: bool = True,
     ) -> SkillResult:
-        """Commit all task changes locally without pushing or merging them."""
+        """Commit task changes locally without pushing or merging them.
+
+        By default, the exact working state must have a successful verification
+        fingerprint. Set ``require_verified=false`` explicitly only for changes
+        that cannot reasonably execute (for example, documentation-only work).
+        """
 
         if not commit_message.strip():
             return SkillResult.fail("commit_message cannot be empty.")
@@ -355,6 +457,25 @@ class HostOSCodingWorkspaces:
                 _, workspace = self._entry_paths(entry)
                 if not workspace.is_dir():
                     return SkillResult.fail("Coding workspace directory is missing.")
+                await asyncio.to_thread(
+                    self._cleanup_generated_python_caches, workspace
+                )
+                current_fingerprint = await self.workspace_fingerprint(workspace)
+                verification = entry.get("last_verification")
+                is_verified = bool(
+                    verification
+                    and verification.get("state") == "passed"
+                    and verification.get("fingerprint_after")
+                    == current_fingerprint["fingerprint"]
+                    and verification.get("head_before") == current_fingerprint["head"]
+                )
+                if require_verified and not is_verified:
+                    return SkillResult.fail(
+                        "Commit rejected: this exact workspace state has not passed "
+                        "coding verification. Run run_coding_verification first, "
+                        "or explicitly set require_verified=false for a justified "
+                        "non-executable change."
+                    )
                 code, status, err = await self._run_git(
                     workspace, "status", "--porcelain=v1", "--untracked-files=all"
                 )
@@ -363,7 +484,18 @@ class HostOSCodingWorkspaces:
                 if not status:
                     return SkillResult.ok("No changes to commit. Working tree clean.")
                 code, out, err = await self._run_git(
-                    workspace, "add", "--all", "--"
+                    workspace,
+                    "add",
+                    "--all",
+                    "--",
+                    ".",
+                    ":(exclude)**/__pycache__/**",
+                    ":(exclude)**/.pytest_cache/**",
+                    ":(exclude)**/.mypy_cache/**",
+                    ":(exclude)**/.ruff_cache/**",
+                    ":(exclude)**/*.pyc",
+                    ":(exclude)**/*.pyo",
+                    ":(exclude)**/.coverage",
                 )
                 if code != 0:
                     return SkillResult.fail(f"Unable to stage workspace: {err or out}")
@@ -388,6 +520,12 @@ class HostOSCodingWorkspaces:
                     )
                 entry["last_commit"] = commit_hash
                 entry["last_commit_at"] = self._utc_now()
+                entry["last_commit_verification_bypassed"] = not is_verified
+                if is_verified:
+                    verification["committed_as"] = commit_hash
+                    verification["post_commit_fingerprint"] = (
+                        await self.workspace_fingerprint(workspace)
+                    )["fingerprint"]
                 self._save_registry(registry)
             main_logger.info(
                 f"[Host OS] Committed coding workspace '{task_id}' at "
@@ -399,6 +537,7 @@ class HostOSCodingWorkspaces:
                         "task_id": task_id,
                         "branch": entry["branch"],
                         "commit": commit_hash,
+                        "verification_bypassed": not is_verified,
                         "summary": truncate_text(out, max_chars=3000),
                     },
                     ensure_ascii=False,

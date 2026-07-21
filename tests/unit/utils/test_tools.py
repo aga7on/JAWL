@@ -10,6 +10,7 @@ from src.utils._tools import (
     validate_sandbox_path,
     draw_image_grid,
     is_agent_running,
+    redact_sensitive_text,
     SystemInstanceLock,
 )
 
@@ -34,6 +35,22 @@ def test_truncate_text() -> None:
     truncated = truncate_text(text, 5, suffix="...")
     assert truncated == "He..."
     assert len(truncated) == 5
+
+
+def test_redact_sensitive_text_masks_labeled_and_structured_credentials() -> None:
+    text = (
+        "Authorization: Bearer abc.def.secret "
+        "api_key=plain-secret ghp_1234567890abcdefghij "
+        "eyJabcdefgh.abcdefgh.abcdefgh"
+    )
+
+    redacted = redact_sensitive_text(text)
+
+    assert "abc.def.secret" not in redacted
+    assert "plain-secret" not in redacted
+    assert "ghp_1234567890abcdefghij" not in redacted
+    assert "eyJabcdefgh.abcdefgh.abcdefgh" not in redacted
+    assert redacted.count("[REDACTED]") >= 4
 
 
 def test_truncate_text_never_exceeds_max_chars() -> None:

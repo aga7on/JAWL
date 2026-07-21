@@ -16,6 +16,30 @@ import html
 from src.utils.logger import main_logger
 
 
+_SENSITIVE_TEXT_PATTERNS = (
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+\-/]+=*"),
+    re.compile(
+        r"(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+"
+    ),
+    re.compile(
+        r"(?i)\b(?:sk|gh[opusr]|github_pat|xox[baprs])[-_][A-Za-z0-9._-]{10,}\b"
+    ),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+)
+
+
+def redact_sensitive_text(text: str, max_chars: Optional[int] = None) -> str:
+    """Redact common credential forms before text reaches logs or memory."""
+
+    redacted = text
+    for index, pattern in enumerate(_SENSITIVE_TEXT_PATTERNS):
+        replacement = r"\1[REDACTED]" if index < 2 else "[REDACTED]"
+        redacted = pattern.sub(replacement, redacted)
+    if max_chars is not None and len(redacted) > max_chars:
+        return redacted[:max_chars] + "... [truncated]"
+    return redacted
+
+
 def format_size(size_bytes: int) -> str:
     """
     Converts bytes into a human-readable size string.

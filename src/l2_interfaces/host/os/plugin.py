@@ -24,6 +24,7 @@ from src.l2_interfaces.host.os.skills.files.workspace import HostOSWorkspace
 from src.l2_interfaces.host.os.skills.files.metadata import HostOSMetadata
 from src.l2_interfaces.host.os.skills.files.documents import HostOSDocuments
 from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorkspaces
+from src.l2_interfaces.host.os.skills.coding_verification import HostOSCodingVerification
 
 from src.l3_agent.skills.registry import register_instance
 from src.l3_agent.context.registry import ContextSection
@@ -74,7 +75,9 @@ class HostOsPlugin(BaseInterface):
         register_instance(HostOSWorkspace(client))
         register_instance(HostOSMetadata(client))
         register_instance(HostOSDocuments(client))
-        register_instance(HostOSCodingWorkspaces(client))
+        coding_workspaces = HostOSCodingWorkspaces(client)
+        register_instance(coding_workspaces)
+        register_instance(HostOSCodingVerification(client, coding_workspaces))
 
         if config.desktop_interactions:
             register_instance(HostOSDesktop(client))

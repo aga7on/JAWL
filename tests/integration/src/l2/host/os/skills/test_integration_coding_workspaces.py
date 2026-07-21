@@ -8,6 +8,9 @@ import pytest
 from src.l2_interfaces.host.os.skills.coding_workspaces import (
     HostOSCodingWorkspaces,
 )
+from src.l2_interfaces.host.os.skills.coding_verification import (
+    HostOSCodingVerification,
+)
 
 
 def run_git(cwd: Path, *args: str) -> str:
@@ -55,10 +58,18 @@ async def test_coding_workspace_isolates_commits_and_persists_status(os_client):
 
     # A new manager instance simulates a later ReAct cycle/framework restart.
     resumed_manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, resumed_manager)
     status = await resumed_manager.get_coding_workspace_status("feature-123")
     status_payload = json.loads(status.message)
     assert status_payload["state"] == "dirty"
     assert "app.py" in status_payload["diff_stat"]
+
+    verified = await verifier.run_coding_verification("feature-123")
+    assert verified.is_success is True, verified.message
+    assert "python_compile" in json.loads(verified.message)["checks"]
+    cache_dir = workspace / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "app.cpython-test.pyc").write_bytes(b"generated cache")
 
     committed = await resumed_manager.commit_coding_workspace(
         "feature-123", "implement feature"
@@ -66,6 +77,11 @@ async def test_coding_workspace_isolates_commits_and_persists_status(os_client):
     commit_payload = json.loads(committed.message)
     assert committed.is_success is True
     assert run_git(workspace, "rev-parse", "HEAD") == commit_payload["commit"]
+    committed_files = run_git(workspace, "show", "--name-only", "--format=", "HEAD")
+    assert "__pycache__" not in committed_files
+    assert ".pyc" not in committed_files
+    committed_status = await verifier.get_coding_verification_status("feature-123")
+    assert json.loads(committed_status.message)["is_current"] is True
 
     clean_status = await resumed_manager.get_coding_workspace_status("feature-123")
     assert json.loads(clean_status.message)["state"] == "clean"
@@ -170,3 +186,171 @@ async def test_parallel_tasks_receive_independent_worktrees(os_client):
 
     assert (await manager.remove_coding_workspace("parallel-a", force=True)).is_success
     assert (await manager.remove_coding_workspace("parallel-b", force=True)).is_success
+
+
+@pytest.mark.asyncio
+async def test_commit_requires_verification_of_exact_workspace_state(os_client):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "verified-state"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "app.py").write_text("value = 2\n", encoding="utf-8")
+
+    unverified = await manager.commit_coding_workspace(
+        "verified-state", "must not commit"
+    )
+    assert unverified.is_success is False
+    assert "exact workspace state" in unverified.message
+
+    verified = await verifier.run_coding_verification(
+        "verified-state", checks=["git_diff_check", "python_compile"]
+    )
+    assert verified.is_success is True, verified.message
+
+    (workspace / "app.py").write_text("value = 3\n", encoding="utf-8")
+    stale = await manager.commit_coding_workspace("verified-state", "also rejected")
+    status = await verifier.get_coding_verification_status("verified-state")
+
+    assert stale.is_success is False
+    assert json.loads(status.message)["is_current"] is False
+    assert (await manager.remove_coding_workspace("verified-state", force=True)).is_success
+
+
+@pytest.mark.asyncio
+async def test_verification_detects_workspace_change_during_checks(os_client, monkeypatch):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "moving-target"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    original_runner = verifier._run_command
+
+    async def changing_runner(check, command, worktree, timeout_sec):
+        result = await original_runner(check, command, worktree, timeout_sec)
+        (worktree / "changed_during_test.txt").write_text(
+            "new state\n", encoding="utf-8"
+        )
+        return result
+
+    monkeypatch.setattr(verifier, "_run_command", changing_runner)
+    verification = await verifier.run_coding_verification(
+        "moving-target", checks=["git_diff_check"]
+    )
+
+    assert verification.is_success is False
+    assert json.loads(verification.message)["state"] == "stale"
+    assert (await manager.remove_coding_workspace("moving-target", force=True)).is_success
+
+
+@pytest.mark.asyncio
+async def test_verification_bounds_failure_output(os_client):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "bounded-output"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    tests_dir = workspace / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_noisy.py").write_text(
+        "def test_noisy():\n    assert False, 'x' * 50000\n", encoding="utf-8"
+    )
+
+    verification = await verifier.run_coding_verification(
+        "bounded-output", checks=["pytest"]
+    )
+    payload = json.loads(verification.message)
+    result = payload["results"][0]
+
+    assert verification.is_success is False
+    assert payload["state"] == "failed"
+    assert result["stdout_truncated"] is True
+    assert len(result["stdout"].encode("utf-8")) <= 16_100
+    assert (await manager.remove_coding_workspace("bounded-output", force=True)).is_success
+
+
+@pytest.mark.asyncio
+async def test_verification_timeout_kills_process_tree(os_client):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "timeout-check"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    tests_dir = workspace / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_slow.py").write_text(
+        "import time\n\ndef test_slow():\n    time.sleep(30)\n", encoding="utf-8"
+    )
+
+    verification = await verifier.run_coding_verification(
+        "timeout-check", checks=["pytest"], timeout_sec=1
+    )
+    payload = json.loads(verification.message)
+
+    assert verification.is_success is False
+    assert payload["results"][0]["timed_out"] is True
+    assert payload["results"][0]["duration_sec"] < 10
+    assert (await manager.remove_coding_workspace("timeout-check", force=True)).is_success
+
+
+@pytest.mark.asyncio
+async def test_old_running_verification_is_reported_interrupted(os_client):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "interrupted-check"
+    )
+    assert created.is_success
+    async with manager._lock:
+        registry = manager._load_registry()
+        entry = registry["workspaces"]["interrupted-check"]
+        entry["verification_runs"] = [
+            {
+                "run_id": "old-run",
+                "session_id": "old-process",
+                "state": "running",
+                "started_at": "2026-01-01T00:00:00+00:00",
+                "results": [],
+            }
+        ]
+        manager._save_registry(registry)
+
+    resumed = HostOSCodingVerification(os_client, HostOSCodingWorkspaces(os_client))
+    status = await resumed.get_coding_verification_status("interrupted-check")
+    runs = json.loads(status.message)["verification_runs"]
+
+    assert runs[0]["state"] == "interrupted"
+    assert (await manager.remove_coding_workspace("interrupted-check")).is_success
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_ignores_only_cache_not_untracked_build_source(os_client):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "fingerprint-scope"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    initial = await manager.workspace_fingerprint(workspace)
+
+    cache_dir = workspace / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "app.pyc").write_bytes(b"cache")
+    with_cache = await manager.workspace_fingerprint(workspace)
+
+    build_dir = workspace / "build"
+    build_dir.mkdir()
+    (build_dir / "new_source.py").write_text("important = True\n", encoding="utf-8")
+    with_source = await manager.workspace_fingerprint(workspace)
+
+    assert with_cache == initial
+    assert with_source["fingerprint"] != initial["fingerprint"]
+    assert (await manager.remove_coding_workspace("fingerprint-scope", force=True)).is_success

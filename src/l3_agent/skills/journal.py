@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
+
+from src.utils._tools import redact_sensitive_text
 
 
 class NullActionJournal:
@@ -39,12 +40,6 @@ class ActionJournal:
         "session_token",
         "token",
     )
-    _INLINE_SECRET_PATTERNS = (
-        re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+\-/]+=*"),
-        re.compile(
-            r"(?i)((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+"
-        ),
-    )
 
     def __init__(self, path: Path, max_bytes: int = 5 * 1024 * 1024) -> None:
         if max_bytes < 1024:
@@ -61,12 +56,7 @@ class ActionJournal:
 
     @classmethod
     def _redact_text(cls, value: str, max_chars: int = 4000) -> str:
-        redacted = value
-        for pattern in cls._INLINE_SECRET_PATTERNS:
-            redacted = pattern.sub(r"\1[REDACTED]", redacted)
-        if len(redacted) > max_chars:
-            return redacted[:max_chars] + "... [truncated]"
-        return redacted
+        return redact_sensitive_text(value, max_chars=max_chars)
 
     @classmethod
     def _sanitize(cls, value: Any, key: str = "") -> Any:
