@@ -69,6 +69,14 @@
         "tests/unit/l3/react/test_react_loop.py::test_react_protocol_error_is_persisted_before_retry",
         "tests/unit/l3/react/test_react_loop.py::test_react_max_steps_limit"
       ]
+    },
+    {
+      "id": "durable_coding_plan",
+      "description": "Task plans persist dependency state and evidence, reject stale writers, and gate final commits.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_coding_plan_persists_dependencies_evidence_and_commit_gate",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_coding_plan_rejects_cycles_and_redacts_evidence"
+      ]
     }
   ]
 }

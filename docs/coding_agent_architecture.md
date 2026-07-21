@@ -55,6 +55,22 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   explicit `force=true`; tracked and untracked changes are first saved to a
   recovery Git stash rather than being silently destroyed.
 
+## Durable coding plan contract
+
+- A task workspace may own a persistent objective, requirements, dependency-aware
+  steps, bounded evidence, and a 200-entry state-transition history.
+- Plan reads return a compact status summary by default; detailed step,
+  requirement, and history evidence is retrieved through bounded pages. Explicit
+  replacement archives the previous plan instead of deleting its audit trail.
+- Plan writes use monotonic revisions and optional optimistic concurrency guards;
+  coding prompts require `expected_revision` so interrupted or parallel agents do
+  not overwrite newer state.
+- Steps cannot start or complete before their dependencies. Completed or blocked
+  states and satisfied or blocked requirements require concrete evidence.
+- Existing tasks without a plan preserve the legacy commit flow. Once a plan is
+  initialized, final commits require every step completed and requirement
+  satisfied; explicit bypass remains available for intermediate checkpoints.
+
 ## Durable execution contract
 
 - Every configured action plan receives a stable plan ID and append-only JSONL

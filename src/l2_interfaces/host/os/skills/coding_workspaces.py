@@ -661,12 +661,15 @@ class HostOSCodingWorkspaces:
         task_id: str,
         commit_message: str,
         require_verified: bool = True,
+        require_plan_complete: bool = True,
     ) -> SkillResult:
         """Commit task changes locally without pushing or merging them.
 
         By default, the exact working state must have a successful verification
         fingerprint. Set ``require_verified=false`` explicitly only for changes
         that cannot reasonably execute (for example, documentation-only work).
+        If the task has a durable coding plan, all steps and requirements must
+        be complete unless ``require_plan_complete=false`` is explicit.
         """
 
         if not commit_message.strip():
@@ -698,6 +701,28 @@ class HostOSCodingWorkspaces:
                         "or explicitly set require_verified=false for a justified "
                         "non-executable change."
                     )
+                plan = entry.get("task_plan")
+                plan_ready = True
+                if plan:
+                    incomplete_steps = [
+                        step["id"]
+                        for step in plan.get("steps", [])
+                        if step.get("status") != "completed"
+                    ]
+                    incomplete_requirements = [
+                        item["id"]
+                        for item in plan.get("requirements", [])
+                        if item.get("status") != "satisfied"
+                    ]
+                    plan_ready = not incomplete_steps and not incomplete_requirements
+                    if require_plan_complete and not plan_ready:
+                        return SkillResult.fail(
+                            "Commit rejected: coding plan is incomplete. Pending "
+                            f"steps={incomplete_steps}; requirements="
+                            f"{incomplete_requirements}. Update plan evidence first, "
+                            "or set require_plan_complete=false explicitly for an "
+                            "intermediate checkpoint commit."
+                        )
                 code, status, err = await self._run_git(
                     workspace, "status", "--porcelain=v1", "--untracked-files=all"
                 )
@@ -743,6 +768,7 @@ class HostOSCodingWorkspaces:
                 entry["last_commit"] = commit_hash
                 entry["last_commit_at"] = self._utc_now()
                 entry["last_commit_verification_bypassed"] = not is_verified
+                entry["last_commit_plan_bypassed"] = bool(plan and not plan_ready)
                 if is_verified:
                     verification["committed_as"] = commit_hash
                     verification["post_commit_fingerprint"] = (
@@ -760,6 +786,7 @@ class HostOSCodingWorkspaces:
                         "branch": entry["branch"],
                         "commit": commit_hash,
                         "verification_bypassed": not is_verified,
+                        "plan_completion_bypassed": bool(plan and not plan_ready),
                         "summary": truncate_text(out, max_chars=3000),
                     },
                     ensure_ascii=False,
