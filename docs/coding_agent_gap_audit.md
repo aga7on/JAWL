@@ -16,7 +16,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Task isolation | Strong | Persistent branch/worktree per task, dirty-base guard, recovery stash | No automatic branch publication or merge conflict assistant |
 | Context navigation | Good | Bounded map, ripgrep/Python search, numbered ranges with hashes | Symbol extraction is heuristic; no LSP/tree-sitter reference graph |
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
-| Verification | Strong | Detected allowlisted profiles, process-tree timeout, exact-state fingerprint commit gate | No repository-owned declarative verification policy or flaky-test classification |
+| Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks | No cross-step dependency graph or requirement-level plan |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | LLM protocol | Improving | Multiple wrapper calls merged, invalid output persisted, terminal step-limit record | Skills are still described in prompt text behind one wrapper instead of native per-skill schemas |
@@ -26,8 +26,7 @@ tasks safely, recoverably, and with measurable evidence.
 
 ## Priority order
 
-1. Add a repository verification policy file with an explicit command allowlist.
-2. Add an adapter that can expose selected registered skills as native tool
+1. Add an adapter that can expose selected registered skills as native tool
    schemas while retaining `execute_skill` for Qwen and legacy providers.
 3. Upgrade code navigation with optional tree-sitter/LSP-backed definitions,
    references, and dependency slices; retain the current zero-index fallback.

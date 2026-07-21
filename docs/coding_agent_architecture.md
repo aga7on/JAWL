@@ -121,6 +121,10 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - A workspace mutation during or after verification invalidates the result.
 - Task commits require a current successful fingerprint by default. An explicit
   bypass remains available for justified non-executable changes and is recorded.
+- Repositories may declare `.jawl/verification.json` with version, built-in
+  profile names, timeout, and stop-on-failure behavior. Unknown fields,
+  environment overrides, and arbitrary commands are rejected; the policy hash
+  is stored with each run.
 
 ## Context acquisition contract
 

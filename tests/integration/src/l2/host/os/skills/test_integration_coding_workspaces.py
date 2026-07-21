@@ -470,3 +470,55 @@ async def test_workspace_diff_bounds_tracked_git_output_during_collection(os_cli
     assert (
         await manager.remove_coding_workspace("large-tracked-diff", force=True)
     ).is_success
+
+
+@pytest.mark.asyncio
+async def test_repository_verification_policy_selects_only_allowlisted_profiles(os_client):
+    create_repository(os_client.sandbox_dir)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "verification-policy"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    policy_dir = workspace / ".jawl"
+    policy_dir.mkdir()
+    policy_file = policy_dir / "verification.json"
+    policy_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "checks": ["git_diff_check", "python_compile"],
+                "timeout_sec": 45,
+                "stop_on_failure": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    verified = await verifier.run_coding_verification("verification-policy")
+    payload = json.loads(verified.message)
+
+    assert verified.is_success is True, verified.message
+    assert payload["checks"] == ["git_diff_check", "python_compile"]
+    assert payload["timeout_sec"] == 45
+    assert payload["stop_on_failure"] is False
+    assert payload["policy"]["path"] == ".jawl/verification.json"
+    assert len(payload["policy"]["sha256"]) == 64
+
+    policy_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "checks": ["git_diff_check"],
+                "commands": [["powershell", "-Command", "echo unsafe"]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rejected = await verifier.run_coding_verification("verification-policy")
+    assert rejected.is_success is False
+    assert "Arbitrary commands" in rejected.message
+    assert (
+        await manager.remove_coding_workspace("verification-policy", force=True)
+    ).is_success

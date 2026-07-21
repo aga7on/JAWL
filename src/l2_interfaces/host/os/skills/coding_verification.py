@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -57,6 +58,7 @@ class HostOSCodingVerification:
         "maven_test",
         "gradle_test",
     }
+    _POLICY_PATH = Path(".jawl/verification.json")
     _PYTHON_SYNTAX_CHECK = r"""import pathlib
 import sys
 
@@ -151,6 +153,55 @@ if errors:
                 raise ValueError("'auto' cannot be combined with explicit checks.")
             return await self._detect_checks(workspace)
         return list(dict.fromkeys(requested))
+
+    async def _load_repository_policy(
+        self, workspace: Path
+    ) -> Optional[Dict[str, Any]]:
+        policy_path = workspace / self._POLICY_PATH
+        if not policy_path.exists():
+            return None
+        resolved = policy_path.resolve()
+        if not resolved.is_relative_to(workspace.resolve()) or not resolved.is_file():
+            raise ValueError("Verification policy escaped the coding workspace.")
+        raw = await asyncio.to_thread(resolved.read_bytes)
+        if len(raw) > 32768:
+            raise ValueError("Verification policy cannot exceed 32768 bytes.")
+        try:
+            policy = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Verification policy is invalid JSON: {exc}") from exc
+        if not isinstance(policy, dict):
+            raise ValueError("Verification policy root must be an object.")
+        allowed_fields = {"version", "checks", "timeout_sec", "stop_on_failure"}
+        unknown = set(policy) - allowed_fields
+        if unknown:
+            raise ValueError(
+                "Verification policy has unsupported fields: "
+                + ", ".join(sorted(unknown))
+                + ". Arbitrary commands and environment overrides are forbidden."
+            )
+        if policy.get("version") != 1:
+            raise ValueError("Verification policy version must be 1.")
+        checks = policy.get("checks")
+        if not isinstance(checks, list) or not all(
+            isinstance(check, str) for check in checks
+        ):
+            raise ValueError("Verification policy checks must be a string list.")
+        timeout_sec = policy.get("timeout_sec", 300)
+        if not isinstance(timeout_sec, int) or isinstance(timeout_sec, bool):
+            raise ValueError("Verification policy timeout_sec must be an integer.")
+        if timeout_sec < 1 or timeout_sec > 1800:
+            raise ValueError("Verification policy timeout_sec must be between 1 and 1800.")
+        stop_on_failure = policy.get("stop_on_failure", True)
+        if not isinstance(stop_on_failure, bool):
+            raise ValueError("Verification policy stop_on_failure must be boolean.")
+        return {
+            "path": self._POLICY_PATH.as_posix(),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "checks": checks,
+            "timeout_sec": timeout_sec,
+            "stop_on_failure": stop_on_failure,
+        }
 
     @staticmethod
     def _resolve_executable(name: str) -> str:
@@ -321,22 +372,36 @@ if errors:
         self,
         task_id: str,
         checks: Optional[List[VerificationCheck]] = None,
-        timeout_sec: int = 300,
-        stop_on_failure: bool = True,
+        timeout_sec: Optional[int] = None,
+        stop_on_failure: Optional[bool] = None,
     ) -> SkillResult:
         """Run standard verification profiles in a task worktree.
 
-        ``auto`` detects Python, Node, Rust, Go, .NET, Maven, and Gradle projects.
-        Output is bounded, process trees are terminated on timeout/cancellation,
-        and the successful result is tied to an exact workspace fingerprint.
+        With no explicit checks, a versioned ``.jawl/verification.json`` policy
+        is used when present; it may select only built-in allowlisted profiles,
+        never arbitrary commands. Otherwise ``auto`` detects the project stack.
         """
 
-        if timeout_sec < 1 or timeout_sec > 1800:
+        if timeout_sec is not None and (timeout_sec < 1 or timeout_sec > 1800):
             return SkillResult.fail("timeout_sec must be between 1 and 1800.")
         run_persisted = False
         try:
             task_id, entry, workspace = await self._resolve_task(task_id)
-            normalized_checks = await self._normalize_checks(workspace, checks)
+            policy = await self._load_repository_policy(workspace) if checks is None else None
+            requested_checks = policy["checks"] if policy else checks
+            effective_timeout = (
+                timeout_sec
+                if timeout_sec is not None
+                else (policy["timeout_sec"] if policy else 300)
+            )
+            effective_stop = (
+                stop_on_failure
+                if stop_on_failure is not None
+                else (policy["stop_on_failure"] if policy else True)
+            )
+            normalized_checks = await self._normalize_checks(
+                workspace, requested_checks
+            )
             fingerprint_before = await self.workspaces.workspace_fingerprint(workspace)
             run = {
                 "run_id": uuid.uuid4().hex,
@@ -350,6 +415,9 @@ if errors:
                 "head_before": fingerprint_before["head"],
                 "fingerprint_before": fingerprint_before["fingerprint"],
                 "trace": current_trace(),
+                "policy": policy,
+                "timeout_sec": effective_timeout,
+                "stop_on_failure": effective_stop,
             }
             await self._persist_run(task_id, run, start=True)
             run_persisted = True
@@ -359,7 +427,7 @@ if errors:
                     try:
                         command = self._command_for(check, workspace)
                         result = await self._run_command(
-                            check, command, workspace, timeout_sec
+                            check, command, workspace, effective_timeout
                         )
                     except FileNotFoundError as exc:
                         result = {
@@ -393,7 +461,7 @@ if errors:
                         }
                     run["results"].append(result)
                     await self._persist_run(task_id, run)
-                    if stop_on_failure and not result["passed"]:
+                    if effective_stop and not result["passed"]:
                         break
             except asyncio.CancelledError:
                 run["state"] = "cancelled"

@@ -59,7 +59,8 @@
       "description": "Only the exact successfully verified workspace fingerprint can be committed.",
       "tests": [
         "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_commit_requires_verification_of_exact_workspace_state",
-        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_verification_detects_workspace_change_during_checks"
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_verification_detects_workspace_change_during_checks",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_repository_verification_policy_selects_only_allowlisted_profiles"
       ]
     },
     {
