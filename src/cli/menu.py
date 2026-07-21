@@ -5,6 +5,8 @@ Provides an interactive console selection for agent controls, chat terminal,
 log viewers, configuration wizards, and database managers.
 """
 
+import re
+import subprocess
 import sys
 import time
 
@@ -33,6 +35,7 @@ def main_menu() -> None:
         questionary.Choice("[*] Setup Wizard", "setup"),
         questionary.Choice("[#] Database Manager", "db_manager"),
         questionary.Separator(" "),
+        questionary.Choice("[!] Kill orphan bridges", "kill_bridges"),
         questionary.Choice("[x] Exit", "exit"),
     ]
 
@@ -104,6 +107,34 @@ def main_menu() -> None:
 
         elif result == "setup":
             setup_wizard_screen()
+
+        elif result == "kill_bridges":
+            draw_header()
+            killed = 0
+            try:
+                out = subprocess.check_output(
+                    ["netstat", "-ano"], shell=True, text=True, encoding="oem"
+                )
+                for line in out.splitlines():
+                    if ":8000" in line and "LISTENING" in line:
+                        m = re.search(r"(\d+)\s*$", line)
+                        if m:
+                            pid = m.group(1)
+                            try:
+                                subprocess.run(
+                                    ["taskkill", "/F", "/PID", pid],
+                                    capture_output=True, shell=True
+                                )
+                                killed += 1
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            if killed:
+                print_info(f" Killed {killed} bridge process(es) on port 8000.")
+            else:
+                print_info(" No bridge processes found on port 8000.")
+            time.sleep(1.5)
 
         elif result == "db_manager":
             database_manager_screen()

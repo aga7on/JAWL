@@ -22,9 +22,12 @@ def test_llm_client_url_normalization(mock_rotator):
 
 
 @pytest.mark.asyncio
+@patch("src.l3_agent.llm.client.httpx.AsyncClient")
 @patch("src.l3_agent.llm.client.AsyncOpenAI")
-async def test_llm_client_no_proxy(mock_openai, mock_rotator):
+async def test_llm_client_no_proxy(mock_openai, mock_httpx, mock_rotator):
     """Тест: получение сессии без прокси."""
+    mock_http_instance = MagicMock()
+    mock_httpx.return_value = mock_http_instance
     client = LLMClient(
         api_url="http://localhost:8000", api_keys_rotator=mock_rotator, proxy_url=None
     )
@@ -33,7 +36,8 @@ async def test_llm_client_no_proxy(mock_openai, mock_rotator):
     mock_openai.assert_called_once()
     call_kwargs = mock_openai.call_args[1]
     assert call_kwargs["api_key"] == "fake_key_123"
-    assert call_kwargs["http_client"] is None
+    mock_httpx.assert_called_once_with(trust_env=False)
+    assert call_kwargs["http_client"] == mock_http_instance
 
 
 @pytest.mark.asyncio
@@ -54,6 +58,24 @@ async def test_llm_client_with_proxy(mock_openai, mock_httpx, mock_rotator):
     mock_openai.assert_called_once()
     call_kwargs = mock_openai.call_args[1]
     assert call_kwargs["http_client"] == mock_http_instance
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.llm.client.httpx.AsyncClient")
+@patch("src.l3_agent.llm.client.AsyncOpenAI")
+async def test_llm_client_bypasses_proxy_for_local_api(
+    mock_openai, mock_httpx, mock_rotator
+):
+    client = LLMClient(
+        api_url="http://127.0.0.1:8000/v1",
+        api_keys_rotator=mock_rotator,
+        proxy_url="socks5://127.0.0.1:9050",
+    )
+
+    client.get_session()
+
+    mock_httpx.assert_called_once_with(trust_env=False)
+    assert mock_openai.call_args[1]["http_client"] == mock_httpx.return_value
 
 
 @pytest.mark.asyncio

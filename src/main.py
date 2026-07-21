@@ -91,6 +91,7 @@ async def main() -> int:
             "PROXY_URL": PROXY_URL,
             "TELETHON_API_ID": os.getenv("TELETHON_API_ID"),
             "TELETHON_API_HASH": os.getenv("TELETHON_API_HASH"),
+            "TELETHON_PROXY_URL": os.getenv("TELETHON_PROXY_URL"),
             "AIOGRAM_BOT_TOKEN": os.getenv("AIOGRAM_BOT_TOKEN"),
             "GITHUB_TOKEN": os.getenv("GITHUB_TOKEN"),
             "EMAIL_ACCOUNT": os.getenv("EMAIL_ACCOUNT"),

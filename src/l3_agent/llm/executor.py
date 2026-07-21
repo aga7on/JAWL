@@ -83,7 +83,6 @@ class LLMExecutor:
                     "model": model_name,
                     "messages": messages,
                     "temperature": temperature,
-                    "timeout": 60.0,
                 }
                 if tools:
                     kwargs["tools"] = tools

@@ -70,7 +70,7 @@ class TelethonPlugin(BaseInterface):
             api_hash=api_hash,
             session_path=session_path,
             timezone=container.settings.system.timezone,
-            proxy_url=env_vars.get("PROXY_URL"),
+            proxy_url=env_vars.get("TELETHON_PROXY_URL") or env_vars.get("PROXY_URL"),
         )
         events = TelethonEvents(
             tg_client=client, state=state, event_bus=container.event_bus, config=config

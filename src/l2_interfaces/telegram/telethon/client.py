@@ -7,8 +7,10 @@ and provides a context provider with info about the agent's profile and chats.
 """
 
 from typing import Any, Optional
+from urllib.parse import urlparse, parse_qs
 from python_socks import parse_proxy_url
 from telethon import TelegramClient
+from telethon.network.connection import ConnectionTcpMTProxyAbridged
 from telethon.tl.functions.users import GetFullUserRequest
 
 from src.utils.logger import main_logger
@@ -76,10 +78,33 @@ class TelethonClient:
 
         try:
             # Parse proxy if it exists
-            proxy = parse_proxy_url(self.proxy_url) if self.proxy_url else None
+            proxy = None
+            connection_cls = None
+
+            if self.proxy_url:
+                if self.proxy_url.startswith("tg://proxy"):
+                    # MTProxy: tg://proxy?server=HOST&port=PORT&secret=SECRET
+                    parsed = urlparse(self.proxy_url)
+                    params = parse_qs(parsed.query)
+                    host = params.get("server", [None])[0]
+                    port = int(params.get("port", [0])[0])
+                    secret = params.get("secret", [None])[0]
+                    if host and port and secret:
+                        proxy = (host, port, secret)
+                        connection_cls = ConnectionTcpMTProxyAbridged
+                        main_logger.info(f"[Telegram Telethon] Using MTProxy: {host}:{port}")
+                    else:
+                        main_logger.warning("[Telegram Telethon] Invalid MTProxy URL, connecting directly.")
+                else:
+                    proxy = parse_proxy_url(self.proxy_url)
+                    main_logger.info("[Telegram Telethon] Using SOCKS/HTTP proxy.")
+
+            kwargs = {}
+            if connection_cls:
+                kwargs["connection"] = connection_cls
 
             self._client = TelegramClient(
-                self.session_path, self.api_id, self.api_hash, proxy=proxy
+                self.session_path, self.api_id, self.api_hash, proxy=proxy, **kwargs
             )
 
             # Built-in Telethon magic for console authorization
