@@ -119,10 +119,13 @@
     },
     {
       "id": "fixed_patch_quality_eval",
-      "description": "Fixed repositories grade public and hidden correctness, scope precision, and patch economy.",
+      "description": "Fixed repositories grade public and hidden correctness, scope precision, and patch economy for JAWL and isolated external CLI baselines.",
       "tests": [
         "tests/integration/benchmarks/test_coding_task_eval.py::test_reference_patches_pass_public_hidden_scope_and_economy_gates",
         "tests/integration/benchmarks/test_coding_task_eval.py::test_candidate_cannot_hide_an_untracked_file_from_scope_gate",
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_external_cli_driver_runs_without_shell_and_uses_same_hidden_grader",
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_external_cli_driver_bounds_and_redacts_candidate_output",
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_external_cli_driver_terminates_timed_out_candidate",
         "tests/integration/benchmarks/test_coding_task_eval.py::test_live_driver_prompt_exposes_contract_but_not_hidden_oracle",
         "tests/integration/benchmarks/test_coding_task_eval.py::test_live_driver_extracts_committed_workspace_patch_for_same_grader",
         "tests/integration/benchmarks/test_coding_task_eval.py::test_live_driver_runs_real_react_and_coding_skills_without_network"

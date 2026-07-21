@@ -41,3 +41,22 @@ quality from lifecycle compliance, wall time, ReAct steps, input/output tokens,
 per-call transport metrics, and bounded protocol/action tick diagnostics. Raw
 chain-of-thought is not serialized and credential-shaped text is redacted. API
 keys are never written to the report.
+
+Run any external coding CLI against the same candidate-visible repositories and
+hidden grader. The driver never invokes a shell; `{repository}` and `{prompt}`
+are replaced inside individual arguments, and the same values are also exposed
+as `JAWL_BENCH_REPOSITORY` and `JAWL_BENCH_PROMPT`:
+
+```powershell
+python benchmarks/coding_tasks/drive_cli.py `
+  --candidate my-agent `
+  --timeout-seconds 900 `
+  -- my-agent --cwd "{repository}" --prompt "{prompt}"
+```
+
+Candidate output is drained with a bounded retained tail, the exact process
+tree is terminated on timeout, patches are capped at 2 MiB, and neither hidden
+tests nor the reference solution are copied into the candidate workspace.
+The generic driver controls inputs and grading but is not itself an operating-
+system filesystem sandbox. For adversarial benchmark claims, run the candidate
+inside its own sandbox/container and pass that launcher as the command.

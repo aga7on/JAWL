@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks.coding_tasks.drive_cli import run_candidate_command, run_cli_task
 from benchmarks.coding_tasks.drive_jawl import (
     build_task_prompt,
     extract_candidate_patch,
@@ -77,6 +78,65 @@ new file mode 100644
     assert task["changed_files"] == ["notes.txt", "ranges.py"]
     assert task["scope_passed"] is False
     assert task["gate_passed"] is False
+
+
+def test_external_cli_driver_runs_without_shell_and_uses_same_hidden_grader(tmp_path):
+    task = load_manifest()["tasks"][0]
+    replacement = '''def parse_range(spec: str) -> list[int]:
+    """Parse a numeric ``start-end`` range."""
+
+    start_text, end_text = spec.split("-", maxsplit=1)
+    start = int(start_text.strip())
+    end = int(end_text.strip())
+    if start > end:
+        raise ValueError("descending ranges are not supported")
+    return list(range(start, end + 1))
+'''
+    source = (
+        "from pathlib import Path; "
+        f"Path('ranges.py').write_text({replacement!r}, encoding='utf-8')"
+    )
+    output_dir = tmp_path / "external"
+
+    live = run_cli_task(
+        task,
+        output_dir,
+        [sys.executable, "-c", source],
+        timeout_seconds=30,
+    )
+    evaluation = evaluate_task(task, "solution", output_dir / "patches")
+
+    assert live["execution"]["passed"] is True
+    assert live["execution"]["executable"].startswith("python")
+    assert live["patch_bytes"] > 0
+    assert live["extraction_error"] == ""
+    assert evaluation["gate_passed"] is True
+
+
+def test_external_cli_driver_bounds_and_redacts_candidate_output(tmp_path):
+    secret = "ghp_1234567890abcdefghij"
+    source = f"print('x' * 70000); print('token={secret}')"
+
+    result = run_candidate_command(
+        [sys.executable, "-c", source], tmp_path, "inspect repository", 30
+    )
+
+    assert result["passed"] is True
+    assert len(result["output_tail"]) <= 16000
+    assert secret not in result["output_tail"]
+    assert "[REDACTED]" in result["output_tail"]
+
+
+def test_external_cli_driver_terminates_timed_out_candidate(tmp_path):
+    result = run_candidate_command(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        tmp_path,
+        "wait",
+        1,
+    )
+
+    assert result["passed"] is False
+    assert result["timed_out"] is True
 
 
 def test_live_driver_prompt_exposes_contract_but_not_hidden_oracle():

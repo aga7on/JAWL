@@ -21,7 +21,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, noisy Qwen payload recovery, bounded transient retries, configurable Thinking policy, persisted failures, terminal step-limit record | QWB exposes only a Boolean Thinking switch, not a token/time budget; adaptive per-task policy still needs measured validation |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
-| Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, isolated real-ReAct driver, and a recorded QWB calibration | No equivalent baseline run yet; first QWB run passed patch quality but failed lifecycle/time budget |
+| Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, isolated real-ReAct driver, recorded QWB calibrations, and a shell-free external CLI driver using the identical grader | No equivalent external-agent baseline has been executed yet |
 | Planning | Strong | Persistent task-local requirements, dependency steps, revision guards, evidence history, and commit gate | No automatic plan synthesis quality grader |
 
 ## Priority order
@@ -29,8 +29,10 @@ tasks safely, recoverably, and with measurable evidence.
 1. Validate `first_step` Thinking and proportional planning in one deliberate
    fixed-task live run before expanding the benchmark set; avoid repetitive
    account-consuming calibration.
-2. Execute equivalent declared baseline agents before making comparative
-   performance claims.
+2. Execute declared external CLI baselines through `drive_cli.py` before making
+   comparative performance claims; it holds candidate inputs, patch limits,
+   timeout handling, and grading constant. Adversarial hidden-test isolation
+   still requires the candidate CLI's sandbox or an external container.
 3. If live traces show repeated navigation startup cost, add lifecycle-managed
    incremental LSP sessions without weakening process and output bounds.
 
