@@ -40,3 +40,17 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Every successful safe patch creates a persistent checkpoint under the protected
   `sandbox/_system/` area.
 - `restore_file_checkpoint` refuses to overwrite content changed after the patch.
+
+## Task workspace contract
+
+- Non-trivial repository work can be isolated with `create_coding_workspace`.
+- Each task gets a dedicated `jawl/<task>` branch and Git worktree under the
+  hidden `sandbox/.jawl-worktrees/` directory.
+- Workspace metadata is persisted in the protected system area and can be resumed
+  after a ReAct cycle or framework restart.
+- Dirty base repositories are rejected by default because their uncommitted state
+  cannot be represented faithfully by a worktree base commit.
+- Status and diff summaries are inspectable without switching the user's branch.
+- Cleanup preserves commits and the task branch. Uncommitted work requires an
+  explicit `force=true`; tracked and untracked changes are first saved to a
+  recovery Git stash rather than being silently destroyed.

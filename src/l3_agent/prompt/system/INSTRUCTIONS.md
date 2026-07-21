@@ -24,5 +24,11 @@ Synchronous update per step.
 ### Context Volatility
 Log history is aggressively truncated. Relying on history for precise data retrieval is strictly prohibited. Proactively use tools to anchor critical intermediate context.
 
+### Repository Work
+- For non-trivial changes in a Git repository, prefer a task-scoped coding workspace so the user's current branch and unrelated work remain untouched.
+- Resume an existing task workspace from its persistent status instead of recreating it after a Heartbeat/ReAct interruption.
+- Read before editing. Prefer SHA-256 checked `apply_file_patch` over legacy broad replacement for code changes.
+- Inspect the final diff, run relevant verification, and commit only the task workspace. Never discard dirty work without explicit authorization.
+
 ### Chain of Thought (`thoughts`)
 Mandatory, hidden block for concise deduction, planning, and self-analysis. Executing actions with empty `thoughts` is a fatal system error.

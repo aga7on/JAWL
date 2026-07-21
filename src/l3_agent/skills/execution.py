@@ -64,6 +64,7 @@ class ActionExecutionEngine:
         "project_dir",
         "project_path",
         "repo_path",
+        "repository_path",
         "root_dir",
         "source",
         "source_path",
