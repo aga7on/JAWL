@@ -36,6 +36,9 @@ class HostOSCodingWorkspaces:
     }
     _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
     _MAX_REVIEW_SCOPES = 500
+    _MAX_DELIVERY_CONFLICT_PATHS = 200
+    _MAX_DELIVERY_RESPONSE_PATHS = 20
+    _MAX_GIT_REF_CHARS = 300
 
     def __init__(
         self,
@@ -310,6 +313,152 @@ class HostOSCodingWorkspaces:
             raise ValueError(f"Coding workspace not found for task '{task_id}'.")
         return entry
 
+    @classmethod
+    def _validate_git_ref(cls, ref: str, *, field: str) -> str:
+        normalized = ref.strip()
+        if (
+            not normalized
+            or len(normalized) > cls._MAX_GIT_REF_CHARS
+            or normalized.startswith("-")
+            or "\x00" in normalized
+            or any(character in normalized for character in ("\r", "\n"))
+        ):
+            raise ValueError(f"Invalid {field}.")
+        return normalized
+
+    @staticmethod
+    def _canonical_sha256(payload: Dict[str, Any]) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _delivery_bypass_flags(entry: Dict[str, Any]) -> Dict[str, bool]:
+        return {
+            "verification": bool(
+                entry.get("last_commit_verification_bypassed", False)
+            ),
+            "plan_completion": bool(
+                entry.get("last_commit_plan_bypassed", False)
+            ),
+            "diff_review": bool(
+                entry.get("last_commit_diff_review_bypassed", False)
+            ),
+        }
+
+    @staticmethod
+    def _delivery_contract_payload(preflight: Dict[str, Any]) -> Dict[str, Any]:
+        fields = (
+            "schema",
+            "task_id",
+            "repository_sha256",
+            "branch",
+            "head",
+            "workspace_fingerprint",
+            "target_ref",
+            "target_commit",
+            "ahead_count",
+            "behind_count",
+            "relationship",
+            "integration_outcome",
+            "merge_tree_oid",
+            "has_conflicts",
+            "conflict_paths_sha256",
+            "commit_gate_bypasses",
+            "allow_bypassed_commit",
+        )
+        return {field: preflight.get(field) for field in fields}
+
+    @classmethod
+    def _delivery_public_projection(
+        cls, preflight: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        payload = dict(preflight)
+        for field in ("conflict_paths", "changed_paths"):
+            values = preflight.get(field, [])
+            values = values if isinstance(values, list) else []
+            payload[field] = values[: cls._MAX_DELIVERY_RESPONSE_PATHS]
+            payload[f"{field}_response_truncated"] = bool(
+                len(values) > cls._MAX_DELIVERY_RESPONSE_PATHS
+                or preflight.get(f"{field}_truncated", False)
+            )
+        return payload
+
+    @staticmethod
+    def _compact_delivery_projection(
+        preflight: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        fields = (
+            "head",
+            "target_ref",
+            "target_commit",
+            "ahead_count",
+            "behind_count",
+            "relationship",
+            "integration_outcome",
+            "has_conflicts",
+            "conflict_path_count",
+            "conflict_paths_truncated",
+            "ready_for_delivery",
+            "needs_target_sync",
+            "needs_conflict_resolution",
+            "delivery_contract_sha256",
+            "prepared_at",
+        )
+        return {field: preflight.get(field) for field in fields}
+
+    async def _resolve_delivery_commit(
+        self, repository: Path, ref: str, *, field: str
+    ) -> str:
+        code, commit, err = await self._run_git(
+            repository,
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{ref}^{{commit}}",
+        )
+        if code != 0 or not commit:
+            detail = redact_sensitive_text(err or commit, max_chars=1000)
+            raise ValueError(f"Unable to resolve {field} '{ref}': {detail}")
+        return commit
+
+    async def _delivery_workspace_snapshot(
+        self, entry: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        repository, workspace = self._entry_paths(entry)
+        if not workspace.is_dir():
+            raise ValueError("Coding workspace directory is missing.")
+        code, branch, err = await self._run_git(
+            workspace, "symbolic-ref", "--quiet", "--short", "HEAD"
+        )
+        if code != 0 or not branch:
+            raise ValueError(
+                "Coding workspace must be on its managed branch: "
+                f"{redact_sensitive_text(err or branch, max_chars=1000)}"
+            )
+        code, status, err = await self._run_git(
+            workspace, "status", "--porcelain=v1", "--untracked-files=all"
+        )
+        if code != 0:
+            raise ValueError(
+                "Unable to inspect coding workspace before delivery: "
+                f"{redact_sensitive_text(err, max_chars=1000)}"
+            )
+        fingerprint = await self.workspace_fingerprint(workspace)
+        return {
+            "repository": repository,
+            "workspace": workspace,
+            "branch": branch,
+            "head": fingerprint["head"],
+            "workspace_fingerprint": fingerprint["fingerprint"],
+            "clean": not bool(status),
+        }
+
     def resolve_workspace_path(
         self, task_id: str, relative_path: str = ".", is_write: bool = False
     ) -> Path:
@@ -565,6 +714,11 @@ class HostOSCodingWorkspaces:
         repository, workspace = self._entry_paths(entry)
         payload = dict(entry)
         payload.pop("diff_review", None)
+        delivery_preflight = payload.pop("delivery_preflight", None)
+        if isinstance(delivery_preflight, dict):
+            payload["delivery_preflight"] = self._compact_delivery_projection(
+                delivery_preflight
+            )
         payload["repository_exists"] = repository.is_dir()
         payload["workspace_exists"] = workspace.is_dir()
         if not workspace.is_dir():
@@ -1437,6 +1591,382 @@ class HostOSCodingWorkspaces:
             return SkillResult.fail(str(exc))
         except Exception as exc:
             return SkillResult.fail(f"Error committing coding workspace: {exc}")
+
+    @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def prepare_coding_workspace_delivery(
+        self,
+        task_id: str,
+        target_ref: str = "main",
+        allow_bypassed_commit: bool = False,
+    ) -> SkillResult:
+        """Prepare a mutation-free, exact-state branch delivery contract.
+
+        The target is resolved only from currently available local Git refs; this
+        skill never fetches, pushes, merges, rebases, or changes the worktree.
+        Modern ``git merge-tree`` predicts the real merge result without touching
+        the index and exposes bounded conflict paths. The durable contract becomes
+        stale when either the task HEAD or target ref moves.
+        """
+
+        try:
+            task_id = self._validate_task_id(task_id)
+            target_ref = self._validate_git_ref(target_ref, field="target_ref")
+            async with self._lock:
+                registry = self._load_registry()
+                entry = self._get_entry(registry, task_id)
+                snapshot = await self._delivery_workspace_snapshot(entry)
+                repository = snapshot["repository"]
+                workspace = snapshot["workspace"]
+                if snapshot["branch"] != entry["branch"]:
+                    return SkillResult.fail(
+                        "Delivery rejected: workspace is not on its registered "
+                        f"branch ({entry['branch']})."
+                    )
+                if not snapshot["clean"]:
+                    return SkillResult.fail(
+                        "Delivery rejected: coding workspace has uncommitted "
+                        "changes. Review, verify, and commit the exact state first."
+                    )
+                if entry.get("last_commit") != snapshot["head"]:
+                    return SkillResult.fail(
+                        "Delivery rejected: HEAD is not the last commit created by "
+                        "the managed coding commit gate. Commit through "
+                        "commit_coding_workspace first."
+                    )
+                bypass_flags = self._delivery_bypass_flags(entry)
+                if any(bypass_flags.values()) and not allow_bypassed_commit:
+                    active = sorted(
+                        name for name, enabled in bypass_flags.items() if enabled
+                    )
+                    return SkillResult.fail(
+                        "Delivery rejected: the managed commit contains explicit "
+                        f"gate bypasses ({active}). Recreate a fully gated commit, "
+                        "or explicitly set allow_bypassed_commit=true."
+                    )
+
+                target_commit = await self._resolve_delivery_commit(
+                    repository, target_ref, field="target_ref"
+                )
+                head = snapshot["head"]
+                code, counts, err = await self._run_git(
+                    repository,
+                    "rev-list",
+                    "--left-right",
+                    "--count",
+                    f"{target_commit}...{head}",
+                )
+                if code != 0:
+                    return SkillResult.fail(
+                        "Unable to compare task and target histories: "
+                        f"{redact_sensitive_text(err or counts, max_chars=1000)}"
+                    )
+                try:
+                    behind_count, ahead_count = (
+                        int(value) for value in counts.split()
+                    )
+                except (TypeError, ValueError):
+                    return SkillResult.fail(
+                        "Git returned an invalid ahead/behind comparison."
+                    )
+
+                merge_tree_oid: Optional[str] = None
+                has_conflicts = False
+                conflict_paths: List[str] = []
+                conflict_paths_truncated = False
+                if ahead_count == 0 and behind_count == 0:
+                    relationship = "identical"
+                    integration_outcome = "up_to_date"
+                elif behind_count == 0:
+                    relationship = "target_ancestor"
+                    integration_outcome = "fast_forward_target"
+                elif ahead_count == 0:
+                    relationship = "task_ancestor"
+                    integration_outcome = "fast_forward_task"
+                else:
+                    relationship = "diverged"
+                    (
+                        merge_code,
+                        merge_output,
+                        merge_error,
+                        merge_output_truncated,
+                        merge_error_truncated,
+                    ) = await self._run_git_bounded(
+                        repository,
+                        "merge-tree",
+                        "--write-tree",
+                        "--name-only",
+                        "--no-messages",
+                        "-z",
+                        head,
+                        target_commit,
+                        max_stdout_bytes=262144,
+                        max_stderr_bytes=32768,
+                    )
+                    if merge_code not in (0, 1):
+                        detail = merge_error or merge_output
+                        if merge_error_truncated or merge_output_truncated:
+                            detail += " ... [truncated]"
+                        return SkillResult.fail(
+                            "Unable to predict target integration with git "
+                            "merge-tree: "
+                            f"{redact_sensitive_text(detail, max_chars=1500)}"
+                        )
+                    tokens = merge_output.split("\x00")
+                    merge_tree_oid = tokens[0].strip() if tokens else None
+                    if not merge_tree_oid or not re.fullmatch(
+                        r"[0-9a-fA-F]{40,64}", merge_tree_oid
+                    ):
+                        return SkillResult.fail(
+                            "git merge-tree did not return a valid result tree."
+                        )
+                    has_conflicts = merge_code == 1
+                    raw_paths = tokens[1:]
+                    if merge_output_truncated and raw_paths:
+                        raw_paths = raw_paths[:-1]
+                    normalized_paths = [
+                        redact_sensitive_text(path.replace("\\", "/"), max_chars=500)
+                        for path in raw_paths
+                        if path
+                    ]
+                    conflict_paths_truncated = bool(
+                        merge_output_truncated
+                        or len(normalized_paths)
+                        > self._MAX_DELIVERY_CONFLICT_PATHS
+                    )
+                    conflict_paths = normalized_paths[
+                        : self._MAX_DELIVERY_CONFLICT_PATHS
+                    ]
+                    integration_outcome = (
+                        "conflicted_merge" if has_conflicts else "clean_merge"
+                    )
+
+                if merge_tree_oid is None:
+                    result_commit = (
+                        target_commit
+                        if integration_outcome == "fast_forward_task"
+                        else head
+                    )
+                    code, merge_tree_oid, err = await self._run_git(
+                        repository,
+                        "rev-parse",
+                        "--verify",
+                        "--end-of-options",
+                        f"{result_commit}^{{tree}}",
+                    )
+                    if code != 0 or not merge_tree_oid:
+                        return SkillResult.fail(
+                            "Unable to resolve predicted integration tree: "
+                            f"{redact_sensitive_text(err, max_chars=1000)}"
+                        )
+
+                (
+                    paths_code,
+                    changed_output,
+                    changed_error,
+                    changed_output_truncated,
+                    changed_error_truncated,
+                ) = await self._run_git_bounded(
+                    repository,
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    f"{target_commit}...{head}",
+                    "--",
+                    max_stdout_bytes=131072,
+                    max_stderr_bytes=16384,
+                )
+                changed_paths: List[str] = []
+                changed_paths_truncated = changed_output_truncated
+                if paths_code == 0:
+                    raw_changed_paths = changed_output.split("\x00")
+                    if changed_output_truncated and raw_changed_paths:
+                        raw_changed_paths = raw_changed_paths[:-1]
+                    changed_paths = [
+                        redact_sensitive_text(path.replace("\\", "/"), max_chars=500)
+                        for path in raw_changed_paths
+                        if path
+                    ][: self._MAX_DELIVERY_CONFLICT_PATHS]
+                    changed_paths_truncated = bool(
+                        changed_output_truncated
+                        or len(
+                            [path for path in raw_changed_paths if path]
+                        )
+                        > self._MAX_DELIVERY_CONFLICT_PATHS
+                    )
+                else:
+                    changed_paths_truncated = True
+                    main_logger.warning(
+                        "[Host OS] Delivery changed-path projection failed for "
+                        f"'{task_id}': "
+                        f"{redact_sensitive_text(changed_error, max_chars=500)}"
+                        + (" [truncated]" if changed_error_truncated else "")
+                    )
+
+                conflict_paths_sha256 = hashlib.sha256(
+                    "\x00".join(conflict_paths).encode("utf-8")
+                ).hexdigest()
+                preflight: Dict[str, Any] = {
+                    "schema": "jawl-coding-delivery-v1",
+                    "task_id": task_id,
+                    "repository_sha256": hashlib.sha256(
+                        str(repository).encode("utf-8")
+                    ).hexdigest(),
+                    "branch": entry["branch"],
+                    "head": head,
+                    "workspace_fingerprint": snapshot["workspace_fingerprint"],
+                    "target_ref": target_ref,
+                    "target_commit": target_commit,
+                    "ahead_count": ahead_count,
+                    "behind_count": behind_count,
+                    "relationship": relationship,
+                    "integration_outcome": integration_outcome,
+                    "merge_tree_oid": merge_tree_oid,
+                    "has_conflicts": has_conflicts,
+                    "conflict_paths_sha256": conflict_paths_sha256,
+                    "commit_gate_bypasses": bypass_flags,
+                    "allow_bypassed_commit": bool(allow_bypassed_commit),
+                    "ready_for_delivery": bool(ahead_count > 0 and not has_conflicts),
+                    "needs_target_sync": bool(behind_count > 0),
+                    "needs_conflict_resolution": has_conflicts,
+                    "conflict_paths": conflict_paths,
+                    "conflict_path_count": len(conflict_paths),
+                    "conflict_path_count_is_exact": not conflict_paths_truncated,
+                    "conflict_paths_truncated": conflict_paths_truncated,
+                    "changed_paths": changed_paths,
+                    "changed_path_count": len(changed_paths),
+                    "changed_path_count_is_exact": not changed_paths_truncated,
+                    "changed_paths_truncated": changed_paths_truncated,
+                    "target_snapshot_source": "local_git_refs",
+                    "network_accessed": False,
+                    "prepared_at": self._utc_now(),
+                    "trace": current_trace(),
+                }
+                preflight["delivery_contract_sha256"] = self._canonical_sha256(
+                    self._delivery_contract_payload(preflight)
+                )
+                entry["delivery_preflight"] = preflight
+                self._save_registry(registry)
+
+            main_logger.info(
+                f"[Host OS] Prepared delivery for '{task_id}' at "
+                f"{head[:12]} -> {target_ref}@{target_commit[:12]} "
+                f"({integration_outcome})."
+            )
+            return SkillResult.ok(
+                json.dumps(
+                    self._delivery_public_projection(preflight),
+                    ensure_ascii=False,
+                )
+            )
+        except (PermissionError, FileNotFoundError, TimeoutError, ValueError, KeyError) as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Error preparing coding delivery: {exc}")
+
+    @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def get_coding_workspace_delivery_status(
+        self, task_id: str
+    ) -> SkillResult:
+        """Validate the latest delivery contract against current local refs."""
+
+        try:
+            task_id = self._validate_task_id(task_id)
+            async with self._lock:
+                entry = self._get_entry(self._load_registry(), task_id)
+                preflight = entry.get("delivery_preflight")
+                if not isinstance(preflight, dict):
+                    return SkillResult.ok(
+                        json.dumps(
+                            {
+                                "task_id": task_id,
+                                "state": "not_prepared",
+                                "is_current": False,
+                                "ready_for_delivery": False,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                stale_reasons: List[str] = []
+                expected_contract = self._canonical_sha256(
+                    self._delivery_contract_payload(preflight)
+                )
+                if preflight.get("delivery_contract_sha256") != expected_contract:
+                    stale_reasons.append("contract_checksum_mismatch")
+                try:
+                    snapshot = await self._delivery_workspace_snapshot(entry)
+                except (PermissionError, FileNotFoundError, TimeoutError, ValueError):
+                    snapshot = None
+                    stale_reasons.append("workspace_unavailable")
+                if snapshot is not None:
+                    if snapshot["branch"] != preflight.get("branch"):
+                        stale_reasons.append("managed_branch_changed")
+                    if not snapshot["clean"]:
+                        stale_reasons.append("workspace_dirty")
+                    if snapshot["head"] != preflight.get("head"):
+                        stale_reasons.append("task_head_moved")
+                    if snapshot["workspace_fingerprint"] != preflight.get(
+                        "workspace_fingerprint"
+                    ):
+                        stale_reasons.append("workspace_fingerprint_changed")
+                    if entry.get("last_commit") != snapshot["head"]:
+                        stale_reasons.append("last_managed_commit_changed")
+                    try:
+                        target_commit = await self._resolve_delivery_commit(
+                            snapshot["repository"],
+                            str(preflight.get("target_ref", "")),
+                            field="target_ref",
+                        )
+                    except ValueError:
+                        stale_reasons.append("target_ref_unresolvable")
+                    else:
+                        if target_commit != preflight.get("target_commit"):
+                            stale_reasons.append("target_ref_moved")
+                if self._delivery_bypass_flags(entry) != preflight.get(
+                    "commit_gate_bypasses"
+                ):
+                    stale_reasons.append("commit_gate_evidence_changed")
+                stale_reasons = sorted(set(stale_reasons))
+                is_current = not stale_reasons
+                payload = {
+                    "task_id": task_id,
+                    "state": "current" if is_current else "stale",
+                    "is_current": is_current,
+                    "ready_for_delivery": bool(
+                        is_current and preflight.get("ready_for_delivery", False)
+                    ),
+                    "stale_reasons": stale_reasons,
+                    "branch": preflight.get("branch"),
+                    "head": preflight.get("head"),
+                    "target_ref": preflight.get("target_ref"),
+                    "target_commit": preflight.get("target_commit"),
+                    "relationship": preflight.get("relationship"),
+                    "integration_outcome": preflight.get("integration_outcome"),
+                    "has_conflicts": preflight.get("has_conflicts", False),
+                    "conflict_paths": preflight.get("conflict_paths", [])[
+                        : self._MAX_DELIVERY_RESPONSE_PATHS
+                    ],
+                    "conflict_paths_response_truncated": bool(
+                        len(preflight.get("conflict_paths", []))
+                        > self._MAX_DELIVERY_RESPONSE_PATHS
+                        or preflight.get("conflict_paths_truncated", False)
+                    ),
+                    "conflict_paths_truncated": preflight.get(
+                        "conflict_paths_truncated", False
+                    ),
+                    "delivery_contract_sha256": preflight.get(
+                        "delivery_contract_sha256"
+                    ),
+                    "prepared_at": preflight.get("prepared_at"),
+                    "target_snapshot_source": "local_git_refs",
+                    "network_accessed": False,
+                }
+            return SkillResult.ok(json.dumps(payload, ensure_ascii=False))
+        except (PermissionError, FileNotFoundError, TimeoutError, ValueError, KeyError) as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Error reading coding delivery status: {exc}")
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.SANDBOX)

@@ -490,6 +490,34 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   inspection -> checked patch/replacement -> exact per-file diff -> deterministic
   verification -> verified-state commit.
 
+## Exact-state branch delivery preflight
+
+- `prepare_coding_workspace_delivery` accepts only a clean managed task branch
+  whose HEAD is the last commit produced by `commit_coding_workspace`. Commit
+  verification, plan, or diff-review bypasses fail closed unless the caller
+  explicitly acknowledges them.
+- The target ref is resolved from the repository's current local refs. The skill
+  intentionally performs no fetch, push, merge, rebase, checkout, or PR action;
+  `target_snapshot_source=local_git_refs` and `network_accessed=false` make that
+  boundary visible.
+- Ahead/behind counts distinguish identical histories, either fast-forward
+  direction, and divergence. Divergence is evaluated with modern
+  `git merge-tree --write-tree`, which uses Git's production merge machinery
+  without touching the worktree or index. Both path conflicts and conflict types
+  without a path are classified by the exit status; bounded conflict paths are
+  diagnostic context rather than guessed merge semantics.
+- The durable delivery contract binds repository identity, task branch and HEAD,
+  clean workspace fingerprint, resolved target commit, graph relationship,
+  predicted merge tree, conflict projection hash, and commit-gate bypass state.
+  `get_coding_workspace_delivery_status` invalidates it if the task branch,
+  workspace, managed commit evidence, or target ref changes.
+- General workspace status exposes only a compact delivery projection. Full
+  persisted evidence contains no diff or source text, and skill responses cap
+  path projections to prevent a large change from consuming the ReAct context.
+- Preparing a contract does not grant authority to publish or rewrite history.
+  Network publication, PR creation, and integration/conflict resolution are
+  separate explicit operations and must consume a still-current exact contract.
+
 ## Capability benchmark contract
 
 - `benchmarks/coding_agent/manifest.json` maps critical coding properties to

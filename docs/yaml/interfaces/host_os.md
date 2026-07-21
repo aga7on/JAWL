@@ -187,3 +187,15 @@ New durable coding plans require every changed file to have current review
 coverage before the final commit. Old persisted plans and ad-hoc workspaces keep
 their existing behavior. `require_diff_review=false` is an explicit escape hatch
 for intermediate or unusually large commits and is retained as bypass metadata.
+
+## Coding branch delivery preflight
+
+`prepare_coding_workspace_delivery` checks a clean task branch only after a
+managed commit. It resolves the requested target from local Git refs, reports
+ahead/behind state, and uses `git merge-tree` to predict a clean merge or bounded
+conflict paths without changing the index, worktree, branches, or network state.
+The returned SHA-256 contract is bound to the exact task HEAD and resolved target
+commit. `get_coding_workspace_delivery_status` reports it stale when either side
+moves or the workspace becomes dirty. Commit-gate bypasses are rejected by
+default and remain visible when explicitly allowed. This preflight never fetches,
+pushes, merges, rebases, or creates a pull request.

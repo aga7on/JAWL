@@ -431,6 +431,16 @@
         "tests/unit/benchmarks/test_coding_report_comparison.py::test_comparison_ranks_only_identical_quality_contracts",
         "tests/unit/benchmarks/test_coding_report_comparison.py::test_comparison_rejects_mismatched_hidden_grader_contract"
       ]
+    },
+    {
+      "id": "exact_state_branch_delivery_preflight",
+      "description": "Only a clean managed commit can produce a durable local-target contract; real Git merge prediction detects fast-forwards and bounded conflicts without mutating or accessing the network, and either ref moving makes the contract stale.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_delivery.py::test_delivery_preflight_is_exact_local_and_becomes_stale",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_delivery.py::test_delivery_preflight_predicts_clean_divergent_merge",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_delivery.py::test_delivery_preflight_reports_conflicts_without_mutation",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_delivery.py::test_delivery_requires_managed_unbypassed_clean_commit"
+      ]
     }
   ]
 }

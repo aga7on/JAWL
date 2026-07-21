@@ -13,7 +13,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Capability | State | Evidence | Remaining gap |
 | --- | --- | --- | --- |
 | Atomic editing | Strong | SHA-checked exact-match patches, parser-guarded whole-definition replacement, and allowlisted LSP multi-file rename with exact preview/workspace guards, UTF-16 normalization, checkpoints, partial-write rollback, and concurrent-change preservation | General semantic refactors beyond rename still depend on server-specific code actions |
-| Task isolation | Strong | Persistent branch/worktree per task, dirty-base guard, recovery stash | No automatic branch publication or merge conflict assistant |
+| Task isolation and delivery preflight | Strong | Persistent branch/worktree per task, dirty-base guard, recovery stash, managed-commit-only delivery gate, exact local target snapshot, ahead/behind classification, and mutation-free real-Git merge/conflict prediction with durable stale detection | Publication, PR creation, and applying/resolving the predicted integration remain separate explicit workflows; no network fetch is hidden inside preflight |
 | Context navigation | Strong | Bounded map/search/range reads, syntax-aware occurrences, directed local dependency slices, and allowlisted lifecycle-managed incremental LSP sessions with document sync, process/document LRUs, explicit reset, and zero-index fallback | Workspace-wide out-of-band edits rely on server file watching or explicit session reset |
 | Dynamic context | Good | Hard per-turn budget, task/event-routed skill namespaces, compact omitted-namespace index, exact signatures through `SkillCatalog`, newest-tick and current-trigger retention | Needs organic QWB latency/token validation and learned relevance ranking |
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction, stable hunk hashes, parser-backed symbol overlap, explicit incomplete-analysis state, and bounded durable per-file acceptance bound to the exact workspace fingerprint and planned commit | No cryptographic human identity/signature or remote review UI |
@@ -42,6 +42,9 @@ tasks safely, recoverably, and with measurable evidence.
 3. Revisit true mid-generation steering only when QWB/provider transport exposes
    an authenticated request-ID-bound input endpoint with an acknowledgement;
    do not emulate it by cancelling or racing a second generation.
+4. Add a policy-controlled MCP client after the delivery workflow: bounded
+   discovery, stdio and Streamable HTTP transports, exact schema projection,
+   cancellation, approval boundaries, and durable payload-free health evidence.
 
 ## External baseline preflight
 
