@@ -103,3 +103,14 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   views remain separately addressable.
 - The normal coding loop is map -> search -> numbered range -> checked patch ->
   exact per-file diff -> deterministic verification -> verified-state commit.
+
+## Capability benchmark contract
+
+- `benchmarks/coding_agent/manifest.json` maps critical coding properties to
+  deterministic integration tests rather than treating the full suite as an
+  opaque pass/fail number.
+- The benchmark runner isolates each capability, records timings, test counts,
+  the Git revision, and failure tails in a machine-readable JSON report.
+- Safety and correctness capabilities require a 100% pass rate. Model-level
+  task quality, token efficiency, and patch grading are a separate evaluation
+  layer and must not dilute this infrastructure gate.

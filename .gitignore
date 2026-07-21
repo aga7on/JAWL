@@ -12,6 +12,7 @@ Thumbs.db
 .mypy_cache/
 .coverage
 htmlcov/
+.jawl-benchmarks/
 
 # Конфиги/настройки/ключи
 .env

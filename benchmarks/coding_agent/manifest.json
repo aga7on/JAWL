@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "name": "jawl-coding-capabilities",
+  "description": "Deterministic regression gate for the repository coding agent substrate.",
+  "minimum_capability_pass_rate": 1.0,
+  "capabilities": [
+    {
+      "id": "bounded_context_navigation",
+      "description": "Repository map, search, and numbered reads stay precise and bounded.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_files.py::test_read_file_range_returns_numbered_bounded_lines_and_checksum",
+        "tests/integration/src/l2/host/os/skills/test_integration_files_search_meta.py::test_repository_search_enforces_serialized_output_budget",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_context.py::test_repository_map_enforces_serialized_character_budget"
+      ]
+    },
+    {
+      "id": "checked_atomic_editing",
+      "description": "Edits reject stale or ambiguous state and checkpoints cannot clobber newer work.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_files.py::test_safe_file_patch_rejects_ambiguous_or_stale_edits",
+        "tests/integration/src/l2/host/os/skills/test_integration_files.py::test_checkpoint_restore_refuses_to_overwrite_newer_changes"
+      ]
+    },
+    {
+      "id": "deterministic_action_orchestration",
+      "description": "Dependencies and shared resource locks determine action ordering.",
+      "tests": [
+        "tests/unit/l3/skills/test_action_execution.py::test_dependencies_control_execution_order",
+        "tests/unit/l3/skills/test_action_execution.py::test_resource_locks_are_shared_across_concurrent_plans"
+      ]
+    },
+    {
+      "id": "durable_interruption_recovery",
+      "description": "Lifecycle evidence is redacted and unfinished work is classified after restart.",
+      "tests": [
+        "tests/unit/l3/skills/test_action_execution.py::test_durable_journal_records_plan_lifecycle_and_redacts_secrets",
+        "tests/unit/l3/skills/test_action_execution.py::test_new_session_identifies_unfinished_plan_as_interrupted"
+      ]
+    },
+    {
+      "id": "task_workspace_isolation",
+      "description": "Concurrent coding tasks receive independent persistent Git worktrees.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_parallel_tasks_receive_independent_worktrees"
+      ]
+    },
+    {
+      "id": "bounded_diff_review",
+      "description": "Diff review paginates files, bounds untracked input, and redacts credentials.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_includes_untracked_redacts_secrets_and_bounds_output",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_untracked_diff_preview_reads_with_hard_bound",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_paginates_changed_files"
+      ]
+    },
+    {
+      "id": "verified_state_commit_gate",
+      "description": "Only the exact successfully verified workspace fingerprint can be committed.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_commit_requires_verification_of_exact_workspace_state",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_verification_detects_workspace_change_during_checks"
+      ]
+    }
+  ]
+}
