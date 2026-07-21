@@ -59,6 +59,13 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - `constraints.txt` pins the tree-sitter constructor API expected by
   `tree-sitter-languages` for newly bootstrapped environments. Existing
   incompatible environments remain functional through the fallback path.
+- `get_code_dependency_slice` builds a bounded local directed graph around one
+  entry file. Python imports are resolved through AST module mapping; JS/TS
+  relative modules and C/C++ local includes have conservative filesystem
+  resolution. External packages are omitted instead of being guessed.
+- Dependency and dependent traversal are independently selectable and bounded by
+  depth, returned files, indexed files, source size, and serialized output. Each
+  edge retains its source line and original import text for targeted inspection.
 
 ## Task workspace contract
 

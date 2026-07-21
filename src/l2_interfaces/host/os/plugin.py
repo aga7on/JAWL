@@ -26,6 +26,7 @@ from src.l2_interfaces.host.os.skills.files.documents import HostOSDocuments
 from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorkspaces
 from src.l2_interfaces.host.os.skills.coding_verification import HostOSCodingVerification
 from src.l2_interfaces.host.os.skills.coding_context import HostOSCodingContext
+from src.l2_interfaces.host.os.skills.coding_dependencies import HostOSCodingDependencies
 from src.l2_interfaces.host.os.skills.coding_plans import HostOSCodingPlans
 
 from src.l3_agent.skills.registry import register_instance
@@ -82,6 +83,7 @@ class HostOsPlugin(BaseInterface):
         register_instance(HostOSCodingPlans(client, coding_workspaces))
         register_instance(HostOSCodingVerification(client, coding_workspaces))
         register_instance(HostOSCodingContext(client))
+        register_instance(HostOSCodingDependencies(client))
 
         if config.desktop_interactions:
             register_instance(HostOSDesktop(client))

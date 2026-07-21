@@ -13,7 +13,9 @@
         "tests/integration/src/l2/host/os/skills/test_integration_coding_context.py::test_repository_map_enforces_serialized_character_budget",
         "tests/integration/src/l2/host/os/skills/test_integration_coding_context.py::test_locate_code_symbol_uses_python_ast_and_prioritizes_definitions",
         "tests/integration/src/l2/host/os/skills/test_integration_coding_context.py::test_locate_code_symbol_labels_lexical_fallback_and_bounds_output",
-        "tests/integration/src/l2/host/os/skills/test_integration_coding_context.py::test_locate_code_symbol_uses_available_tree_sitter_parser"
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_context.py::test_locate_code_symbol_uses_available_tree_sitter_parser",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_dependencies.py::test_dependency_slice_resolves_python_imports_by_direction_and_depth",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_dependencies.py::test_dependency_slice_resolves_relative_typescript_and_local_include"
       ]
     },
     {

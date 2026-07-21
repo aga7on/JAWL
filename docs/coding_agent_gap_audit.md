@@ -14,7 +14,7 @@ tasks safely, recoverably, and with measurable evidence.
 | --- | --- | --- | --- |
 | Atomic editing | Strong | SHA-checked exact-match patches, atomic writes, reversible checkpoints | No syntax-aware patch primitive |
 | Task isolation | Strong | Persistent branch/worktree per task, dirty-base guard, recovery stash | No automatic branch publication or merge conflict assistant |
-| Context navigation | Good-strong | Bounded map/search/range reads plus definition-first Python AST and optional tree-sitter occurrences with explicit lexical fallback | No project-wide LSP name/type resolution or dependency slices |
+| Context navigation | Strong | Bounded map/search/range reads, syntax-aware occurrences, and directed local dependency slices for Python plus conservative JS/TS/C/C++ resolution | No project-wide LSP name/type resolution |
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
@@ -26,8 +26,8 @@ tasks safely, recoverably, and with measurable evidence.
 
 ## Priority order
 
-1. Add an optional LSP adapter for project-resolved definitions, references, and
-   dependency slices while retaining the current zero-index fallback.
+1. Add an optional LSP adapter for project-resolved definitions and references
+   while retaining the current zero-index occurrence and dependency fallbacks.
 2. Add a live-model adapter that provisions each fixed task through JAWL,
    exports the committed diff and trace metrics, and supports fair baseline runs.
 
