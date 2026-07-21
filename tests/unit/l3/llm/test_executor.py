@@ -58,6 +58,7 @@ async def test_executor_forwards_optional_thinking_extension(mock_executor_deps)
     assert session.chat.completions.create.await_args.kwargs["extra_body"] == {
         "enable_thinking": False
     }
+    assert executor.last_call_metrics["thinking_enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -101,6 +102,7 @@ async def test_executor_records_downstream_cancellation(mock_executor_deps):
         await task
 
     assert executor.last_call_metrics["status"] == "cancelled"
+    assert executor.last_call_metrics["thinking_enabled"] is None
 
 
 @pytest.mark.asyncio

@@ -87,6 +87,7 @@ class LLMExecutor:
             "model": model_name,
             "status": "running",
             "attempts": 0,
+            "thinking_enabled": enable_thinking,
         }
         timeout_count = 0
 
@@ -126,6 +127,7 @@ class LLMExecutor:
                     duration_ms=(time.perf_counter() - started) * 1000,
                     output_chars=len(raw_answer),
                 )
+                self.last_call_metrics["thinking_enabled"] = enable_thinking
 
                 return raw_answer
 
@@ -378,11 +380,13 @@ class LLMExecutor:
         status: str,
         error: str,
     ) -> None:
+        thinking_enabled = self.last_call_metrics.get("thinking_enabled")
         self.last_call_metrics = {
             "request_id": request_id,
             "model": model_name,
             "status": status,
             "attempts": attempts,
+            "thinking_enabled": thinking_enabled,
             "duration_ms": round((time.perf_counter() - started) * 1000, 1),
             "error": redact_sensitive_text(error)[:1000],
             "trace": current_trace(),
