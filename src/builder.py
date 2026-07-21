@@ -33,10 +33,12 @@ from src.l3_agent.heartbeat import Heartbeat
 from src.l3_agent.skills.registry import (
     build_tools_schema,
     configure_action_journal,
+    configure_lifecycle_hooks,
     register_instance,
 )
 from src.l3_agent.skills.journal_skills import ActionJournalSkills
 from src.l3_agent.skills.catalog import SkillCatalog
+from src.l3_agent.hooks.lifecycle import LifecycleHooks
 from src.l3_agent.swarm.skills.report import SubagentReport
 from src.l3_agent.swarm.spawn import SwarmManager
 from src.l3_agent.tot.generator import ToTGenerator
@@ -205,6 +207,9 @@ class SystemBuilder:
 
         action_journal = configure_action_journal(
             self.container.local_data_dir / "agent" / "action_journal.jsonl"
+        )
+        self.container.lifecycle_hooks = configure_lifecycle_hooks(
+            LifecycleHooks(event_bus=self.container.event_bus)
         )
         register_instance(ActionJournalSkills(action_journal))
 

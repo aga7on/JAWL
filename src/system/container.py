@@ -59,3 +59,4 @@ class SystemContainer:
         self.heartbeat: Optional[Heartbeat] = None
         self.context_registry: Optional[ContextRegistry] = None
         self.subconscious_orchestrator: Optional[Any] = None
+        self.lifecycle_hooks: Optional[Any] = None

@@ -51,6 +51,19 @@
       ]
     },
     {
+      "id": "lifecycle_policy_hooks",
+      "description": "Ordered bounded hooks can block tools before execution and observe success, failure, and cancellation without corrupting outcomes.",
+      "tests": [
+        "tests/unit/l3/hooks/test_lifecycle.py::test_pre_hooks_run_by_priority_then_registration_and_can_deny",
+        "tests/unit/l3/hooks/test_lifecycle.py::test_hook_timeout_is_fail_open_or_fail_closed_by_policy",
+        "tests/unit/l3/hooks/test_lifecycle.py::test_observational_hook_failure_cannot_rewrite_outcome",
+        "tests/unit/l3/hooks/test_lifecycle.py::test_lifecycle_observation_uses_event_bus_without_heartbeat_routing",
+        "tests/unit/l3/skills/test_action_execution.py::test_pre_tool_hook_blocks_runner_and_is_durably_recorded",
+        "tests/unit/l3/skills/test_action_execution.py::test_failed_result_routes_tool_error_hook_without_changing_result",
+        "tests/unit/l3/skills/test_action_execution.py::test_cancellation_routes_lifecycle_hook"
+      ]
+    },
+    {
       "id": "durable_interruption_recovery",
       "description": "Lifecycle evidence is redacted and unfinished work is classified after restart.",
       "tests": [

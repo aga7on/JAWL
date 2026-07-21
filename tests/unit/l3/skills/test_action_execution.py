@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.l3_agent.skills.execution import ActionExecutionEngine
+from src.l3_agent.hooks.lifecycle import HookDecision, HookPhase, LifecycleHooks
 from src.l3_agent.skills.journal import ActionJournal
 from src.l3_agent.skills.journal_skills import ActionJournalSkills
 from src.l3_agent.skills.schema import ACTION_SCHEMA, ActionCall
@@ -250,6 +251,83 @@ async def test_cancellation_reaches_running_action():
         await task
 
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_routes_lifecycle_hook():
+    hooks = LifecycleHooks()
+    started = asyncio.Event()
+    observed = asyncio.Event()
+
+    async def observe(hook_context):
+        assert hook_context.phase == HookPhase.TOOL_CANCELLED
+        observed.set()
+
+    async def runner(action: ActionCall):
+        started.set()
+        await asyncio.Event().wait()
+
+    hooks.subscribe(HookPhase.TOOL_CANCELLED, observe)
+    engine = ActionExecutionEngine(hooks=hooks)
+    task = asyncio.create_task(
+        engine.execute([ActionCall(tool_name="wait")], runner)
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert observed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_hook_blocks_runner_and_is_durably_recorded(tmp_path):
+    journal = ActionJournal(tmp_path / "action_journal.jsonl")
+    hooks = LifecycleHooks()
+    executed = []
+
+    async def protect(_context):
+        return HookDecision.deny("workspace policy")
+
+    async def runner(action: ActionCall):
+        executed.append(action.tool_name)
+        return result()
+
+    hooks.subscribe(HookPhase.PRE_TOOL_USE, protect)
+    engine = ActionExecutionEngine(journal=journal, hooks=hooks)
+    outcomes = await engine.execute([ActionCall(tool_name="dangerous")], runner)
+
+    assert executed == []
+    assert outcomes[0].is_success is False
+    assert "workspace policy" in outcomes[0].message
+    plans = await journal.recent_plans(include_events=True)
+    assert [event["event"] for event in plans[0]["events"]] == [
+        "plan_started",
+        "action_blocked",
+        "plan_finished",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_result_routes_tool_error_hook_without_changing_result():
+    hooks = LifecycleHooks()
+    phases = []
+
+    async def observe(hook_context):
+        phases.append(hook_context.phase)
+
+    hooks.subscribe(HookPhase.POST_TOOL_USE, observe)
+    hooks.subscribe(HookPhase.TOOL_ERROR, observe)
+    engine = ActionExecutionEngine(hooks=hooks)
+
+    outcomes = await engine.execute(
+        [ActionCall(tool_name="fails")],
+        lambda action: asyncio.sleep(0, result=result(False, "expected failure")),
+    )
+
+    assert outcomes[0].message == "expected failure"
+    assert phases == [HookPhase.TOOL_ERROR]
 
 
 @pytest.mark.asyncio

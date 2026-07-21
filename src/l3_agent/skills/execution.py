@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 from src.l3_agent.skills.schema import ActionCall
 from src.l3_agent.skills.journal import ActionJournal, NullActionJournal
+from src.l3_agent.hooks.lifecycle import HookContext, HookPhase, LifecycleHooks
 from src.utils.logger import agent_logger
 from src.utils.tracing import current_trace
 
@@ -83,6 +84,7 @@ class ActionExecutionEngine:
         self,
         max_parallel_actions: int = 4,
         journal: Optional[ActionJournal] = None,
+        hooks: Optional[LifecycleHooks] = None,
     ) -> None:
         if max_parallel_actions < 1:
             raise ValueError("max_parallel_actions must be at least 1")
@@ -90,6 +92,7 @@ class ActionExecutionEngine:
         self.journal: ActionJournal | NullActionJournal = (
             journal or NullActionJournal()
         )
+        self.hooks = hooks or LifecycleHooks()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._resource_locks: Dict[str, asyncio.Lock] = {}
@@ -257,6 +260,11 @@ class ActionExecutionEngine:
 
         self.journal = journal
 
+    def set_hooks(self, hooks: LifecycleHooks) -> None:
+        """Attach the runtime lifecycle policy/observation layer."""
+
+        self.hooks = hooks
+
     async def _safe_record(self, event: str, **payload: Any) -> None:
         try:
             payload.setdefault("trace", current_trace())
@@ -321,6 +329,34 @@ class ActionExecutionEngine:
             for lock in locks:
                 await lock.acquire()
             try:
+                hook_context = HookContext(
+                    phase=HookPhase.PRE_TOOL_USE,
+                    plan_id=plan_id,
+                    action_id=plan.action_id,
+                    tool_name=plan.call.tool_name,
+                    parameters=dict(plan.call.parameters),
+                )
+                pre_hooks = await self.hooks.run(hook_context)
+                if pre_hooks.failures:
+                    await self._safe_record(
+                        "action_hook_failed",
+                        plan_id=plan_id,
+                        action_id=plan.action_id,
+                        tool_name=plan.call.tool_name,
+                        phase=HookPhase.PRE_TOOL_USE.value,
+                        failures=list(pre_hooks.failures),
+                    )
+                if not pre_hooks.decision.allowed:
+                    outcome = self._failure(
+                        plan,
+                        "Blocked by lifecycle hook: " + pre_hooks.decision.reason,
+                    )
+                    await self._safe_record(
+                        "action_blocked",
+                        plan_id=plan_id,
+                        **self._outcome_payload(outcome),
+                    )
+                    return outcome
                 await self._safe_record(
                     "action_started",
                     plan_id=plan_id,
@@ -344,6 +380,30 @@ class ActionExecutionEngine:
                             (time.perf_counter() - started) * 1000, 1
                         ),
                     )
+                    result_phase = (
+                        HookPhase.POST_TOOL_USE
+                        if outcome.is_success
+                        else HookPhase.TOOL_ERROR
+                    )
+                    post_hooks = await self.hooks.run(
+                        HookContext(
+                            phase=result_phase,
+                            plan_id=plan_id,
+                            action_id=plan.action_id,
+                            tool_name=plan.call.tool_name,
+                            parameters=dict(plan.call.parameters),
+                            outcome=self._outcome_payload(outcome),
+                        )
+                    )
+                    if post_hooks.failures:
+                        await self._safe_record(
+                            "action_hook_failed",
+                            plan_id=plan_id,
+                            action_id=plan.action_id,
+                            tool_name=plan.call.tool_name,
+                            phase=result_phase.value,
+                            failures=list(post_hooks.failures),
+                        )
                     await self._safe_record(
                         "action_finished",
                         plan_id=plan_id,
@@ -351,6 +411,17 @@ class ActionExecutionEngine:
                     )
                     return outcome
                 except asyncio.CancelledError:
+                    await asyncio.shield(
+                        self.hooks.run(
+                            HookContext(
+                                phase=HookPhase.TOOL_CANCELLED,
+                                plan_id=plan_id,
+                                action_id=plan.action_id,
+                                tool_name=plan.call.tool_name,
+                                parameters=dict(plan.call.parameters),
+                            )
+                        )
+                    )
                     await asyncio.shield(
                         self._safe_record(
                             "action_cancelled",
@@ -372,6 +443,25 @@ class ActionExecutionEngine:
                             (time.perf_counter() - started) * 1000, 1
                         ),
                     )
+                    error_hooks = await self.hooks.run(
+                        HookContext(
+                            phase=HookPhase.TOOL_ERROR,
+                            plan_id=plan_id,
+                            action_id=plan.action_id,
+                            tool_name=plan.call.tool_name,
+                            parameters=dict(plan.call.parameters),
+                            outcome=self._outcome_payload(outcome),
+                        )
+                    )
+                    if error_hooks.failures:
+                        await self._safe_record(
+                            "action_hook_failed",
+                            plan_id=plan_id,
+                            action_id=plan.action_id,
+                            tool_name=plan.call.tool_name,
+                            phase=HookPhase.TOOL_ERROR.value,
+                            failures=list(error_hooks.failures),
+                        )
                     await self._safe_record(
                         "action_finished",
                         plan_id=plan_id,

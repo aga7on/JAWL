@@ -169,3 +169,5 @@ def test_build_l3_agent(
     assert react_kwargs["context_builder"].budget == (
         mock_container.settings.system.context_depth.budget
     )
+    assert mock_container.lifecycle_hooks is not None
+    assert mock_container.lifecycle_hooks.event_bus is mock_container.event_bus

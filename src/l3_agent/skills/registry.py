@@ -22,6 +22,7 @@ from src.utils.settings import SubconsciousConfig
 
 from src.l3_agent.skills.schema import ActionCall
 from src.l3_agent.skills.execution import ActionExecutionEngine
+from src.l3_agent.hooks.lifecycle import LifecycleHooks
 from src.l3_agent.skills.journal import ActionJournal, NullActionJournal
 from src.l3_agent.swarm.roles import SubagentRole
 from src.l3_agent.subconscious.schema import Pattern
@@ -58,6 +59,13 @@ def configure_action_journal(path: Path) -> ActionJournal:
     return journal
 
 
+def configure_lifecycle_hooks(hooks: LifecycleHooks) -> LifecycleHooks:
+    """Attach one lifecycle policy layer to main, Swarm, and Subconscious actions."""
+
+    _ACTION_ENGINE.set_hooks(hooks)
+    return hooks
+
+
 async def execute_action_plan(actions: List[ActionCall], runner: Callable) -> list:
     """Execute actions through the shared deterministic engine.
 
@@ -73,6 +81,7 @@ def clear_registry() -> None:
     _REGISTRY.clear()
     _NATIVE_TOOL_INDEX.clear()
     _ACTION_ENGINE.journal = NullActionJournal()
+    _ACTION_ENGINE.hooks = LifecycleHooks()
 
 
 def unregister_skill(skill_name: str) -> None:

@@ -19,6 +19,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
+| Lifecycle policy | Good | Ordered bounded pre/post/error/cancel hooks, preflight deny, fail-open/fail-closed policy, durable records, passive EventBus observations | No declarative repository/user command-hook adapter yet |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, noisy Qwen payload recovery, bounded transient retries, configurable Thinking policy, persisted failures, terminal step-limit record | QWB exposes only a Boolean Thinking switch, not a token/time budget; adaptive per-task policy still needs measured validation |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
@@ -30,9 +31,8 @@ tasks safely, recoverably, and with measurable evidence.
 1. Validate `first_step` Thinking plus adaptive context in the next organic or
    deliberately justified live run; avoid repetitive account-consuming
    calibration.
-2. Add lifecycle hooks around tool execution, compaction, stop, and delegated
-   work using the existing EventBus, with deterministic ordering and failure
-   isolation.
+2. Add declarative repository/user command adapters on the lifecycle contract,
+   then extend the same contract to compaction, stop, and delegated work.
 3. Add an automatic checkpoint/rewind transaction spanning conversation state,
    coding-plan revision, and workspace changes.
 4. Put command execution behind an OS-enforced sandbox/approval policy; Git
@@ -54,7 +54,7 @@ official documentation shows recurring patterns in leading coding agents:
 | Pattern | Current reference implementations | JAWL fork position |
 | --- | --- | --- |
 | Parallel delegated work | [Codex subagents](https://developers.openai.com/codex/subagents/), [Claude Code subagents](https://code.claude.com/docs/en/sub-agents) | Swarm roles and isolated worktrees exist; delegation quality and reconciliation still need benchmark coverage |
-| Lifecycle control | [Claude Code hooks](https://code.claude.com/docs/en/hooks), [GitHub Copilot hooks](https://docs.github.com/en/copilot/concepts/agents/hooks) | EventBus is a strong base, but user-configurable pre/post/stop hooks are not yet a stable contract |
+| Lifecycle control | [Claude Code hooks](https://code.claude.com/docs/en/hooks), [GitHub Copilot hooks](https://docs.github.com/en/copilot/concepts/agents/hooks) | Stable in-process pre/post/error/cancel policy now wraps all action paths; declarative command adapters and non-tool phases remain |
 | Recovery and rewind | [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing), [Gemini CLI checkpointing](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/commands.md) | File checkpoints, durable plans, and action journals exist separately; one atomic conversation/workspace rewind does not |
 | Enforced execution boundary | [Gemini CLI sandboxing](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md) | Allowlisted commands, timeouts, and task paths reduce accidents; they do not provide OS-level containment |
 | Repository context economy | [Aider repository map](https://aider.chat/docs/repomap.html) | Bounded map/search/LSP/dependency tools plus the new dynamic budget are competitive substrate; relevance is deterministic rather than learned |
