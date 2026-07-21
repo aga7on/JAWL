@@ -8,6 +8,9 @@ from src.l2_interfaces.base import BaseInterface
 from src.l2_interfaces.telegram.telethon.state import TelethonState
 from src.l2_interfaces.telegram.telethon.client import TelethonClient
 from src.l2_interfaces.telegram.telethon.events import TelethonEvents
+from src.l2_interfaces.telegram.coding_approval_notifications import (
+    TelegramCodingApprovalNotifications,
+)
 
 from src.l2_interfaces.telegram.telethon.skills.account import TelethonAccount
 from src.l2_interfaces.telegram.telethon.skills.chats import TelethonChats
@@ -75,6 +78,16 @@ class TelethonPlugin(BaseInterface):
         events = TelethonEvents(
             tg_client=client, state=state, event_bus=container.event_bus, config=config
         )
+        approval_notifications = (
+            TelegramCodingApprovalNotifications(
+                container.event_bus,
+                client,
+                config.coding_approval_chat_id,
+                "telethon",
+            )
+            if config.coding_approval_chat_id is not None
+            else None
+        )
 
         register_instance(TelethonAccount(client))
         register_instance(TelethonChats(client))
@@ -90,4 +103,7 @@ class TelethonPlugin(BaseInterface):
             section=ContextSection.INTERFACES,
         )
         main_logger.info("[Telethon] Interface loaded.")
-        return [client, events]
+        lifecycle = [client, events]
+        if approval_notifications is not None:
+            lifecycle.append(approval_notifications)
+        return lifecycle

@@ -84,11 +84,15 @@ telegram:
     recent_chats_limit: 20
     private_chat_history_limit: 2
     incoming_history_limit: 8
+    # Optional passive push target for redacted coding approval requests.
+    coding_approval_chat_id: null
 
   # Подробнее: docs/yaml/interfaces/telegram/aiogram.md
   aiogram:
     enabled: false
     recent_chats_limit: 20
+    # Optional passive push target for redacted coding approval requests.
+    coding_approval_chat_id: null
 
 
 # Подробнее: docs/yaml/interfaces/github.md

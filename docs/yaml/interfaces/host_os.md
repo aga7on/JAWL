@@ -32,6 +32,11 @@ worktree. It requires the exact fingerprint returned by
 `get_coding_workspace_status` or the diff skill, so a command cannot start from
 stale inspected state.
 
+When `desktop_interactions: true`, every newly pending one-shot coding approval
+also produces a native desktop notification. The notification is a passive
+projection of the already-redacted public approval record; it cannot approve a
+command and is not routed back into Heartbeat as a new agent trigger.
+
 * **`coding_execution_backend: disabled`** is the safe default. No ad-hoc task
   commands run; built-in verification profiles remain available.
 * **`coding_execution_backend: host`** runs directly on the workstation, but

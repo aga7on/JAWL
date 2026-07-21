@@ -46,3 +46,22 @@ def test_host_os_plugin_setup(tmp_path):
     container.context_registry.register_provider.assert_called_once()
     call_args = container.context_registry.register_provider.call_args[1]
     assert call_args["name"] == "host_os"
+
+
+def test_host_os_plugin_adds_approval_notifier_only_for_desktop_opt_in(tmp_path):
+    settings = SettingsConfig()
+    interfaces = InterfacesConfig()
+    interfaces.host.os.enabled = True
+    interfaces.host.os.desktop_interactions = True
+    container = SystemContainer(settings, interfaces, EventBus())
+    container.root_dir = tmp_path
+    container.local_data_dir = tmp_path / "data"
+    container.context_registry = MagicMock(spec=ContextRegistry)
+
+    lifecycle = HostOsPlugin().setup(container, env_vars={})
+
+    assert [item.__class__.__name__ for item in lifecycle] == [
+        "HostOSEvents",
+        "HostOSCodingLanguageServer",
+        "HostOSCodingApprovalNotifications",
+    ]

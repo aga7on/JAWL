@@ -315,6 +315,12 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Optional `required` approval mode persists a pending request outside the task
   worktree. A local operator can approve or deny it through `jawl.py
   --approvals`; approved requests expire and are consumed exactly once.
+- A new pending request publishes a passive EventBus record containing only the
+  bounded public approval projection. Opt-in lifecycle consumers can display a
+  native desktop toast or send it to one configured Telethon/Aiogram chat; the
+  event is explicitly excluded from Heartbeat routing to avoid a self-triggered
+  ReAct cycle. Delivery failure never broadens authorization or changes request
+  state.
 - The approval subject covers task, argv, workspace fingerprint, cwd, timeout,
   backend, executable/runtime hash, selected profile identity, and the resolved
   container image/network/resource policy. A renamed or modified profile never

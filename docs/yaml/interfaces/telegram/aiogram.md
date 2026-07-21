@@ -12,3 +12,6 @@ Unlike Telethon, bots do not have access to full chat histories. The agent will 
 
 * **`enabled`**: `true` / `false`.
 * **`recent_chats_limit`**: Maximum number of active chats displayed on the dashboard (L0 State). If the bot is added to 500 groups, this limit prevents the list from burning your entire LLM token quota.
+* **`coding_approval_chat_id`**: Optional chat ID or channel username for passive
+  coding-approval pushes. The Bot API receives only the bounded public record
+  with a redacted argv preview. Decisions remain in the local operator CLI.

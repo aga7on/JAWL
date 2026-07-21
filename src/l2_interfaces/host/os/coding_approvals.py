@@ -10,10 +10,40 @@ import tempfile
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 from src.utils._tools import redact_sensitive_text, truncate_text
+
+
+def format_coding_approval_notification(
+    record: Dict[str, Any], max_chars: int = 3900
+) -> str:
+    """Format only the bounded public approval projection for operator push."""
+
+    if max_chars < 200 or max_chars > 10000:
+        raise ValueError("Approval notification max_chars must be 200..10000.")
+    expires_at = record.get("expires_at")
+    try:
+        expires = datetime.fromtimestamp(
+            float(expires_at), timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except (TypeError, ValueError, OSError, OverflowError):
+        expires = "unknown"
+    lines = [
+        "JAWL coding command approval requested",
+        f"ID: {str(record.get('id', ''))[:16]}",
+        f"Task: {truncate_text(str(record.get('task_id', '')), 200)}",
+        f"Backend: {truncate_text(str(record.get('backend', '')), 50)}",
+        f"CWD: {truncate_text(str(record.get('relative_cwd', '.')), 300)}",
+        f"Timeout: {record.get('timeout_seconds', '?')}s",
+        f"Command: {truncate_text(str(record.get('argv_preview', '')), 2000)}",
+        f"Expires: {expires}",
+        "Approve: python jawl.py --approvals approve <ID>",
+        "Deny: python jawl.py --approvals deny <ID>",
+    ]
+    return truncate_text(redact_sensitive_text("\n".join(lines)), max_chars)
 
 
 class CodingApprovalStore:

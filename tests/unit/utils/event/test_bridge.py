@@ -36,6 +36,11 @@ def test_bridge_setup_routing_subscriptions(mock_container: SystemContainer) -> 
     bridge.setup_routing()
 
     assert mock_container.event_bus.subscribe.call_count > 10
+    subscribed_events = {
+        call.args[0].name
+        for call in mock_container.event_bus.subscribe.call_args_list
+    }
+    assert Events.CODING_APPROVAL_REQUESTED.name not in subscribed_events
 
 
 @pytest.mark.asyncio

@@ -151,11 +151,35 @@ class TelethonConfig(BaseModel):
     recent_chats_limit: int = 20
     private_chat_history_limit: int = 3
     incoming_history_limit: int = 8
+    coding_approval_chat_id: int | str | None = None
+
+    @field_validator("coding_approval_chat_id")
+    @classmethod
+    def validate_approval_chat_id(cls, value: int | str | None):
+        if isinstance(value, str):
+            value = value.strip()
+            if not value or len(value) > 100:
+                raise ValueError(
+                    "coding_approval_chat_id must be a non-empty bounded chat ID"
+                )
+        return value
 
 
 class AiogramConfig(BaseModel):
     enabled: bool = False
     recent_chats_limit: int = 20
+    coding_approval_chat_id: int | str | None = None
+
+    @field_validator("coding_approval_chat_id")
+    @classmethod
+    def validate_approval_chat_id(cls, value: int | str | None):
+        if isinstance(value, str):
+            value = value.strip()
+            if not value or len(value) > 100:
+                raise ValueError(
+                    "coding_approval_chat_id must be a non-empty bounded chat ID"
+                )
+        return value
 
 
 class TelegramConfig(BaseModel):

@@ -16,3 +16,7 @@ Upon the first launch, the terminal will prompt you to enter a phone number and 
 * **`recent_chats_limit`**: Maximum number of active chats displayed on the agent's dashboard (L0 State). Protects the context window from being overloaded if you have hundreds of active dialogues.
 * **`private_chat_history_limit`**: Number of messages automatically retrieved into the context when reading a private chat.
 * **`incoming_history_limit`**: How many of the latest messages are kept in memory (MRU cache) for quick access.
+* **`coding_approval_chat_id`**: Optional user/chat ID, username, or `"me"` target
+  for passive coding-approval pushes. Only the bounded public record with a
+  redacted argv preview is sent. The notification cannot decide the request;
+  approve or deny it through the local operator CLI.

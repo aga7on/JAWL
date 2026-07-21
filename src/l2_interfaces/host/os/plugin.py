@@ -10,6 +10,9 @@ from src.l2_interfaces.host.os.state import HostOSState
 from src.l2_interfaces.host.os.client import HostOSClient
 from src.l2_interfaces.host.os.events import HostOSEvents
 from src.l2_interfaces.host.os.coding_approvals import CodingApprovalStore
+from src.l2_interfaces.host.os.coding_approval_notifications import (
+    HostOSCodingApprovalNotifications,
+)
 
 from src.l2_interfaces.host.os.skills.execution import HostOSExecution
 from src.l2_interfaces.host.os.skills.monitoring import HostOSMonitoring
@@ -103,7 +106,12 @@ class HostOsPlugin(BaseInterface):
         container.coding_plans = coding_plans
         register_instance(coding_plans)
         register_instance(
-            HostOSCodingExecution(client, coding_workspaces, coding_approvals)
+            HostOSCodingExecution(
+                client,
+                coding_workspaces,
+                coding_approvals,
+                event_bus=container.event_bus,
+            )
         )
         # Normal bootstrap has L0/L1 ready before interfaces. Keeping this guard
         # also permits intentionally partial interface-only test containers.
@@ -130,8 +138,12 @@ class HostOsPlugin(BaseInterface):
         register_instance(coding_lsp)
         register_instance(HostOSCodingDependencies(client))
 
+        approval_notifications = None
         if config.desktop_interactions:
             register_instance(HostOSDesktop(client))
+            approval_notifications = HostOSCodingApprovalNotifications(
+                container.event_bus
+            )
 
         container.context_registry.register_provider(
             name="host_os",
@@ -140,4 +152,7 @@ class HostOsPlugin(BaseInterface):
         )
 
         main_logger.info("[Host OS] Interface loaded.")
-        return [events, coding_lsp]
+        lifecycle = [events, coding_lsp]
+        if approval_notifications is not None:
+            lifecycle.append(approval_notifications)
+        return lifecycle

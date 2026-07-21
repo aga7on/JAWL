@@ -8,6 +8,9 @@ from src.l2_interfaces.base import BaseInterface
 from src.l2_interfaces.telegram.aiogram.state import AiogramState
 from src.l2_interfaces.telegram.aiogram.client import AiogramClient
 from src.l2_interfaces.telegram.aiogram.events import AiogramEvents
+from src.l2_interfaces.telegram.coding_approval_notifications import (
+    TelegramCodingApprovalNotifications,
+)
 from src.l2_interfaces.telegram.aiogram.skills.chats import AiogramChats
 from src.l2_interfaces.telegram.aiogram.skills.messages import AiogramMessages
 from src.l2_interfaces.telegram.aiogram.skills.moderation import AiogramModeration
@@ -49,6 +52,17 @@ class AiogramPlugin(BaseInterface):
         events = AiogramEvents(
             aiogram_client=client, state=state, event_bus=container.event_bus
         )
+        config = container.interfaces_config.telegram.aiogram
+        approval_notifications = (
+            TelegramCodingApprovalNotifications(
+                container.event_bus,
+                client,
+                config.coding_approval_chat_id,
+                "aiogram",
+            )
+            if config.coding_approval_chat_id is not None
+            else None
+        )
 
         register_instance(AiogramChats(client, state))
         register_instance(AiogramMessages(client))
@@ -58,4 +72,7 @@ class AiogramPlugin(BaseInterface):
             "aiogram", client.get_context_block, ContextSection.INTERFACES
         )
         main_logger.info("[Aiogram] Interface loaded (Plugin).")
-        return [client, events]
+        lifecycle = [client, events]
+        if approval_notifications is not None:
+            lifecycle.append(approval_notifications)
+        return lifecycle

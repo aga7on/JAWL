@@ -8,6 +8,8 @@ from src.utils.settings import (
     load_yaml,
     load_config,
     HostOSConfig,
+    TelethonConfig,
+    AiogramConfig,
     LifecycleCommandHookConfig,
     _log_missing_defaults,
     SystemConfig,
@@ -99,6 +101,14 @@ def test_host_os_config_validation():
                 }
             ]
         )
+    assert TelethonConfig(coding_approval_chat_id=" 123 ").coding_approval_chat_id == (
+        "123"
+    )
+    assert AiogramConfig(coding_approval_chat_id=-100123).coding_approval_chat_id == (
+        -100123
+    )
+    with pytest.raises(ValueError, match="non-empty bounded chat ID"):
+        TelethonConfig(coding_approval_chat_id="  ")
 
 
 def test_lifecycle_command_hook_config_is_exact_argv_not_shell_text():

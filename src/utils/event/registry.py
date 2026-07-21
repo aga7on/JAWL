@@ -146,6 +146,13 @@ class Events:
         requires_attention=True,
     )
 
+    CODING_APPROVAL_REQUESTED = EventConfig(
+        name="CODING_APPROVAL_REQUESTED",
+        description="Passive operator notification for a pending coding command.",
+        level=EventLevel.INFO,
+        requires_attention=False,
+    )
+
     # ============================================
     # WEB HOOKS
     # ============================================

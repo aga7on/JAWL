@@ -14,6 +14,7 @@ from src.utils.settings import (
     CodingCommandProfileConfig,
     CodingContainerProfileConfig,
 )
+from src.utils.event.bus import EventBus
 
 
 def run_git(cwd: Path, *args: str) -> None:
@@ -244,6 +245,41 @@ async def test_required_approval_is_exact_one_shot_and_policy_preserving(os_clie
     )
     assert replay.is_success is False
     assert "consumed" in replay.message
+
+
+@pytest.mark.asyncio
+async def test_approval_request_publishes_only_redacted_public_event(os_client):
+    workspaces, workspace = await create_workspace(os_client, "approval-push")
+    approvals = CodingApprovalStore(os_client.system_dir / "push-approvals.json")
+    bus = EventBus()
+    observed = []
+
+    async def capture(**payload):
+        observed.append(payload)
+
+    from src.utils.event.registry import Events
+
+    bus.subscribe(Events.CODING_APPROVAL_REQUESTED, capture)
+    execution = HostOSCodingExecution(
+        os_client, workspaces, approvals, event_bus=bus
+    )
+    os_client.config.coding_execution_backend = "host"
+    os_client.config.coding_host_allowed_commands = [sys.executable]
+    os_client.config.coding_approval_mode = "required"
+    fingerprint = await workspaces.workspace_fingerprint(workspace)
+    requested = await execution.request_coding_command_approval(
+        "approval-push",
+        ["python.exe", "--token", "do-not-push", "--version"],
+        fingerprint["fingerprint"],
+    )
+    assert requested.is_success is True, requested.message
+    await bus.stop()
+    assert len(observed) == 1
+    public = observed[0]["approval"]
+    assert public["status"] == "pending"
+    assert "[REDACTED]" in public["argv_preview"]
+    assert "do-not-push" not in json.dumps(observed, ensure_ascii=False)
+    assert "execution_identity" not in public
 
 
 @pytest.mark.asyncio

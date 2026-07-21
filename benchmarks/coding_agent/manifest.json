@@ -305,6 +305,17 @@
       ]
     },
     {
+      "id": "pushed_approval_notifications",
+      "description": "Pending approvals publish only a bounded redacted public event to opt-in lifecycle-managed desktop and Telegram consumers without self-triggering Heartbeat or changing authorization state.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_execution.py::test_approval_request_publishes_only_redacted_public_event",
+        "tests/unit/l2/host/os/test_coding_approval_notifications.py::test_desktop_approval_push_is_lifecycle_managed_and_redacted",
+        "tests/unit/l2/host/os/test_coding_approval_notifications.py::test_telegram_approval_push_uses_configured_transport",
+        "tests/unit/utils/event/test_bridge.py::test_bridge_setup_routing_subscriptions",
+        "tests/unit/l2/host/os/test_plugin.py::test_host_os_plugin_adds_approval_notifier_only_for_desktop_opt_in"
+      ]
+    },
+    {
       "id": "cross_layer_trace_correlation",
       "description": "Async trace IDs survive child tasks, cancellation, actions, verification, and commits without leaking contexts.",
       "tests": [

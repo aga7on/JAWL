@@ -20,6 +20,8 @@ from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorks
 from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
 from src.utils._tools import redact_sensitive_text, truncate_text
+from src.utils.event.bus import EventBus
+from src.utils.event.registry import Events
 from src.utils.settings import (
     CodingCommandProfileConfig,
     CodingContainerProfileConfig,
@@ -47,10 +49,12 @@ class HostOSCodingExecution:
         host_os_client: HostOSClient,
         workspaces: HostOSCodingWorkspaces,
         approvals: Optional[CodingApprovalStore] = None,
+        event_bus: Optional[EventBus] = None,
     ) -> None:
         self.host_os = host_os_client
         self.workspaces = workspaces
         self.approvals = approvals
+        self.event_bus = event_bus
 
     def _timeout(self, timeout_seconds: Optional[int]) -> int:
         configured = int(self.host_os.config.execution_timeout_sec)
@@ -480,6 +484,11 @@ class HostOSCodingExecution:
                     self.approvals.request,
                     subject,
                     int(self.host_os.config.coding_approval_ttl_sec),
+                )
+            if self.event_bus is not None:
+                await self.event_bus.publish(
+                    Events.CODING_APPROVAL_REQUESTED,
+                    approval=dict(request),
                 )
             payload = {
                 "approval": request,

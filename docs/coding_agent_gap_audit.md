@@ -24,7 +24,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Event steering | Strong | Configurable interrupt/defer/append policy; deferred urgent events preserve in-flight provider responses, skip stale actions, persist a steer tick, and become the next primary trigger; priority-bounded sleep/realtime queues explicitly coalesce only noisy state events and expose overflow without payload leakage | No interactive mid-generation provider steering; safe boundary waits for the active response |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | Transactional rewind | Strong | Exact workspace/index snapshot, plan revision, append-only tick timeline branch, optimistic guard, automatic forward checkpoint and compensation | Does not rewind vector/graph stores or external side effects by design |
-| Command isolation | Strong | Disabled-by-default task runner, shell-free argv, exact-state guard, host pre-approval, optional Docker/Podman capability/network/resource isolation, exact named toolchain and reusable container-policy profiles, and expiring one-shot local approvals bound to executable/runtime/resolved-profile policy | Approval is local CLI rather than a pushed Telegram/desktop prompt; host backend remains authorization rather than OS containment |
+| Command isolation | Strong | Disabled-by-default task runner, shell-free argv, exact-state guard, host pre-approval, optional Docker/Podman capability/network/resource isolation, exact named toolchain/container profiles, expiring one-shot approvals, and opt-in passive desktop/Telethon/Aiogram push of bounded redacted requests | Decisions still use the local CLI rather than authenticated in-chat buttons; host backend remains authorization rather than OS containment |
 | LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, noisy Qwen payload recovery, bounded transient retries, configurable Thinking policy, persisted failures, terminal step-limit record | QWB exposes only a Boolean Thinking switch, not a token/time budget; adaptive per-task policy still needs measured validation |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
 | Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, isolated real-ReAct driver, recorded QWB calibrations, quota-free external-command preflight, cryptographic task/grader contracts, and fail-closed cross-agent comparison | No equivalent external-agent live baseline has been executed yet; the installed Codex CLI run would consume account quota |
@@ -35,8 +35,8 @@ tasks safely, recoverably, and with measurable evidence.
 1. Validate `first_step` Thinking plus adaptive context in the next organic or
    deliberately justified live run; avoid repetitive account-consuming
    calibration.
-2. Add pushed Telegram/desktop approval notifications on top of the local
-   one-shot approval CLI.
+2. Add authenticated in-chat approval decisions with replay-safe actor/chat
+   binding on top of passive Telegram notifications.
 3. Where a provider supports it, add true mid-generation steering without
    reintroducing downstream cancellation of completed Thinking work.
 4. Execute preflighted external CLI baselines through `drive_cli.py` before making
