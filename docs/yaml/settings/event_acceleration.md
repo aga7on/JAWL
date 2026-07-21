@@ -31,6 +31,24 @@ already running:
 The coding fork uses `defer`, which avoids downstream cancellation of long Qwen
 Thinking responses while retaining urgent-event ordering.
 
+### Bounded event queues
+
+`queue_max_events` bounds both events retained while Heartbeat sleeps and events
+appended to an active ReAct cycle. When full, the oldest lowest-priority event is
+evicted for an event of equal or greater priority; a lower-priority arrival is
+discarded. Neither case is silent: an `EVENT_QUEUE_OVERFLOW` summary preserves
+counts by level and event name and directs the agent to connector history for
+omitted payloads. `get_event_queue_status` exposes payload-free queue sizes,
+coalescing counts, overflow counts, the current primary wake reason, and whether
+a deferred wakeup is pending.
+
+Coalescing is opt-in by exact event name through `coalesce_event_names` and is
+limited by `coalesce_window_sec`. The retained event carries the newest payload,
+the total count, and up to `coalesce_payload_samples` samples. The defaults cover
+noisy file/dashboard/tick/chat-action state notifications only. Incoming
+Telethon/Aiogram messages, mentions, terminal input, email, and webhook requests
+are deliberately not coalesced and remain separate intents.
+
 ### CRITICAL Events (Immediate Wakeup)
 The `CRITICAL` event level defaults to a `0.0` multiplier.
 This is a special system-level priority. If an event multiplier is zero or near-zero (< 0.01), the system behaves differently:

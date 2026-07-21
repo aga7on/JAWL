@@ -83,6 +83,20 @@
       ]
     },
     {
+      "id": "bounded_event_queue",
+      "description": "Priority-bounded Heartbeat and active ReAct queues coalesce only explicit noise, preserve separate user intents, and expose overflow without payloads.",
+      "tests": [
+        "tests/unit/l3/test_event_buffer.py::test_event_buffer_coalesces_only_explicit_noise_and_bounds_samples",
+        "tests/unit/l3/test_event_buffer.py::test_heartbeat_accepts_legacy_acceleration_config_without_queue_fields",
+        "tests/unit/l3/test_event_buffer.py::test_event_buffer_priority_eviction_is_visible_and_payload_free_in_snapshot",
+        "tests/unit/l3/test_event_buffer.py::test_event_buffer_bounds_overflow_cardinality_from_unique_event_names",
+        "tests/unit/l3/test_event_buffer.py::test_heartbeat_buffers_personal_messages_separately_and_reports_queue_status",
+        "tests/unit/l3/react/test_react_loop.py::test_react_realtime_event_context_is_bounded_and_explicitly_coalesced",
+        "tests/unit/l3/test_heartbeat.py::test_active_defer_policy_does_not_cancel_provider_task",
+        "tests/unit/l3/test_heartbeat.py::test_deferred_event_runs_as_next_primary_cycle"
+      ]
+    },
+    {
       "id": "task_workspace_isolation",
       "description": "Concurrent coding tasks receive independent persistent Git worktrees.",
       "tests": [

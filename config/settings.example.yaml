@@ -45,6 +45,19 @@ system:
     # Keep long provider requests alive; yield before stale actions and run the
     # urgent event as the next primary ReAct trigger.
     active_cycle_policy: defer
+    # Bound both sleeping and active-cycle event context. Only these explicitly
+    # noisy state notifications are merged; user messages remain individual.
+    queue_max_events: 100
+    coalesce_window_sec: 2.0
+    coalesce_payload_samples: 3
+    coalesce_event_names:
+      - AIOGRAM_CHAT_ACTION
+      - HOST_OS_FILE_DELETED
+      - OS_FILE_CREATED
+      - OS_FILE_MODIFIED
+      - REACT_TICK_SAVED
+      - SYSTEM_DASHBOARD_UPDATE
+      - TELETHON_CHAT_ACTION
     critical_multiplier: 0.0
     high_multiplier: 0.2
     medium_multiplier: 0.6

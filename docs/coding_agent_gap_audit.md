@@ -20,7 +20,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
 | Lifecycle policy | Good | Ordered bounded pre/post/error/cancel hooks, preflight deny, fail-open/fail-closed policy, durable records, passive EventBus observations | No declarative repository/user command-hook adapter yet |
-| Event steering | Good | Configurable interrupt/defer/append policy; deferred urgent events preserve in-flight provider responses, skip stale actions, persist a steer tick, and become the next primary trigger | No interactive mid-generation provider steering; safe boundary waits for the active response |
+| Event steering | Strong | Configurable interrupt/defer/append policy; deferred urgent events preserve in-flight provider responses, skip stale actions, persist a steer tick, and become the next primary trigger; priority-bounded sleep/realtime queues explicitly coalesce only noisy state events and expose overflow without payload leakage | No interactive mid-generation provider steering; safe boundary waits for the active response |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
 | Transactional rewind | Strong | Exact workspace/index snapshot, plan revision, append-only tick timeline branch, optimistic guard, automatic forward checkpoint and compensation | Does not rewind vector/graph stores or external side effects by design |
 | Command isolation | Good | Disabled-by-default task runner, shell-free argv, exact-state guard, host pre-approval, optional Docker/Podman capability/network/resource isolation | No interactive approval UI; host backend remains pre-authorized rather than OS-isolated |
@@ -38,8 +38,8 @@ tasks safely, recoverably, and with measurable evidence.
    then extend the same contract to compaction, stop, and delegated work.
 3. Add an interactive approval channel and image/toolchain profiles on top of
    the new disabled/pre-approved/container command policy.
-4. Extend safe-boundary steering with queue inspection/coalescing and, where a
-   provider supports it, true mid-generation steering.
+4. Where a provider supports it, add true mid-generation steering without
+   reintroducing downstream cancellation of completed Thinking work.
 5. Execute declared external CLI baselines through `drive_cli.py` before making
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation

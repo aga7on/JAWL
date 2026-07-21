@@ -325,6 +325,20 @@ class ContextDepthConfig(BaseModel):
 
 class EventAccelerationConfig(BaseModel):
     active_cycle_policy: Literal["interrupt", "defer", "append"] = "interrupt"
+    queue_max_events: int = Field(default=100, ge=10, le=1000)
+    coalesce_window_sec: float = Field(default=2.0, ge=0.0, le=60.0)
+    coalesce_payload_samples: int = Field(default=3, ge=1, le=20)
+    coalesce_event_names: list[str] = Field(
+        default_factory=lambda: [
+            "AIOGRAM_CHAT_ACTION",
+            "HOST_OS_FILE_DELETED",
+            "OS_FILE_CREATED",
+            "OS_FILE_MODIFIED",
+            "REACT_TICK_SAVED",
+            "SYSTEM_DASHBOARD_UPDATE",
+            "TELETHON_CHAT_ACTION",
+        ]
+    )
     critical_multiplier: float = 0.0
     high_multiplier: float = 0.2
     medium_multiplier: float = 0.6

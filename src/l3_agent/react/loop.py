@@ -35,6 +35,7 @@ from src.l3_agent.tot.generator import ToTGenerator
 
 from src.l3_agent.skills.registry import execute_skill, resolve_native_tool_name
 from src.l3_agent.skills.schema import AgentResponse, ActionCall, parse_llm_json
+from src.l3_agent.event_buffer import BoundedEventBuffer
 
 
 class ReactLoop:
@@ -60,6 +61,10 @@ class ReactLoop:
         cooldown_sec: int = 30,
         llm_max_retries: int = 3,
         llm_max_timeout_retries: int = 2,
+        event_queue_max: int = 100,
+        event_coalesce_window_sec: float = 2.0,
+        event_coalesce_names: Optional[List[str]] = None,
+        event_payload_sample_limit: int = 3,
         tot_config: Optional[TreeOfThoughtsConfig] = None,
         tot_generator: Optional[ToTGenerator] = None,
     ) -> None:
@@ -102,9 +107,20 @@ class ReactLoop:
         self.tot_config = tot_config
         self.tot_generator = tot_generator
 
-        self.current_events: List[Dict[str, Any]] = []
+        self._realtime_events = BoundedEventBuffer(
+            capacity=event_queue_max,
+            coalesce_window_sec=event_coalesce_window_sec,
+            coalesce_names=event_coalesce_names,
+            payload_sample_limit=event_payload_sample_limit,
+        )
+        self._steer_event_buffer = BoundedEventBuffer(
+            capacity=event_queue_max,
+            coalesce_window_sec=event_coalesce_window_sec,
+            coalesce_names=event_coalesce_names,
+            payload_sample_limit=event_payload_sample_limit,
+        )
+        self.current_events: List[Dict[str, Any]] = self._realtime_events.items
         self._steer_requested: bool = False
-        self._steer_events: List[Dict[str, Any]] = []
 
     def _thinking_enabled_for_step(self) -> Optional[bool]:
         """Resolve the optional provider thinking flag for this ReAct step."""
@@ -128,7 +144,9 @@ class ReactLoop:
             missed_events: List of missed background events.
         """
 
-        self.current_events = missed_events.copy()
+        self._realtime_events.clear()
+        self._realtime_events.extend(missed_events)
+        self.current_events = self._realtime_events.items
         trace_token, trace = begin_trace(
             "react_cycle", event_name=event_name, model=self.agent_state.llm_model
         )
@@ -270,7 +288,7 @@ class ReactLoop:
             self.agent_state.update_state(AgentStatus.IDLE)
             self.agent_state.current_trace_id = ""
             self._steer_requested = False
-            self._steer_events.clear()
+            self._steer_event_buffer.clear()
             reset_trace(trace_token)
 
     # -------------------------------------------------------------------------
@@ -292,10 +310,12 @@ class ReactLoop:
             List[Dict[str, Any]]: Messages list in OpenAI format.
         """
 
-        context = await self.context_builder.build(event_name, payload, self.current_events)
+        context = await self.context_builder.build(
+            event_name, payload, self._realtime_events.view()
+        )
 
         if self.agent_state.current_step >= 5:
-            self.current_events.clear()
+            self._realtime_events.clear()
 
         messages = [
             {"role": "system", "content": prompt},
@@ -466,8 +486,12 @@ class ReactLoop:
                 "name": event.get("name", "UNKNOWN"),
                 "level": event.get("level", "UNKNOWN"),
                 "time": event.get("time"),
+                "count": event.get(
+                    "coalesced_count",
+                    event.get("payload", {}).get("dropped_total", 1),
+                ),
             }
-            for event in self._steer_events[-20:]
+            for event in self._steer_event_buffer.view()[-20:]
         ]
         message = (
             "ReAct cycle yielded at a safe boundary for queued higher-priority "
@@ -518,13 +542,21 @@ class ReactLoop:
             event_data: Event payload dict.
         """
 
-        self.current_events.append(event_data)
+        self._realtime_events.append(event_data)
 
     def request_steer(self, event_data: Dict[str, Any]) -> None:
         """Request a non-cancelling yield at the next safe ReAct boundary."""
 
-        self._steer_events.append(event_data)
+        self._steer_event_buffer.append(event_data)
         self._steer_requested = True
+
+    def get_event_buffer_snapshot(self) -> Dict[str, Any]:
+        """Return payload-free active-cycle event buffer counters."""
+
+        return {
+            "realtime": self._realtime_events.snapshot(),
+            "steer": self._steer_event_buffer.snapshot(),
+        }
 
     def _dump_context_to_file(self, messages: List[Dict[str, Any]]) -> None:
         """

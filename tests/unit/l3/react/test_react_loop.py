@@ -29,6 +29,50 @@ def test_react_first_step_thinking_policy(mock_dependencies):
     assert loop._thinking_enabled_for_step() is False
 
 
+def test_react_realtime_event_context_is_bounded_and_explicitly_coalesced(
+    mock_dependencies,
+):
+    loop = ReactLoop(
+        **mock_dependencies,
+        event_queue_max=3,
+        event_coalesce_window_sec=60,
+        event_coalesce_names=["OS_FILE_MODIFIED"],
+    )
+    loop.add_realtime_event(
+        {"name": "OS_FILE_MODIFIED", "level": "LOW", "payload": {"path": "a"}}
+    )
+    loop.add_realtime_event(
+        {"name": "OS_FILE_MODIFIED", "level": "LOW", "payload": {"path": "b"}}
+    )
+    for message in ("one", "two"):
+        loop.add_realtime_event(
+            {
+                "name": "TELETHON_MESSAGE_INCOMING",
+                "level": "CRITICAL",
+                "payload": {"message": message},
+            }
+        )
+
+    assert len(loop.current_events) == 3
+    assert loop.current_events[0]["coalesced_count"] == 2
+    assert [item["payload"]["message"] for item in loop.current_events[1:]] == [
+        "one",
+        "two",
+    ]
+
+    loop.add_realtime_event(
+        {
+            "name": "TELETHON_MESSAGE_INCOMING",
+            "level": "CRITICAL",
+            "payload": {"message": "three"},
+        }
+    )
+    snapshot = loop.get_event_buffer_snapshot()["realtime"]
+    assert snapshot["size"] == 3
+    assert snapshot["names"] == {"TELETHON_MESSAGE_INCOMING": 3}
+    assert snapshot["dropped_total"] == 1
+
+
 @pytest.mark.asyncio
 @patch("src.l3_agent.react.loop.execute_skill", new_callable=AsyncMock)
 async def test_react_empty_actions_exit(mock_execute_skill, mock_dependencies):

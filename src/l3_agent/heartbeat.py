@@ -7,13 +7,13 @@ from the EventBus, and dynamically adjusting sleep intervals (Event Acceleration
 
 import asyncio
 import time
-from collections import deque
 from typing import Optional, Dict, Any, TYPE_CHECKING
 
 from src.utils.logger import main_logger, agent_logger
 from src.utils.event.registry import EventLevel
 from src.utils.dtime import get_now_formatted
 from src.utils._tools import update_last_active_time
+from src.l3_agent.event_buffer import BoundedEventBuffer, EventBufferOutcome
 
 if TYPE_CHECKING:
     from src.l3_agent.react.loop import ReactLoop
@@ -59,12 +59,64 @@ class Heartbeat:
         self._wake_payload: Dict[str, Any] = {}
         self._wake_level: int = 0
 
-        self._sleep_memory: deque[Dict[str, Any]] = deque(maxlen=20)
+        queue_max = getattr(self.accel_config, "queue_max_events", 100)
+        if not isinstance(queue_max, int) or isinstance(queue_max, bool):
+            queue_max = 100
+        coalesce_window = getattr(
+            self.accel_config, "coalesce_window_sec", 2.0
+        )
+        if not isinstance(coalesce_window, (int, float)) or isinstance(
+            coalesce_window, bool
+        ):
+            coalesce_window = 2.0
+        coalesce_names = getattr(self.accel_config, "coalesce_event_names", [])
+        if not isinstance(coalesce_names, (list, tuple, set, frozenset)):
+            coalesce_names = []
+        payload_samples = getattr(
+            self.accel_config, "coalesce_payload_samples", 3
+        )
+        if not isinstance(payload_samples, int) or isinstance(payload_samples, bool):
+            payload_samples = 3
+        self._event_buffer = BoundedEventBuffer(
+            capacity=queue_max,
+            coalesce_window_sec=float(coalesce_window),
+            coalesce_names=coalesce_names,
+            payload_sample_limit=payload_samples,
+        )
 
         self._active_react_task: Optional[asyncio.Task] = None
 
         self._is_interrupted: bool = False
         self._deferred_wakeup: bool = False
+
+    def _enqueue_event(self, event_data: Dict[str, Any]) -> EventBufferOutcome:
+        outcome = self._event_buffer.append(event_data)
+        if outcome.dropped or outcome.evicted_name is not None:
+            dropped_total = self._event_buffer.snapshot()["dropped_total"]
+            if dropped_total == 1 or dropped_total & (dropped_total - 1) == 0:
+                agent_logger.warning(
+                    "[Heartbeat] Bounded event queue overflow: "
+                    f"dropped_or_evicted={dropped_total}, "
+                    f"capacity={self._event_buffer.capacity}."
+                )
+        return outcome
+
+    def get_queue_snapshot(self) -> Dict[str, Any]:
+        """Return payload-free queue observability for tools and diagnostics."""
+
+        realtime = getattr(self.react_loop, "get_event_buffer_snapshot", None)
+        return {
+            "wake_queue": self._event_buffer.snapshot(),
+            "react_buffers": realtime() if callable(realtime) else {},
+            "primary_wake": {
+                "name": self._wake_reason,
+                "level": self._wake_level,
+            },
+            "active_cycle": bool(
+                self._active_react_task and not self._active_react_task.done()
+            ),
+            "deferred_wakeup": self._deferred_wakeup,
+        }
 
     def answer_to_event(
         self, level: EventLevel, event_name: str, payload: Optional[Dict[str, Any]] = None
@@ -121,7 +173,8 @@ class Heartbeat:
             # merely append the event, depending on explicit runtime policy.
             if multiplier <= 0.01:
                 if active_policy == "defer":
-                    self._sleep_memory.append(event_data)
+                    outcome = self._enqueue_event(event_data)
+                    queued_event = outcome.event or event_data
                     if level.value >= self._wake_level:
                         self._wake_reason = event_name
                         self._wake_payload = payload
@@ -129,7 +182,7 @@ class Heartbeat:
                     self._deferred_wakeup = True
                     self._next_tick_time = time.time()
                     self._wake_event.set()
-                    self.react_loop.request_steer(event_data)
+                    self.react_loop.request_steer(queued_event)
                     agent_logger.warning(
                         f"[Heartbeat] Deferred active ReAct cycle at a safe "
                         f"boundary due to event: {event_name} ({level.name})"
@@ -172,7 +225,7 @@ class Heartbeat:
         # Logic for currently sleeping agent
         # ---------------------------------------------------------------------
 
-        self._sleep_memory.append(event_data)
+        self._enqueue_event(event_data)
 
         remaining = self._next_tick_time - now
 
@@ -238,8 +291,7 @@ class Heartbeat:
                             self._wake_level = 0
 
             if self.continuous_cycle or time.time() >= self._next_tick_time:
-                missed_events = list(self._sleep_memory)
-                self._sleep_memory.clear()
+                missed_events = self._event_buffer.drain()
 
                 if self._wake_reason != "HEARTBEAT":
                     for i in range(len(missed_events) - 1, -1, -1):

@@ -38,6 +38,7 @@ from src.l3_agent.skills.registry import (
 )
 from src.l3_agent.skills.journal_skills import ActionJournalSkills
 from src.l3_agent.skills.catalog import SkillCatalog
+from src.l3_agent.skills.event_queue import EventQueueSkills
 from src.l3_agent.hooks.lifecycle import LifecycleHooks
 from src.l3_agent.swarm.skills.report import SubagentReport
 from src.l3_agent.swarm.spawn import SwarmManager
@@ -328,6 +329,16 @@ class SystemBuilder:
             ),
             tool_transport=self.container.settings.llm.tool_transport,
             thinking_policy=self.container.settings.llm.thinking_policy,
+            event_queue_max=self.system_config.event_acceleration.queue_max_events,
+            event_coalesce_window_sec=(
+                self.system_config.event_acceleration.coalesce_window_sec
+            ),
+            event_coalesce_names=(
+                self.system_config.event_acceleration.coalesce_event_names
+            ),
+            event_payload_sample_limit=(
+                self.system_config.event_acceleration.coalesce_payload_samples
+            ),
             event_bus=self.container.event_bus,
             tot_config=self.system_config.tree_of_thoughts,
             tot_generator=tot_generator,
@@ -340,6 +351,7 @@ class SystemBuilder:
             accel_config=self.container.settings.system.event_acceleration,
             timezone=self.container.settings.system.timezone,
         )
+        register_instance(EventQueueSkills(self.container.heartbeat))
 
         if self.system_config.swarm.enabled:
             report_skill = SubagentReport(

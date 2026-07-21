@@ -227,6 +227,25 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Raw `execute_shell_command` remains ROOT-only for compatibility and is excluded
   from the normal coding-agent workflow.
 
+## Bounded event steering contract
+
+- Heartbeat sleep events, active ReAct realtime events, and safe-boundary steer
+  evidence share a priority-aware bounded buffer instead of silently truncating
+  through `deque(maxlen=20)` or growing for the life of a long provider call.
+- Only explicit noisy state notifications coalesce within a configured time
+  window. User messages and requests remain individual events; repeated file,
+  dashboard, tick, and chat-action notifications retain newest state, bounded
+  payload samples, and an aggregate count.
+- Capacity pressure evicts the oldest lowest-priority intent before a newer
+  equal/higher-priority event. Every eviction/drop becomes a payload-bounded
+  `EVENT_QUEUE_OVERFLOW` summary, which survives transfer from Heartbeat to
+  ReAct and points to durable connector history for full payload recovery.
+- `get_event_queue_status` reports sizes, names, levels, coalescing, overflow,
+  primary wake state, and deferred/active flags without exposing event payloads.
+- Safe `defer` behavior is unchanged: an in-flight Qwen response completes, its
+  now-stale actions are skipped, and the highest-priority/newest equal-priority
+  request starts the next cycle with the other retained intents as context.
+
 ## Context acquisition contract
 
 - `read_file_range` returns exact numbered lines plus a whole-file SHA-256 without
