@@ -1,4 +1,5 @@
 import pytest
+from typing import Literal
 from src.l3_agent.skills import registry
 from src.l3_agent.skills.schema import ActionCall
 from src.l3_agent.skills.registry import (
@@ -48,6 +49,15 @@ class DummyInterface:
 
     async def not_a_skill(self):
         pass
+
+
+DeferredMode = Literal["fast", "safe"]
+
+
+class DeferredAnnotationInterface:
+    @skill(name_override="mock.deferred_annotation")
+    async def run(self, modes: "list[DeferredMode]") -> SkillResult:
+        return SkillResult.ok(",".join(modes))
 
 
 @pytest.fixture
@@ -173,6 +183,22 @@ async def test_guard_type_coercion(mock_typed_func):
 
     # Guard должен сам сконвертировать типы и проemptyить вызов
     assert "Int: 42, Bool: True, ListLen: 2" in report
+
+
+@pytest.mark.asyncio
+async def test_guard_resolves_deferred_annotations_from_wrapped_skill_globals():
+    register_instance(DeferredAnnotationInterface())
+
+    report = await execute_skill(
+        [
+            ActionCall(
+                tool_name="mock.deferred_annotation",
+                parameters={"modes": ["fast", "safe"]},
+            )
+        ]
+    )
+
+    assert "fast,safe" in report
 
 
 @pytest.mark.asyncio

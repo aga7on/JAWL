@@ -11,7 +11,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any, TypeVar, List
+from typing import Optional, Callable, Dict, Any, TypeVar, List, get_type_hints
 import logging
 
 from pydantic import create_model, BaseModel, ValidationError
@@ -107,15 +107,21 @@ def _create_pydantic_guard(func: Callable[..., Any], skill_name: str) -> type[Ba
     Provides Type Coercion and protects against junk parameters.
     """
 
-    sig = inspect.signature(func)
+    target = inspect.unwrap(func)
+    sig = inspect.signature(target)
+    try:
+        resolved_hints = get_type_hints(target)
+    except (NameError, TypeError):
+        resolved_hints = {}
     fields = {}
 
     for name, param in sig.parameters.items():
         if name == "self":
             continue
 
-        annotation = (
-            param.annotation if param.annotation is not inspect.Parameter.empty else Any
+        annotation = resolved_hints.get(
+            name,
+            param.annotation if param.annotation is not inspect.Parameter.empty else Any,
         )
         default = param.default if param.default is not inspect.Parameter.empty else ...
         fields[name] = (annotation, default)
@@ -473,6 +479,10 @@ async def call_skill(
         ]
         err_msg = "Parameter validation error:\n" + "\n".join(errors)
         logger.warning(f"[Guard] Rejected call {name}: Type error.")
+        return SkillResult.fail(err_msg)
+    except Exception as e:
+        err_msg = f"Parameter schema error for skill '{name}': {e}"
+        logger.error(f"[Guard] {err_msg}")
         return SkillResult.fail(err_msg)
 
     try:

@@ -9,7 +9,7 @@ by character count to save context space).
 import json
 import uuid
 from typing import TYPE_CHECKING, Any, List
-from sqlalchemy import select, desc
+from sqlalchemy import literal_column, select
 from datetime import datetime, timezone
 
 from src.utils.dtime import format_datetime, get_timezone
@@ -109,7 +109,16 @@ class SQLTicks:
         """
 
         async with self.db.session_factory() as session:
-            stmt = select(TickTable).order_by(desc(TickTable.created_at)).limit(limit)
+            # Ticks are an append-only causal log. Wall clocks can repeat or move
+            # backwards (notably on Windows during clock synchronization), so
+            # created_at cannot safely define execution order. SQLite rowid is
+            # the insertion sequence for this table and therefore preserves the
+            # order in which ReAct persisted its evidence.
+            stmt = (
+                select(TickTable)
+                .order_by(literal_column("rowid").desc())
+                .limit(limit)
+            )
             result = await session.execute(stmt)
 
             return list(reversed(result.scalars().all()))
@@ -255,7 +264,7 @@ class SQLTicks:
                 stmt = (
                     select(TickTable)
                     .where(TickTable.created_at >= utc_start, TickTable.created_at <= utc_end)
-                    .order_by(TickTable.created_at.asc())
+                    .order_by(literal_column("rowid").asc())
                     .limit(limit)
                 )
 

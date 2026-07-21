@@ -1,6 +1,9 @@
 import pytest
 import asyncio
 from datetime import datetime, timedelta, timezone
+from sqlalchemy import update
+
+from src.l1_databases.sql.tables import TickTable
 from src.utils.dtime import format_datetime
 
 
@@ -27,6 +30,38 @@ async def test_save_and_get_ticks(ticks_manager):
     # Проверяем JSON структуру
     assert last_ticks[1].actions[0]["tool_name"] == "test"
     assert last_ticks[1].results["test"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_get_ticks_preserves_append_order_when_wall_clock_moves_backwards(
+    ticks_manager,
+):
+    first_id = await ticks_manager.save_tick("first", [], {"sequence": 1})
+    second_id = await ticks_manager.save_tick("second", [], {"sequence": 2})
+    third_id = await ticks_manager.save_tick("third", [], {"sequence": 3})
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    async with ticks_manager.db.session_factory() as session:
+        await session.execute(
+            update(TickTable)
+            .where(TickTable.id == first_id)
+            .values(created_at=now + timedelta(seconds=2))
+        )
+        await session.execute(
+            update(TickTable)
+            .where(TickTable.id == second_id)
+            .values(created_at=now + timedelta(seconds=1))
+        )
+        await session.execute(
+            update(TickTable)
+            .where(TickTable.id == third_id)
+            .values(created_at=now)
+        )
+        await session.commit()
+
+    ticks = await ticks_manager.get_ticks(limit=3)
+
+    assert [tick.results["sequence"] for tick in ticks] == [1, 2, 3]
 
 
 @pytest.mark.asyncio
