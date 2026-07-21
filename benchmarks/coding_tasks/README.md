@@ -50,9 +50,29 @@ as `JAWL_BENCH_REPOSITORY` and `JAWL_BENCH_PROMPT`:
 ```powershell
 python benchmarks/coding_tasks/drive_cli.py `
   --candidate my-agent `
+  --candidate-version 1.2.3 `
   --timeout-seconds 900 `
   -- my-agent --cwd "{repository}" --prompt "{prompt}"
 ```
+
+Resolve and fingerprint the executable/command/task contract without invoking
+the candidate or consuming model quota by adding `--preflight-only`. For the
+locally installed Codex CLI, a reproducible preflight is:
+
+```powershell
+python benchmarks/coding_tasks/drive_cli.py `
+  --candidate codex `
+  --candidate-version "<output of codex --version>" `
+  --preflight-only `
+  -- codex exec --ephemeral --ignore-user-config `
+     --sandbox workspace-write --color never `
+     -C "{repository}" "{prompt}"
+```
+
+Remove `--preflight-only` only when the account/token cost is intentional. The
+CLI receives no hidden tests or reference patch, but the generic Windows driver
+is not an adversarial filesystem sandbox; use an external container/VM for
+publication-grade hidden-oracle claims.
 
 Candidate output is drained with a bounded retained tail, the exact process
 tree is terminated on timeout, patches are capped at 2 MiB, and neither hidden
@@ -60,3 +80,21 @@ tests nor the reference solution are copied into the candidate workspace.
 The generic driver controls inputs and grading but is not itself an operating-
 system filesystem sandbox. For adversarial benchmark claims, run the candidate
 inside its own sandbox/container and pass that launcher as the command.
+
+Every current report contains a `contract.fingerprint` over the selected public
+task definitions, visible fixtures, hidden oracle files, and grader source. This
+does not reveal hidden contents, but prevents comparisons across changed tasks
+or graders. Compare two or more newly generated live reports with:
+
+```powershell
+python benchmarks/coding_tasks/compare_reports.py `
+  --report path/to/jawl/report.json `
+  --report path/to/codex/report.json `
+  --output .jawl-benchmarks/comparison.json
+```
+
+The comparator ranks only quality measured by the identical contract. It does
+not pretend JAWL's verified commit lifecycle equals an external CLI's process
+exit/patch extraction, treats wall time as environment-dependent, and leaves
+unreported external token usage as unknown rather than zero. Legacy reports
+without a contract are intentionally rejected rather than compared loosely.

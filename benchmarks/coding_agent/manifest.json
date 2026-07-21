@@ -201,6 +201,16 @@
         "tests/integration/benchmarks/test_coding_task_eval.py::test_live_driver_extracts_committed_workspace_patch_for_same_grader",
         "tests/integration/benchmarks/test_coding_task_eval.py::test_live_driver_runs_real_react_and_coding_skills_without_network"
       ]
+    },
+    {
+      "id": "cross_agent_report_contract",
+      "description": "External commands preflight without execution, reports fingerprint the exact hidden grader contract, and comparisons fail closed on mismatch.",
+      "tests": [
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_external_cli_preflight_hashes_contract_without_running_candidate",
+        "tests/integration/benchmarks/test_coding_task_eval.py::test_benchmark_contract_changes_with_selected_task_set",
+        "tests/unit/benchmarks/test_coding_report_comparison.py::test_comparison_ranks_only_identical_quality_contracts",
+        "tests/unit/benchmarks/test_coding_report_comparison.py::test_comparison_rejects_mismatched_hidden_grader_contract"
+      ]
     }
   ]
 }

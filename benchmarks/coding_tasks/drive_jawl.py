@@ -23,6 +23,7 @@ from benchmarks.coding_tasks.run import (
     EVAL_ROOT,
     FIXTURE_IGNORE,
     evaluate_task,
+    benchmark_contract,
     load_manifest,
 )
 from src.l0_state.agent.state import AgentState
@@ -453,6 +454,7 @@ async def async_main(args: argparse.Namespace) -> int:
         "transport": args.transport,
         "thinking_policy": args.thinking_policy,
         "context_policy": args.context_policy,
+        "contract": benchmark_contract(manifest, tasks),
         "task_count": len(tasks),
         "live_lifecycle_passed": all(
             item["lifecycle_gate_passed"] and not item["error"] for item in live_results

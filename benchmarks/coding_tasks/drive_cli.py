@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -25,6 +26,7 @@ from benchmarks.coding_tasks.run import (
     EVAL_ROOT,
     FIXTURE_IGNORE,
     evaluate_task,
+    benchmark_contract,
     git,
     load_manifest,
 )
@@ -33,6 +35,55 @@ from src.utils._tools import redact_sensitive_text
 
 OUTPUT_TAIL_BYTES = 64 * 1024
 MAX_PATCH_BYTES = 2 * 1024 * 1024
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_command_preflight(
+    candidate: str,
+    candidate_version: str,
+    command: List[str],
+    contract: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Resolve and fingerprint a candidate command without executing it."""
+
+    if not candidate.strip() or len(candidate) > 200:
+        raise ValueError("candidate must be a non-empty name up to 200 characters.")
+    if not candidate_version.strip() or len(candidate_version) > 500:
+        raise ValueError(
+            "candidate_version must be a non-empty value up to 500 characters."
+        )
+    executable = Path(command[0])
+    if executable.is_absolute():
+        resolved = executable.resolve()
+    else:
+        located = shutil.which(command[0])
+        if located is None:
+            raise FileNotFoundError(f"Candidate executable was not found ({command[0]}).")
+        resolved = Path(located).resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Candidate executable was not found ({resolved}).")
+    template = json.dumps(command, ensure_ascii=False, separators=(",", ":"))
+    return {
+        "candidate": candidate,
+        "candidate_version": candidate_version,
+        "executable_name": resolved.name,
+        "executable_sha256": _file_sha256(resolved),
+        "command_template_sha256": hashlib.sha256(
+            template.encode("utf-8")
+        ).hexdigest(),
+        "argument_count": max(0, len(command) - 1),
+        "uses_repository_placeholder": any("{repository}" in item for item in command),
+        "uses_prompt_placeholder": any("{prompt}" in item for item in command),
+        "contract_fingerprint": contract["fingerprint"],
+        "note": "Preflight resolves and hashes the command but never executes it.",
+    }
 
 
 def _redacted_output_tail(output: str, max_chars: int = 16000) -> str:
@@ -213,6 +264,8 @@ def run_cli_task(
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", required=True)
+    parser.add_argument("--candidate-version", default="unspecified")
+    parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument(
@@ -236,6 +289,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             parser.error("Unknown tasks: " + ", ".join(sorted(unknown)))
         tasks = [task for task in tasks if task["id"] in args.task]
 
+    contract = benchmark_contract(manifest, tasks)
+    try:
+        preflight = build_command_preflight(
+            args.candidate, args.candidate_version, command, contract
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        parser.error(str(exc))
+    if args.preflight_only:
+        print(json.dumps({"schema_version": 1, "preflight": preflight}, ensure_ascii=False))
+        return 0
+
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
@@ -250,6 +314,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "benchmark": "jawl-external-cli-coding-eval",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "candidate": args.candidate,
+        "candidate_version": args.candidate_version,
+        "contract": contract,
+        "preflight": preflight,
         "command": {
             "executable": Path(command[0]).name,
             "argument_count": max(0, len(command) - 1),

@@ -311,3 +311,14 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - A live report is evidence for one endpoint/model/configuration only. Claims of
   parity or superiority require versioned runs against declared baselines under
   the same task, timeout, and grading contract.
+- Every new report fingerprints the selected public task definitions, visible
+  fixtures, hidden oracle files, and grader source. The fingerprint reveals no
+  oracle contents and makes comparisons fail closed if any evaluated contract
+  component or task order differs.
+- External commands can be resolved and fingerprinted in a quota-free preflight
+  that never starts the candidate. The report records executable and command
+  template hashes rather than raw paths or arguments.
+- `compare_reports.py` ranks only patch quality under an exact shared contract.
+  JAWL's verified commit lifecycle and an external CLI's process/patch lifecycle
+  remain separately labelled, wall time is indicative, and absent token
+  metering remains unknown rather than being silently counted as zero.

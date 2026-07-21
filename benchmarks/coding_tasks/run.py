@@ -86,6 +86,61 @@ def load_manifest() -> Dict[str, Any]:
     return payload
 
 
+def benchmark_contract(
+    manifest: Dict[str, Any], tasks: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Fingerprint public task definitions, fixtures/oracles, and this grader."""
+
+    digest = hashlib.sha256()
+    digest.update(b"jawl-coding-task-contract-v1\x00")
+    public_tasks = [
+        {
+            "id": task["id"],
+            "prompt": task["prompt"],
+            "fixture": task["fixture"],
+            "allowed_files": task["allowed_files"],
+            "max_changed_lines": task["max_changed_lines"],
+        }
+        for task in tasks
+    ]
+    digest.update(
+        json.dumps(
+            {
+                "manifest_version": manifest["version"],
+                "benchmark": manifest["name"],
+                "tasks": public_tasks,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+    digest.update(b"\x00grader\x00")
+    grader_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    digest.update(grader_sha256.encode("ascii"))
+    fixture_files = 0
+    for task in tasks:
+        fixture_root = (EVAL_ROOT / task["fixture"]).resolve()
+        for path in sorted(item for item in fixture_root.rglob("*") if item.is_file()):
+            if any(part in {"__pycache__", ".pytest_cache"} for part in path.parts):
+                continue
+            relative = path.relative_to(EVAL_ROOT).as_posix()
+            data = path.read_bytes()
+            digest.update(b"\x00file\x00")
+            digest.update(relative.encode("utf-8"))
+            digest.update(b"\x00")
+            digest.update(hashlib.sha256(data).digest())
+            fixture_files += 1
+    return {
+        "version": 1,
+        "fingerprint": digest.hexdigest(),
+        "benchmark": manifest["name"],
+        "task_ids": [task["id"] for task in tasks],
+        "grader_sha256": grader_sha256,
+        "fixture_file_count": fixture_files,
+    }
+
+
 def patch_for_task(
     task: Dict[str, Any], candidate: str, patch_dir: Optional[Path]
 ) -> Optional[Path]:
@@ -236,6 +291,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "benchmark": manifest["name"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "candidate": "custom" if args.patch_dir else args.candidate,
+        "contract": benchmark_contract(manifest, tasks),
         "task_count": len(results),
         "passed_task_count": sum(item["gate_passed"] for item in results),
         "mean_quality_score": round(

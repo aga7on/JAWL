@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from benchmarks.coding_tasks.drive_cli import main as drive_cli_main
 from benchmarks.coding_tasks.drive_cli import run_candidate_command, run_cli_task
 from benchmarks.coding_tasks.drive_jawl import (
     build_task_prompt,
@@ -12,7 +13,7 @@ from benchmarks.coding_tasks.drive_jawl import (
     initialize_fixture,
     run_live_task,
 )
-from benchmarks.coding_tasks.run import evaluate_task, load_manifest
+from benchmarks.coding_tasks.run import benchmark_contract, evaluate_task, load_manifest
 from src.l2_interfaces.host.os.client import HostOSClient
 from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorkspaces
 from src.l2_interfaces.host.os.state import HostOSState
@@ -137,6 +138,46 @@ def test_external_cli_driver_terminates_timed_out_candidate(tmp_path):
 
     assert result["passed"] is False
     assert result["timed_out"] is True
+
+
+def test_external_cli_preflight_hashes_contract_without_running_candidate(
+    tmp_path, capsys
+):
+    marker = tmp_path / "must-not-exist.txt"
+    exit_code = drive_cli_main(
+        [
+            "--candidate",
+            "codex-local",
+            "--candidate-version",
+            "test-version",
+            "--preflight-only",
+            "--task",
+            "inclusive_range_parser",
+            "--",
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+            "{prompt}",
+        ]
+    )
+
+    assert exit_code == 0
+    assert not marker.exists()
+    payload = json.loads(capsys.readouterr().out.splitlines()[-1])
+    preflight = payload["preflight"]
+    assert preflight["candidate_version"] == "test-version"
+    assert preflight["uses_prompt_placeholder"] is True
+    assert len(preflight["executable_sha256"]) == 64
+    assert len(preflight["contract_fingerprint"]) == 64
+
+
+def test_benchmark_contract_changes_with_selected_task_set():
+    manifest = load_manifest()
+    all_tasks = benchmark_contract(manifest, manifest["tasks"])
+    one_task = benchmark_contract(manifest, manifest["tasks"][:1])
+
+    assert all_tasks["fingerprint"] != one_task["fingerprint"]
+    assert all_tasks["fixture_file_count"] > one_task["fixture_file_count"]
 
 
 def test_live_driver_prompt_exposes_contract_but_not_hidden_oracle():

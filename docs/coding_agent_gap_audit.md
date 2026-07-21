@@ -26,7 +26,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Command isolation | Good | Disabled-by-default task runner, shell-free argv, exact-state guard, host pre-approval, optional Docker/Podman capability/network/resource isolation | No interactive approval UI; host backend remains pre-authorized rather than OS-isolated |
 | LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, noisy Qwen payload recovery, bounded transient retries, configurable Thinking policy, persisted failures, terminal step-limit record | QWB exposes only a Boolean Thinking switch, not a token/time budget; adaptive per-task policy still needs measured validation |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
-| Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, isolated real-ReAct driver, recorded QWB calibrations, and a shell-free external CLI driver using the identical grader | No equivalent external-agent baseline has been executed yet |
+| Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, isolated real-ReAct driver, recorded QWB calibrations, quota-free external-command preflight, cryptographic task/grader contracts, and fail-closed cross-agent comparison | No equivalent external-agent live baseline has been executed yet; the installed Codex CLI run would consume account quota |
 | Planning | Strong | Persistent task-local requirements, dependency steps, revision guards, evidence history, and commit gate | No automatic plan synthesis quality grader |
 
 ## Priority order
@@ -40,7 +40,7 @@ tasks safely, recoverably, and with measurable evidence.
    the new disabled/pre-approved/container command policy.
 4. Where a provider supports it, add true mid-generation steering without
    reintroducing downstream cancellation of completed Thinking work.
-5. Execute declared external CLI baselines through `drive_cli.py` before making
+5. Execute preflighted external CLI baselines through `drive_cli.py` before making
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation
    still requires the candidate CLI's sandbox or an external container.
