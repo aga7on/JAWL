@@ -133,6 +133,12 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   surfaced to the protocol parser instead of silently discarding later calls.
 - Invalid structured output is redacted, bounded, persisted as a protocol-error
   tick, and made visible to the next reasoning step for self-correction.
+- Qwen web may leak tool-format deliberation plus trial JSON fragments into the
+  answer channel. After strict parsing fails, the compatibility parser examines
+  at most 200 JSON starts, prefers the last structurally complete non-empty JAWL
+  action payload, and unwraps OpenAI-style `execute_skill.arguments`. Embedded
+  empty-action examples cannot terminate a cycle. Protocol ticks retain bounded
+  redacted head and tail excerpts for reproducible diagnosis.
 
 ## Dual tool transport contract
 

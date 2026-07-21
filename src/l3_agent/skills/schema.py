@@ -116,6 +116,50 @@ ACTION_SCHEMA = [
 ]
 
 
+def _decoded_json_values(text: str, opener: str, limit: int = 200) -> List[Any]:
+    """Decode bounded JSON values starting at candidate delimiters in noisy text."""
+
+    decoder = json.JSONDecoder(strict=False)
+    decoded = []
+    for index, match in enumerate(re.finditer(re.escape(opener), text)):
+        if index >= limit:
+            break
+        try:
+            value, _ = decoder.raw_decode(text, match.start())
+        except (TypeError, json.JSONDecodeError):
+            continue
+        decoded.append(value)
+    return decoded
+
+
+def _agent_payload(data: Any, allow_empty: bool = False) -> Optional[AgentResponse]:
+    """Normalize a bare payload or OpenAI-style execute_skill wrapper."""
+
+    if not isinstance(data, dict):
+        return None
+    function = data.get("function")
+    if isinstance(function, dict):
+        data = function
+    if data.get("name") == "execute_skill" and "arguments" in data:
+        arguments = data["arguments"]
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments, strict=False)
+            except (TypeError, json.JSONDecodeError):
+                return None
+        data = arguments
+    required = {"observation", "reasoning", "reflection", "actions"}
+    if not isinstance(data, dict) or not required.issubset(data):
+        return None
+    try:
+        parsed = AgentResponse(**data)
+    except Exception:
+        return None
+    if not allow_empty and not parsed.actions:
+        return None
+    return parsed
+
+
 def _extract_json_array(text: str) -> Optional[str]:
     """
     Smart search for the 'actions' array taking into account bracket nesting and string literals.
@@ -158,11 +202,14 @@ def parse_llm_json(
 ) -> Tuple[Optional[AgentResponse], Optional[str]]:
     clean_answer = raw_answer.strip()
     json_str = ""
+    json_start = -1
+    json_end = -1
 
     # Attempt 1: Strict parsing (looking for Markdown block)
     json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean_answer, re.DOTALL)
     if json_match:
         json_str = json_match.group(1)
+        json_start, json_end = json_match.span()
     else:
         # Attempt 2: Looking for outer boundaries of JSON object
         start_idx = clean_answer.find('{"observation"')
@@ -172,6 +219,7 @@ def parse_llm_json(
         end_idx = clean_answer.rfind("}")
         if start_idx != -1 and end_idx > start_idx:
             json_str = clean_answer[start_idx : end_idx + 1]
+            json_start, json_end = start_idx, end_idx + 1
 
     parsed_response = None
     error_msg = None
@@ -182,18 +230,50 @@ def parse_llm_json(
             parsed_response = AgentResponse(**data)
         except Exception as e:
             error_msg = str(e)
+    if parsed_response is not None and not parsed_response.actions:
+        surrounding = clean_answer[:json_start] + clean_answer[json_end:]
+        surrounding = re.sub(
+            r"(?is)</?tool_call>|```(?:json)?|```", "", surrounding
+        ).strip()
+        if surrounding:
+            parsed_response = None
+            error_msg = "Embedded empty-actions example is not a terminal response."
+
+    # Attempt 2.5: Qwen web may leak format deliberation before emitting a
+    # valid bare JAWL payload inside <tool_call>. Decode every bounded object and
+    # prefer the last structurally complete action payload. Embedded empty
+    # actions are not accepted because a hypothetical example must not end a
+    # live cycle.
+    if parsed_response is None:
+        for candidate in reversed(_decoded_json_values(clean_answer, "{")):
+            parsed_response = _agent_payload(candidate, allow_empty=False)
+            if parsed_response is not None:
+                error_msg = None
+                break
 
     # Attempt 3: Heuristic Fallback (JSON repair)
     if parsed_response is None or (
         not parsed_response.actions and '"tool_name"' in raw_answer
     ):
         try:
-            actions_raw = _extract_json_array(clean_answer)
-            if actions_raw:
-                clean_actions = (
-                    actions_raw.replace('\\"', '"').replace("\\'", "'").replace("\\n", "\n")
-                )
-                actions_list = json.loads(clean_actions, strict=False)
+            actions_list = None
+            for candidate in reversed(_decoded_json_values(clean_answer, "[")):
+                if isinstance(candidate, list) and candidate and all(
+                    isinstance(item, dict) and "tool_name" in item
+                    for item in candidate
+                ):
+                    actions_list = candidate
+                    break
+            if actions_list is None:
+                actions_raw = _extract_json_array(clean_answer)
+                if actions_raw:
+                    clean_actions = (
+                        actions_raw.replace('\\"', '"')
+                        .replace("\\'", "'")
+                        .replace("\\n", "\n")
+                    )
+                    actions_list = json.loads(clean_actions, strict=False)
+            if actions_list:
 
                 parsed_response = AgentResponse(
                     observation="[Heuristic parse]",

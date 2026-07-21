@@ -341,6 +341,7 @@ class ReactLoop:
         safe_excerpt = truncate_text(
             redact_sensitive_text(raw_answer), max_chars=4000
         )
+        safe_tail = redact_sensitive_text(raw_answer[-2000:])
         self.agent_state.last_thoughts = ""
         self.agent_state.last_action_error = safe_error
         self.agent_state.last_actions_result = (
@@ -355,6 +356,7 @@ class ReactLoop:
                 "status": "protocol_error",
                 "error": safe_error,
                 "response_excerpt": safe_excerpt,
+                "response_tail": safe_tail,
                 "step": self.agent_state.current_step,
                 "max_steps": self.agent_state.max_react_steps,
                 "llm_metrics": self._llm_metrics_snapshot(),

@@ -221,6 +221,7 @@ def summarize_ticks(tick_rows: List[Any]) -> Dict[str, Any]:
         for field, limit in (
             ("error", 1000),
             ("response_excerpt", 1600),
+            ("response_tail", 1600),
             ("execution_report", 1200),
         ):
             value = results.get(field)

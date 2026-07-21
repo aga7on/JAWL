@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "kind": "live_calibration_summary",
+  "generated_at": "2026-07-21T12:22:08.600835+00:00",
+  "git_revision": "ad1a04b",
+  "endpoint": "local-qwb-openai-compatible",
+  "model": "qwen3.8-max-preview",
+  "transport": "wrapper",
+  "task": "inclusive_range_parser",
+  "limits": {
+    "max_react_steps": 5,
+    "task_timeout_seconds": 600
+  },
+  "result": {
+    "quality_gate_passed": false,
+    "quality_score": 0.1,
+    "lifecycle_gate_passed": false,
+    "timed_out": true,
+    "react_steps_used": 4,
+    "action_tick_count": 0,
+    "protocol_error_count": 3,
+    "input_tokens_estimated": 28008,
+    "output_tokens_estimated": 14718,
+    "duration_ms": 600593.8,
+    "patch_committed": false,
+    "plan_complete": false
+  },
+  "diagnosis": "Bounded tick excerpts showed Qwen emitting answer-channel deliberation about the tool format, followed by trial bare JAWL payloads inside tool_call tags. The bridge did not normalize those fragments into a native execute_skill call and the legacy parser greedily combined the first and last braces, so no action reached the registry."
+}

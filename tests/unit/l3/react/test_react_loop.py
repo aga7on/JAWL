@@ -80,6 +80,7 @@ async def test_react_protocol_error_is_persisted_before_retry(mock_dependencies)
     protocol = deps["sql_ticks"].save_tick.await_args_list[0].kwargs
     assert protocol["results"]["status"] == "protocol_error"
     assert "not valid tool json" in protocol["results"]["response_excerpt"]
+    assert protocol["results"]["response_tail"] == "not valid tool json"
     assert deps["agent_state"].last_action_error
 
 

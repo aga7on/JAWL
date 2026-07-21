@@ -43,6 +43,13 @@ nine ReAct steps, approximately 83.8k input and 24.9k output tokens, and no
 verified commit before the 1,200-second watchdog. This isolates the next work to
 transport/protocol efficiency rather than patch-generation ability.
 
+A second run on `ad1a04b` tested task-relative batching with a 600-second cap.
+No action reached the registry: bounded protocol excerpts proved that Qwen was
+emitting answer-channel format deliberation and trial bare JAWL payloads inside
+`tool_call` tags. That evidence motivated the bounded multi-candidate parser;
+the run is recorded in
+`benchmarks/coding_tasks/results/2026-07-21-qwb-qwen3.8-max-preview-taskhandles.json`.
+
 ## Compatibility guardrail
 
 None of these steps should replace Heartbeat, EventBus, vector/graph memory,
