@@ -162,3 +162,10 @@ def test_build_l3_agent(
     mock_llm.assert_called_once()
     mock_react.assert_called_once()
     mock_heartbeat.assert_called_once()
+    react_kwargs = mock_react.call_args.kwargs
+    assert react_kwargs["prompt_builder"].tool_transport == (
+        mock_container.settings.llm.tool_transport
+    )
+    assert react_kwargs["context_builder"].budget == (
+        mock_container.settings.system.context_depth.budget
+    )

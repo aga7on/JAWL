@@ -14,3 +14,24 @@ A total of 30 past steps are injected. The last 3 are fully verbose, the precedi
 ### Truncation Limits
 - **`tick_action_max_chars` / `tick_result_max_chars`**: Character limit ceilings for fresh (HIGH) steps.
 - **`tick_thoughts_short_max_chars` / `tick_action_short_max_chars` / `tick_result_short_max_chars`**: Rigid character limit constraints for compressed (MEDIUM and LOW) steps.
+
+### Dynamic context budget
+
+`context_depth.budget` bounds the complete dynamic prompt assembled on every
+ReAct step while leaving all durable SQL/vector/graph data intact:
+
+* **`enabled`** turns deterministic provider and total limits on.
+* **`max_dynamic_chars`** caps the assembled dynamic context after separators.
+* **`skill_policy`** is `full` or `adaptive`. Adaptive mode preloads namespaces
+  inferred from the current event, coding task and previous actions. Omitted
+  namespaces remain visible in a compact index and exact signatures can be
+  loaded with `SkillCatalog.search_skills`.
+* **`skills_max_chars`**, **`recent_ticks_max_chars`** and
+  **`hypotheses_max_chars`** cap the three largest measured providers.
+* **`provider_max_chars`** caps every other individual provider, including
+  interface snapshots and event history.
+
+Recent ticks and the current trigger preserve their newest tail when bounded.
+The builder logs before/after character counts and the names of trimmed
+providers. This changes prompt projection only; it does not delete memories,
+ticks, plans, events, or registered skills.

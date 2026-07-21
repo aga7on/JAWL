@@ -21,8 +21,10 @@ def test_agent_state_transitions():
     state.next_step()
     assert state.current_step == 2
 
+    state.last_action_tools = ["HostOSCodingFiles.read"]
     state.reset_step()
     assert state.current_step == 1
+    assert state.last_action_tools == []
 
 
 def test_agent_uptime(monkeypatch):

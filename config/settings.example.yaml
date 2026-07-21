@@ -61,6 +61,17 @@ system:
     tick_action_short_max_chars: 100
     tick_result_short_max_chars: 200
 
+    # Bounds repeated per-step context. Adaptive skills include likely
+    # namespaces plus a searchable index instead of every tool signature.
+    budget:
+      enabled: true
+      max_dynamic_chars: 60000
+      skill_policy: adaptive
+      skills_max_chars: 16000
+      recent_ticks_max_chars: 24000
+      hypotheses_max_chars: 5000
+      provider_max_chars: 10000
+
     # Подробнее: docs/yaml/settings/rag.md
     rag:
       enabled: true

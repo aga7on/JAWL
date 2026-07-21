@@ -307,6 +307,7 @@ class ReactLoop:
 
         self.agent_state.last_thoughts = thoughts
         self.agent_state.last_actions_result = results_str
+        self.agent_state.last_action_tools = [action.tool_name for action in actions]
 
         args_to_rag = []
         for act in actions:

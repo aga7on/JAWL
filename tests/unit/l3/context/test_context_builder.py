@@ -2,6 +2,7 @@ import pytest
 from src.l3_agent.context.builder import ContextBuilder
 from src.l0_state.agent.state import AgentState
 from src.l3_agent.context.registry import ContextRegistry, ContextSection
+from src.utils.settings import ContextBudgetConfig
 
 
 @pytest.mark.asyncio
@@ -69,3 +70,125 @@ def test_context_builder_format_single_event_proactive():
     res_on = builder._format_single_event("HEARTBEAT", {})
     assert "Proactive action execution is recommended" in res_on
     assert "Activity vectors may include" in res_on
+
+
+@pytest.mark.asyncio
+async def test_adaptive_context_routes_coding_and_event_namespaces(monkeypatch):
+    captured = {}
+
+    def fake_library(*args, **kwargs):
+        captured.update(kwargs)
+        return "adaptive library"
+
+    monkeypatch.setattr(
+        "src.l3_agent.context.builder.get_skills_library", fake_library
+    )
+    state = AgentState(current_goal="Fix the repository tests")
+    builder = ContextBuilder(
+        state,
+        ContextRegistry(),
+        budget_config=ContextBudgetConfig(
+            enabled=True,
+            skill_policy="adaptive",
+            skills_max_chars=4000,
+            max_dynamic_chars=8000,
+        ),
+    )
+
+    await builder.build(
+        "TELETHON_MESSAGE_INCOMING",
+        {"message": "Исправь код и запусти тесты"},
+        [],
+    )
+
+    assert captured["include_omitted_index"] is True
+    assert captured["max_chars"] == 4000
+    assert "SkillCatalog" in captured["prefixes"]
+    assert "Telethon" in captured["prefixes"]
+    assert "HostOSCoding" in captured["prefixes"]
+    assert "HostOSExecution" in captured["prefixes"]
+
+
+@pytest.mark.asyncio
+async def test_context_budget_preserves_newest_evidence_and_current_trigger(monkeypatch):
+    monkeypatch.setattr(
+        "src.l3_agent.context.builder.get_skills_library",
+        lambda *args, **kwargs: "SkillCatalog.search_skills(query, limit=12)",
+    )
+    registry = ContextRegistry()
+
+    async def ticks(**kwargs):
+        return "## RECENT TICKS\n" + ("old evidence\n" * 1200) + "NEWEST_EVIDENCE"
+
+    async def hypotheses(**kwargs):
+        return "## CLUSTERS OF HYPOTHESES\n" + ("hypothesis\n" * 800)
+
+    async def interface(**kwargs):
+        return "### LARGE INTERFACE\n" + ("state\n" * 600)
+
+    registry.register_provider("sql_ticks", ticks, ContextSection.RECENT_TICKS)
+    registry.register_provider(
+        "sql_hypotheses", hypotheses, ContextSection.HYPOTHESES
+    )
+    registry.register_provider("large_interface", interface, ContextSection.INTERFACES)
+    builder = ContextBuilder(
+        AgentState(),
+        registry,
+        budget_config=ContextBudgetConfig(
+            enabled=True,
+            skill_policy="adaptive",
+            max_dynamic_chars=8000,
+            skills_max_chars=2000,
+            recent_ticks_max_chars=3000,
+            hypotheses_max_chars=1000,
+            provider_max_chars=1200,
+        ),
+    )
+
+    context = await builder.build(
+        "TELETHON_MESSAGE_INCOMING",
+        {"message": "CURRENT_TRIGGER_SENTINEL"},
+        [],
+    )
+
+    assert len(context) <= 8000
+    assert "NEWEST_EVIDENCE" in context
+    assert "CURRENT_TRIGGER_SENTINEL" in context
+    assert "context budget truncation" in context
+    assert builder.last_build_metrics["original_chars"] > len(context)
+    assert {"sql_ticks", "sql_hypotheses", "large_interface"} <= set(
+        builder.last_build_metrics["trimmed_providers"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_budget_is_hard_when_skills_and_heartbeat_exceed_it(monkeypatch):
+    monkeypatch.setattr(
+        "src.l3_agent.context.builder.get_skills_library",
+        lambda *args, **kwargs: "SkillCatalog.search_skills(query, limit=12)\n"
+        + ("skill docs\n" * 900),
+    )
+    builder = ContextBuilder(
+        AgentState(),
+        ContextRegistry(),
+        budget_config=ContextBudgetConfig(
+            enabled=True,
+            skill_policy="adaptive",
+            max_dynamic_chars=8000,
+            skills_max_chars=12000,
+            provider_max_chars=10000,
+        ),
+    )
+
+    context = await builder.build(
+        "TELETHON_MESSAGE_INCOMING",
+        {"message": ("large current request " * 500) + "CURRENT_TRIGGER_TAIL"},
+        [],
+    )
+
+    assert len(context) <= 8000
+    assert "SkillCatalog.search_skills" in context
+    assert "CURRENT_TRIGGER_TAIL" in context
+    assert {"skills", "heartbeat"} <= set(
+        builder.last_build_metrics["trimmed_providers"]
+    )

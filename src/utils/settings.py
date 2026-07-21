@@ -290,6 +290,16 @@ class RAGConfig(BaseModel):
     max_query_chars: int = 200
 
 
+class ContextBudgetConfig(BaseModel):
+    enabled: bool = False
+    max_dynamic_chars: int = Field(default=60000, ge=8000, le=500000)
+    skill_policy: Literal["full", "adaptive"] = "full"
+    skills_max_chars: int = Field(default=12000, ge=2000, le=100000)
+    recent_ticks_max_chars: int = Field(default=24000, ge=2000, le=200000)
+    hypotheses_max_chars: int = Field(default=5000, ge=500, le=50000)
+    provider_max_chars: int = Field(default=10000, ge=1000, le=100000)
+
+
 class ContextDepthConfig(BaseModel):
     high_ticks: int = 3
     medium_ticks: int = 7
@@ -301,6 +311,7 @@ class ContextDepthConfig(BaseModel):
     tick_action_short_max_chars: int = 100
     tick_result_short_max_chars: int = 500
 
+    budget: ContextBudgetConfig = Field(default_factory=ContextBudgetConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
 
 

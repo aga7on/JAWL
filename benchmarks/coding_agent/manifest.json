@@ -24,6 +24,17 @@
       ]
     },
     {
+      "id": "adaptive_dynamic_context",
+      "description": "Repeated prompts stay bounded while preserving the current trigger, newest evidence, and exact on-demand skill discovery.",
+      "tests": [
+        "tests/unit/l3/context/test_context_builder.py::test_adaptive_context_routes_coding_and_event_namespaces",
+        "tests/unit/l3/context/test_context_builder.py::test_context_budget_preserves_newest_evidence_and_current_trigger",
+        "tests/unit/l3/context/test_context_builder.py::test_context_budget_is_hard_when_skills_and_heartbeat_exceed_it",
+        "tests/unit/l3/skills/test_skills_registry.py::test_adaptive_skill_library_is_bounded_and_keeps_discovery_path",
+        "tests/unit/l3/skills/test_skills_registry.py::test_skill_catalog_returns_exact_signatures_on_demand"
+      ]
+    },
+    {
       "id": "checked_atomic_editing",
       "description": "Edits reject stale or ambiguous state and checkpoints cannot clobber newer work.",
       "tests": [

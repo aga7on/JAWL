@@ -11,7 +11,9 @@ from src.l3_agent.skills.registry import (
     build_tools_schema,
     get_native_tools_schema,
     resolve_native_tool_name,
+    search_skill_docs,
 )
+from src.l3_agent.skills.catalog import SkillCatalog
 
 # ===================================================================
 # FIXTURES
@@ -108,6 +110,55 @@ def test_native_schema_enforces_selection_limit(mock_plain_func):
 
     with pytest.raises(ValueError, match="exceeding"):
         get_native_tools_schema(prefixes=["mock."], limit=1)
+
+
+def test_adaptive_skill_library_is_bounded_and_keeps_discovery_path():
+    @skill(name_override="HostOSCodingFiles.read")
+    async def coding_read(path: str) -> SkillResult:
+        """Read a task-relative coding file."""
+        return SkillResult.ok(path)
+
+    @skill(name_override="TelethonMessages.send")
+    async def telegram_send(text: str) -> SkillResult:
+        """Send a Telegram message."""
+        return SkillResult.ok(text)
+
+    register_instance(SkillCatalog())
+
+    library = get_skills_library(
+        prefixes=["SkillCatalog", "HostOSCoding"],
+        max_chars=700,
+        include_omitted_index=True,
+    )
+
+    assert len(library) <= 700
+    assert "SkillCatalog.search_skills" in library
+    assert "HostOSCodingFiles.read" in library
+    assert "TelethonMessages.send" not in library
+    assert "TelethonMessages(1)" in library
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_returns_exact_signatures_on_demand():
+    @skill(name_override="TelethonMessages.send_message")
+    async def send_message(chat_id: int, text: str) -> SkillResult:
+        """Send text to a Telegram chat."""
+        return SkillResult.ok(text)
+
+    register_instance(SkillCatalog())
+
+    docs = search_skill_docs("how telegram send text", limit=5)
+    report = await execute_skill(
+        [
+            ActionCall(
+                tool_name="SkillCatalog.search_skills",
+                parameters={"query": "telegram send", "limit": 5},
+            )
+        ]
+    )
+
+    assert docs and "TelethonMessages.send_message" in docs[0]
+    assert "TelethonMessages.send_message" in report
 
 
 @pytest.mark.asyncio

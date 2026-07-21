@@ -15,6 +15,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Atomic editing | Strong | SHA-checked exact-match patches, atomic writes, reversible checkpoints | No syntax-aware patch primitive |
 | Task isolation | Strong | Persistent branch/worktree per task, dirty-base guard, recovery stash | No automatic branch publication or merge conflict assistant |
 | Context navigation | Strong | Bounded map/search/range reads, syntax-aware occurrences, directed local dependency slices, and optional allowlisted LSP definition/reference resolution with zero-index fallback | LSP uses safe one-shot processes rather than a cached incremental workspace session |
+| Dynamic context | Good | Hard per-turn budget, task/event-routed skill namespaces, compact omitted-namespace index, exact signatures through `SkillCatalog`, newest-tick and current-trigger retention | Needs organic QWB latency/token validation and learned relevance ranking |
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
@@ -26,15 +27,55 @@ tasks safely, recoverably, and with measurable evidence.
 
 ## Priority order
 
-1. Validate `first_step` Thinking and proportional planning in one deliberate
-   fixed-task live run before expanding the benchmark set; avoid repetitive
-   account-consuming calibration.
-2. Execute declared external CLI baselines through `drive_cli.py` before making
+1. Validate `first_step` Thinking plus adaptive context in the next organic or
+   deliberately justified live run; avoid repetitive account-consuming
+   calibration.
+2. Add lifecycle hooks around tool execution, compaction, stop, and delegated
+   work using the existing EventBus, with deterministic ordering and failure
+   isolation.
+3. Add an automatic checkpoint/rewind transaction spanning conversation state,
+   coding-plan revision, and workspace changes.
+4. Put command execution behind an OS-enforced sandbox/approval policy; Git
+   worktrees isolate task state but are not a host security boundary.
+5. Replace unconditional critical-event cancellation with explicit steer/queue
+   semantics while preserving the current event-driven philosophy.
+6. Execute declared external CLI baselines through `drive_cli.py` before making
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation
    still requires the candidate CLI's sandbox or an external container.
-3. If live traces show repeated navigation startup cost, add lifecycle-managed
+7. If live traces show repeated navigation startup cost, add lifecycle-managed
    incremental LSP sessions without weakening process and output bounds.
+
+## Current reference architecture comparison
+
+The target is a defensible capability envelope, not feature-name parity. Current
+official documentation shows recurring patterns in leading coding agents:
+
+| Pattern | Current reference implementations | JAWL fork position |
+| --- | --- | --- |
+| Parallel delegated work | [Codex subagents](https://developers.openai.com/codex/subagents/), [Claude Code subagents](https://code.claude.com/docs/en/sub-agents) | Swarm roles and isolated worktrees exist; delegation quality and reconciliation still need benchmark coverage |
+| Lifecycle control | [Claude Code hooks](https://code.claude.com/docs/en/hooks), [GitHub Copilot hooks](https://docs.github.com/en/copilot/concepts/agents/hooks) | EventBus is a strong base, but user-configurable pre/post/stop hooks are not yet a stable contract |
+| Recovery and rewind | [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing), [Gemini CLI checkpointing](https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/commands.md) | File checkpoints, durable plans, and action journals exist separately; one atomic conversation/workspace rewind does not |
+| Enforced execution boundary | [Gemini CLI sandboxing](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md) | Allowlisted commands, timeouts, and task paths reduce accidents; they do not provide OS-level containment |
+| Repository context economy | [Aider repository map](https://aider.chat/docs/repomap.html) | Bounded map/search/LSP/dependency tools plus the new dynamic budget are competitive substrate; relevance is deterministic rather than learned |
+| Automatic verification | [Aider lint/test integration](https://aider.chat/docs/usage/lint-test.html) | Exact-state verification and commit gates are stronger than a best-effort post-edit test loop |
+
+## Production context measurement
+
+The captured production prompt at `G:\AI\jawl-4\logs\prompts\main_prompt.md`
+was 99,520 characters (approximately 24,880 tokens): 10,215 characters of
+system instructions and 89,229 characters of dynamic user context. The largest
+repeat contributors were the full skill catalogue (23,343 characters),
+hypothesis clusters (11,531), and roughly 40,000 characters of recent ticks.
+This confirms that the repeated 25–28k-token requests were primarily a service
+projection problem, not missing conversational memory.
+
+The fork now bounds only that transient projection. SQL/vector/graph records,
+events, notes, plans, and ticks remain durable at rest. The default fork policy
+caps dynamic context at 60,000 characters, routes likely namespaces from the
+current event/task/previous action, and exposes exact omitted signatures through
+`SkillCatalog.search_skills`. The capability gate also covers the hard-limit
+case where skills and heartbeat alone exceed the target.
 
 ## Recorded live calibration
 

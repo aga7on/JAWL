@@ -386,39 +386,129 @@ def build_tools_schema(
     return wrapper + native
 
 
-def get_skills_library(subconscious_config: Optional[SubconsciousConfig] = None) -> str:
+def _format_skill_docs(items: List[tuple[str, Dict[str, Any]]]) -> str:
+    """Format an already selected list while preserving namespace separation."""
+    formatted_docs = []
+    last_prefix = ""
+    custom_docs = []
+    for skill_name, data in items:
+        doc = data["doc_string"]
+        if data.get("is_custom"):
+            custom_docs.append(doc)
+            continue
+        prefix = skill_name.split(".", 1)[0] if "." in skill_name else ""
+        if last_prefix and prefix != last_prefix:
+            formatted_docs.append("")
+        formatted_docs.append(doc)
+        last_prefix = prefix
+    base = "\n".join(formatted_docs)
+    if custom_docs:
+        base += "\n\n### CUSTOM SKILLS\n" + "\n".join(custom_docs)
+    return base.strip()
+
+
+def get_skill_namespace_index(
+    items: Optional[List[tuple[str, Dict[str, Any]]]] = None,
+) -> str:
+    """Return a compact namespace/count index for hierarchical discovery."""
+    counts: Dict[str, int] = {}
+    source_items = items if items is not None else _visible_skill_items()
+    for skill_name, _ in source_items:
+        namespace = skill_name.split(".", 1)[0]
+        counts[namespace] = counts.get(namespace, 0) + 1
+    return ", ".join(f"{name}({counts[name]})" for name in sorted(counts))
+
+
+def search_skill_docs(
+    query: str,
+    limit: int = 12,
+    subconscious_config: Optional[SubconsciousConfig] = None,
+) -> List[str]:
+    """Search visible skill names and descriptions with deterministic ranking."""
+    if limit < 1 or limit > 50:
+        raise ValueError("skill search limit must be between 1 and 50")
+    normalized = " ".join(query.lower().split())
+    if len(normalized) < 2:
+        raise ValueError("skill search query must contain at least 2 characters")
+    terms = normalized.split()
+    ranked = []
+    for skill_name, data in _visible_skill_items(subconscious_config):
+        name = skill_name.lower()
+        doc = data["doc_string"].lower()
+        matched = [term for term in terms if term in doc]
+        if not matched:
+            continue
+        score = len(matched) * 10
+        if len(matched) == len(terms):
+            score += 50
+        score += sum(20 if term in name else 1 for term in matched)
+        if normalized in name:
+            score += 100
+        ranked.append((-score, skill_name, data["doc_string"]))
+    ranked.sort()
+    return [doc for _, _, doc in ranked[:limit]]
+
+
+def get_skills_library(
+    subconscious_config: Optional[SubconsciousConfig] = None,
+    prefixes: Optional[List[str]] = None,
+    max_chars: Optional[int] = None,
+    include_omitted_index: bool = False,
+) -> str:
     """
     Collects all skills. Automatically hides skills if they are delegated to
     an active subconscious pattern to offload the Orchestrator's context.
     """
-    active_docs = []
-    custom_docs = []
+    visible = _visible_skill_items(subconscious_config)
+    normalized_prefixes = [prefix for prefix in (prefixes or []) if prefix]
+    if normalized_prefixes:
+        selected = [
+            item
+            for item in visible
+            if any(item[0].startswith(prefix) for prefix in normalized_prefixes)
+        ]
+        selected.sort(
+            key=lambda item: (
+                min(
+                    index
+                    for index, prefix in enumerate(normalized_prefixes)
+                    if item[0].startswith(prefix)
+                ),
+                item[0],
+            )
+        )
+    else:
+        selected = visible
 
-    for skill_name, data in _visible_skill_items(subconscious_config):
+    omitted = [item for item in visible if item not in selected]
+    if max_chars is not None:
+        if max_chars < 100:
+            raise ValueError("skills context max_chars must be at least 100")
+        bounded = []
+        for item in selected:
+            candidate = _format_skill_docs([*bounded, item])
+            if len(candidate) > max_chars:
+                omitted.append(item)
+                continue
+            bounded.append(item)
+        selected = bounded
 
-        if data.get("is_custom"):
-            custom_docs.append(data["doc_string"])
-            continue
-
-        doc = data["doc_string"]
-
-        active_docs.append(doc)
-
-    formatted_docs = []
-    last_prefix = ""
-    for doc in active_docs:
-        skill_name_match = doc.split("(", 1)[0].replace("`", "")
-        prefix = skill_name_match.split(".")[0] if "." in skill_name_match else ""
-
-        if last_prefix and prefix != last_prefix:
-            formatted_docs.append("")
-
-        formatted_docs.append(doc)
-        last_prefix = prefix
-
-    base = "\n".join(formatted_docs)
-    if custom_docs:
-        base += "\n\n### CUSTOM SKILLS\n" + "\n".join(custom_docs)
+    base = _format_skill_docs(selected)
+    if include_omitted_index and omitted:
+        while True:
+            index = (
+                "\n\n### OMITTED SKILL NAMESPACES\n"
+                "Use `SkillCatalog.search_skills` to load exact signatures on demand.\n"
+                + get_skill_namespace_index(omitted)
+            )
+            base = _format_skill_docs(selected)
+            if max_chars is None or len(base) + len(index) <= max_chars:
+                base += index
+                break
+            if not selected:
+                base = index[:max_chars]
+                break
+            omitted.append(selected.pop())
     return base
 
 

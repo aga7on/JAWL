@@ -55,9 +55,10 @@ from src.l3_agent.skills.registry import (
     configure_action_journal,
     register_instance,
 )
+from src.l3_agent.skills.catalog import SkillCatalog
 from src.utils._tools import redact_sensitive_text
 from src.utils.event.bus import EventBus
-from src.utils.settings import HostOSConfig
+from src.utils.settings import ContextBudgetConfig, HostOSConfig
 from src.utils.token_tracker import TokenTracker
 
 
@@ -251,6 +252,7 @@ async def run_live_task(
     max_steps: int,
     timeout_seconds: int,
     thinking_policy: str = "provider_default",
+    context_policy: str = "full",
 ) -> Dict[str, Any]:
     started = time.perf_counter()
     task_id = f"eval-{task['id']}"
@@ -271,6 +273,7 @@ async def run_live_task(
         editor = HostOSEditor(host)
         search = HostOSSearch(host)
         coding_instances = [
+            SkillCatalog(),
             reader,
             HostOSWriter(host),
             editor,
@@ -314,7 +317,13 @@ async def run_live_task(
             "ticks", ticks.get_context_block, section=ContextSection.RECENT_TICKS
         )
         context_builder = ContextBuilder(
-            agent_state, context_registry, tool_transport=transport
+            agent_state,
+            context_registry,
+            tool_transport=transport,
+            budget_config=ContextBudgetConfig(
+                enabled=context_policy == "adaptive",
+                skill_policy=context_policy,
+            ),
         )
         prompt_builder = PromptBuilder(
             REPOSITORY_ROOT / "src" / "l3_agent" / "prompt",
@@ -388,6 +397,7 @@ async def run_live_task(
                     item["total"] for item in tracker.output_history
                 ),
                 "last_llm_metrics": executor.last_call_metrics,
+                "last_context_metrics": context_builder.last_build_metrics,
                 **tick_diagnostics,
                 **extraction,
             }
@@ -425,6 +435,7 @@ async def async_main(args: argparse.Namespace) -> int:
                 args.max_steps,
                 args.timeout_seconds,
                 args.thinking_policy,
+                args.context_policy,
             )
         )
     evaluation = [
@@ -437,6 +448,7 @@ async def async_main(args: argparse.Namespace) -> int:
         "model": args.model,
         "transport": args.transport,
         "thinking_policy": args.thinking_policy,
+        "context_policy": args.context_policy,
         "task_count": len(tasks),
         "live_lifecycle_passed": all(
             item["lifecycle_gate_passed"] and not item["error"] for item in live_results
@@ -474,6 +486,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--thinking-policy",
         choices=["provider_default", "always", "never", "first_step"],
         default="provider_default",
+    )
+    parser.add_argument(
+        "--context-policy", choices=["full", "adaptive"], default="full"
     )
     parser.add_argument("--max-steps", type=int, default=15)
     parser.add_argument("--timeout-seconds", type=int, default=1800)

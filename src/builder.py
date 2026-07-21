@@ -36,6 +36,7 @@ from src.l3_agent.skills.registry import (
     register_instance,
 )
 from src.l3_agent.skills.journal_skills import ActionJournalSkills
+from src.l3_agent.skills.catalog import SkillCatalog
 from src.l3_agent.swarm.skills.report import SubagentReport
 from src.l3_agent.swarm.spawn import SwarmManager
 from src.l3_agent.tot.generator import ToTGenerator
@@ -240,6 +241,7 @@ class SystemBuilder:
             tot_enabled=self.system_config.tree_of_thoughts.enabled,
             subconscious_enabled=self.system_config.subconscious.enabled,
             hypotheses_enabled=self.system_config.db.sql.hypotheses.enabled,
+            tool_transport=self.container.settings.llm.tool_transport,
         )
 
         rag_memories = RAGMemories(
@@ -260,12 +262,14 @@ class SystemBuilder:
                 section=ContextSection.INTERFACES,
             )
         register_instance(MemoryRecallSkill(rag_memories.orchestrator))
+        register_instance(SkillCatalog())
 
         context_builder = ContextBuilder(
             agent_state=self.container.agent_state,
             registry=self.container.context_registry,
             subconscious_config=self.system_config.subconscious,
             tool_transport=self.container.settings.llm.tool_transport,
+            budget_config=self.system_config.context_depth.budget,
         )
 
         token_tracker = TokenTracker()

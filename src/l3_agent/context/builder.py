@@ -6,10 +6,13 @@ and merges them in a strict hierarchical order. Ensures optimal performance of t
 LLM attention mechanism by placing critical information closer to attention horizons.
 """
 
+import json
+import re
 from typing import Any, Dict, List, Literal
 
 from src.l0_state.agent.state import AgentState
-from src.utils.settings import SubconsciousConfig
+from src.utils.logger import agent_logger
+from src.utils.settings import ContextBudgetConfig, SubconsciousConfig
 
 from src.l3_agent.context.registry import ContextRegistry, ContextSection
 from src.l3_agent.skills.registry import get_skills_library
@@ -27,6 +30,7 @@ class ContextBuilder:
         registry: ContextRegistry,
         subconscious_config: SubconsciousConfig = None,
         tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
+        budget_config: ContextBudgetConfig = None,
     ) -> None:
         """
         Initializes the builder and automatically registers mandatory system providers.
@@ -39,6 +43,8 @@ class ContextBuilder:
         self.registry = registry
         self.subconscious_config = subconscious_config
         self.tool_transport = tool_transport
+        self.budget = budget_config or ContextBudgetConfig()
+        self.last_build_metrics: Dict[str, Any] = {}
 
         self.registry.register_provider(
             "skills", self._skills_provider, section=ContextSection.SKILLS
@@ -71,14 +77,36 @@ class ContextBuilder:
             missed_events=missed_events,
             agent_state=self.agent_state,
         )
-
-        return "\n\n\n".join(blocks.values()).strip()
+        original_chars = len(self._join_blocks(blocks))
+        trimmed = {}
+        if self.budget.enabled:
+            blocks, trimmed = self._apply_context_budget(blocks)
+        context = self._join_blocks(blocks)
+        self.last_build_metrics = {
+            "policy": self.budget.skill_policy if self.budget.enabled else "full",
+            "original_chars": original_chars,
+            "final_chars": len(context),
+            "trimmed_providers": trimmed,
+        }
+        if trimmed:
+            agent_logger.info(
+                "[Context] Budgeted dynamic context: "
+                f"{original_chars} -> {len(context)} chars; "
+                f"trimmed={','.join(trimmed)}"
+            )
+        return context
 
     # -------------------------------------------------------------------------
     # Service Providers
     # -------------------------------------------------------------------------
 
-    async def _skills_provider(self, **kwargs: Any) -> str:
+    async def _skills_provider(
+        self,
+        event_name: str,
+        payload: Dict[str, Any],
+        missed_events: List[Dict[str, Any]],
+        **kwargs: Any,
+    ) -> str:
         """
         Returns a formatted block describing currently available skills.
         """
@@ -88,7 +116,158 @@ class ContextBuilder:
                 "schemas. Use those exact schemas; no textual skill catalogue is "
                 "injected in native-only mode."
             )
-        return f"## SKILLS\n{get_skills_library(self.subconscious_config)}"
+        adaptive = self.budget.enabled and self.budget.skill_policy == "adaptive"
+        prefixes = (
+            self._adaptive_skill_prefixes(event_name, payload, missed_events)
+            if adaptive
+            else None
+        )
+        library = get_skills_library(
+            self.subconscious_config,
+            prefixes=prefixes,
+            max_chars=self.budget.skills_max_chars if self.budget.enabled else None,
+            include_omitted_index=adaptive,
+        )
+        return f"## SKILLS\n{library}"
+
+    def _adaptive_skill_prefixes(
+        self,
+        event_name: str,
+        payload: Dict[str, Any],
+        missed_events: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Select likely namespaces while retaining on-demand catalogue discovery."""
+        prefixes = ["SkillCatalog", "MemoryRecallSkill", "SQLTasks", "SQLNotes"]
+        upper_event = event_name.upper()
+        event_routes = {
+            "TELETHON": ["Telethon"],
+            "AIOGRAM": ["Aiogram"],
+            "TELEGRAM": ["Telethon", "Aiogram"],
+            "GITHUB": ["GitHub"],
+            "EMAIL": ["Email"],
+            "CALENDAR": ["Calendar"],
+            "WEB": ["Web"],
+            "TERMINAL": ["HostTerminal"],
+            "VOICE": ["Voice", "ElevenLabs", "Whisper"],
+        }
+        for marker, routed in event_routes.items():
+            if marker in upper_event:
+                prefixes.extend(routed)
+
+        recent_payloads = [event.get("payload", {}) for event in missed_events[-3:]]
+        signal = " ".join(
+            [
+                event_name,
+                self.agent_state.current_goal,
+                json.dumps(payload, ensure_ascii=False, default=str),
+                json.dumps(recent_payloads, ensure_ascii=False, default=str),
+                *self.agent_state.last_action_args,
+            ]
+        ).lower()
+        coding_pattern = re.compile(
+            r"(?:\bcode\b|\bcoding\b|\brepo(?:sitory)?\b|\bgit\b|\bbug\b|"
+            r"\btests?\b|\bpytest\b|\bcompile\b|\brefactor\b|"
+            r"(?:^|[\\/])[\w.-]+\.(?:py|js|ts|tsx|jsx|rs|go|c|cpp|h|java)\b|"
+            r"код|репозитор|программ|рефактор|тест|ошибк)"
+        )
+        if coding_pattern.search(signal) or any(
+            tool.startswith("HostOSCoding")
+            for tool in self.agent_state.last_action_tools
+        ):
+            prefixes.extend(
+                [
+                    "HostOSCoding",
+                    "HostOSReader",
+                    "HostOSSearch",
+                    "HostOSEditor",
+                    "HostOSWorkspace",
+                    "HostOSExecution",
+                    "HostOSWriter",
+                    "CodeGraph",
+                    "GitHubLocalGit",
+                ]
+            )
+
+        prefixes.extend(
+            tool.split(".", 1)[0]
+            for tool in self.agent_state.last_action_tools
+            if "." in tool
+        )
+        return list(dict.fromkeys(prefixes))
+
+    @staticmethod
+    def _trim_block(block: str, max_chars: int, preserve_tail: bool = False) -> str:
+        if max_chars <= 0:
+            return ""
+        if len(block) <= max_chars:
+            return block
+        marker = "\n...[context budget truncation]...\n"
+        if max_chars <= len(marker):
+            return block[-max_chars:] if preserve_tail else block[:max_chars]
+        if preserve_tail:
+            heading = block.splitlines()[0] if block else ""
+            if len(heading) + len(marker) >= max_chars:
+                return block[-max_chars:]
+            remaining = max_chars - len(heading) - len(marker)
+            tail = block[-remaining:] if remaining else ""
+            return heading + marker + tail
+        return block[: max_chars - len(marker)] + marker
+
+    @staticmethod
+    def _join_blocks(blocks: Dict[str, str]) -> str:
+        return "\n\n\n".join(block for block in blocks.values() if block).strip()
+
+    def _apply_context_budget(
+        self, blocks: Dict[str, str]
+    ) -> tuple[Dict[str, str], Dict[str, Dict[str, int]]]:
+        bounded = dict(blocks)
+        trimmed: Dict[str, Dict[str, int]] = {}
+        for name, block in list(bounded.items()):
+            if name == "skills":
+                limit = self.budget.skills_max_chars + len("## SKILLS\n")
+            elif name == "sql_ticks":
+                limit = self.budget.recent_ticks_max_chars
+            elif name == "sql_hypotheses":
+                limit = self.budget.hypotheses_max_chars
+            else:
+                limit = self.budget.provider_max_chars
+            preserve_tail = name in {"sql_ticks", "heartbeat"}
+            reduced = self._trim_block(block, limit, preserve_tail=preserve_tail)
+            if len(reduced) != len(block):
+                trimmed[name] = {"before": len(block), "after": len(reduced)}
+                bounded[name] = reduced
+
+        total = len(self._join_blocks(bounded))
+        while total > self.budget.max_dynamic_chars:
+            minimums = {
+                # Keep the searchable entry point even under a very small budget.
+                "skills": min(512, len(bounded.get("skills", ""))),
+                # The current trigger is the tail of the heartbeat provider.
+                "heartbeat": min(1024, len(bounded.get("heartbeat", ""))),
+            }
+            candidates = [
+                (len(block) - minimums.get(name, 0), len(block), name)
+                for name, block in bounded.items()
+                if len(block) > minimums.get(name, 0)
+            ]
+            if not candidates:
+                break
+            _, _, name = max(candidates)
+            before = len(bounded[name])
+            reduction = min(
+                before - minimums.get(name, 0),
+                total - self.budget.max_dynamic_chars,
+            )
+            bounded[name] = self._trim_block(
+                bounded[name],
+                before - reduction,
+                preserve_tail=name in {"sql_ticks", "heartbeat"},
+            )
+            entry = trimmed.setdefault(name, {"before": before, "after": before})
+            entry["before"] = max(entry["before"], before)
+            entry["after"] = len(bounded[name])
+            total = len(self._join_blocks(bounded))
+        return bounded, trimmed
 
     async def _heartbeat_provider(
         self,
