@@ -1,0 +1,263 @@
+"""Deterministic execution engine for agent action plans.
+
+The engine keeps the legacy ``ActionCall`` contract usable while making action
+ordering explicit and safe. Actions execute sequentially by default. The model
+may opt independent actions into a named parallel group and may declare
+dependencies between actions.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
+
+from src.l3_agent.skills.schema import ActionCall
+
+
+ActionRunner = Callable[[ActionCall], Awaitable[Any]]
+
+
+@dataclass(frozen=True)
+class PlannedAction:
+    """Normalized action with a stable identifier and source order."""
+
+    index: int
+    action_id: str
+    call: ActionCall
+
+
+@dataclass(frozen=True)
+class ActionOutcome:
+    """Execution result independent from the concrete skill result class."""
+
+    index: int
+    action_id: str
+    tool_name: str
+    is_success: bool
+    message: str
+
+
+class ActionExecutionEngine:
+    """Executes dependency-aware action plans with bounded parallelism.
+
+    Safety rules:
+    - actions without ``parallel_group`` run one at a time in source order;
+    - only ready actions from the same explicit group may run concurrently;
+    - failed dependencies skip their dependants;
+    - actions touching the same inferred or explicit resource are serialized;
+    - cancellation is propagated to every running child task.
+    """
+
+    _PATH_PARAMETER_NAMES = {
+        "cwd",
+        "destination",
+        "destination_path",
+        "directory",
+        "directory_path",
+        "file",
+        "filepath",
+        "folder",
+        "path",
+        "project_dir",
+        "project_path",
+        "repo_path",
+        "root_dir",
+        "source",
+        "source_path",
+        "target_path",
+        "workdir",
+        "workspace",
+    }
+
+    def __init__(self, max_parallel_actions: int = 4) -> None:
+        if max_parallel_actions < 1:
+            raise ValueError("max_parallel_actions must be at least 1")
+        self.max_parallel_actions = max_parallel_actions
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._resource_locks: Dict[str, asyncio.Lock] = {}
+
+    async def execute(
+        self, actions: List[ActionCall], runner: ActionRunner
+    ) -> List[ActionOutcome]:
+        """Execute an action plan and return outcomes in original order."""
+
+        if not actions:
+            return []
+
+        self._ensure_loop_state()
+        plans = self._normalize(actions)
+        outcomes: Dict[int, ActionOutcome] = {}
+        pending: Dict[int, PlannedAction] = {plan.index: plan for plan in plans}
+
+        explicit_ids: Dict[str, List[PlannedAction]] = {}
+        for plan in plans:
+            if plan.call.action_id:
+                explicit_ids.setdefault(plan.call.action_id, []).append(plan)
+
+        duplicate_ids = {key for key, values in explicit_ids.items() if len(values) > 1}
+        for plan in plans:
+            if plan.call.action_id in duplicate_ids:
+                outcomes[plan.index] = self._failure(
+                    plan, f"Invalid action plan: duplicate action_id '{plan.call.action_id}'."
+                )
+                pending.pop(plan.index, None)
+
+        while pending:
+            completed_by_id = {
+                plans[index].action_id: outcome for index, outcome in outcomes.items()
+            }
+            declared_ids = {plan.action_id for plan in plans}
+            made_progress = False
+
+            for index, plan in list(pending.items()):
+                missing = [dep for dep in plan.call.depends_on if dep not in declared_ids]
+                if missing:
+                    outcomes[index] = self._failure(
+                        plan,
+                        "Invalid action plan: missing dependencies " + ", ".join(missing) + ".",
+                    )
+                    pending.pop(index)
+                    made_progress = True
+                    continue
+
+                failed = [
+                    dep
+                    for dep in plan.call.depends_on
+                    if dep in completed_by_id and not completed_by_id[dep].is_success
+                ]
+                if failed:
+                    outcomes[index] = self._failure(
+                        plan, "Skipped: failed dependencies " + ", ".join(failed) + "."
+                    )
+                    pending.pop(index)
+                    made_progress = True
+
+            if not pending:
+                break
+
+            completed_by_id = {
+                plans[index].action_id: outcome for index, outcome in outcomes.items()
+            }
+            ready = [
+                plan
+                for plan in pending.values()
+                if all(dep in completed_by_id for dep in plan.call.depends_on)
+            ]
+            ready.sort(key=lambda plan: plan.index)
+
+            if not ready:
+                for plan in pending.values():
+                    outcomes[plan.index] = self._failure(
+                        plan, "Invalid action plan: cyclic or unresolved dependencies."
+                    )
+                pending.clear()
+                break
+
+            first = ready[0]
+            if first.call.parallel_group:
+                batch = [
+                    plan
+                    for plan in ready
+                    if plan.call.parallel_group == first.call.parallel_group
+                ]
+            else:
+                batch = [first]
+
+            batch_outcomes = await self._run_batch(batch, runner)
+            for outcome in batch_outcomes:
+                outcomes[outcome.index] = outcome
+                pending.pop(outcome.index, None)
+            made_progress = True
+
+            if not made_progress:
+                raise RuntimeError("Action execution engine made no progress")
+
+        return [outcomes[index] for index in sorted(outcomes)]
+
+    def _ensure_loop_state(self) -> None:
+        """Keep asyncio primitives scoped to their running event loop."""
+
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self._loop = loop
+            self._semaphore = asyncio.Semaphore(self.max_parallel_actions)
+            self._resource_locks = {}
+
+    @staticmethod
+    def _normalize(actions: Iterable[ActionCall]) -> List[PlannedAction]:
+        plans = []
+        for index, action in enumerate(actions):
+            action_id = action.action_id or f"action_{index + 1}"
+            plans.append(PlannedAction(index=index, action_id=action_id, call=action))
+        return plans
+
+    async def _run_batch(
+        self, batch: List[PlannedAction], runner: ActionRunner
+    ) -> List[ActionOutcome]:
+        tasks = [asyncio.create_task(self._run_one(plan, runner)) for plan in batch]
+        try:
+            return await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+    async def _run_one(
+        self, plan: PlannedAction, runner: ActionRunner
+    ) -> ActionOutcome:
+        assert self._semaphore is not None
+        resource_keys = self._resource_keys(plan.call)
+        locks = [self._resource_locks.setdefault(key, asyncio.Lock()) for key in resource_keys]
+
+        async with self._semaphore:
+            for lock in locks:
+                await lock.acquire()
+            try:
+                try:
+                    result = await runner(plan.call)
+                    return ActionOutcome(
+                        index=plan.index,
+                        action_id=plan.action_id,
+                        tool_name=plan.call.tool_name,
+                        is_success=bool(getattr(result, "is_success", False)),
+                        message=str(getattr(result, "message", result)),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    return self._failure(plan, f"Internal action execution error: {exc}")
+            finally:
+                for lock in reversed(locks):
+                    lock.release()
+
+    def _resource_keys(self, action: ActionCall) -> List[str]:
+        keys = {f"explicit:{resource}" for resource in action.resources if resource}
+
+        for name, value in action.parameters.items():
+            if name.lower() not in self._PATH_PARAMETER_NAMES:
+                continue
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                if not isinstance(item, (str, Path)) or not str(item).strip():
+                    continue
+                normalized = os.path.normcase(
+                    os.path.abspath(os.path.expanduser(str(item).strip()))
+                )
+                keys.add(f"path:{normalized}")
+
+        return sorted(keys)
+
+    @staticmethod
+    def _failure(plan: PlannedAction, message: str) -> ActionOutcome:
+        return ActionOutcome(
+            index=plan.index,
+            action_id=plan.action_id,
+            tool_name=plan.call.tool_name,
+            is_success=False,
+            message=message,
+        )

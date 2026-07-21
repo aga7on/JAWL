@@ -14,7 +14,12 @@ from src.utils.logger import subc_logger
 from src.l3_agent.llm.executor import LLMExecutor
 
 from src.l3_agent.skills.schema import AgentResponse, ActionCall, ACTION_SCHEMA, parse_llm_json
-from src.l3_agent.skills.registry import _REGISTRY, call_skill
+from src.l3_agent.skills.registry import (
+    _REGISTRY,
+    SkillResult,
+    call_skill,
+    execute_action_plan,
+)
 from src.l3_agent.subconscious.schema import Pattern
 
 from src.l1_databases.sql.manager import SQLManager
@@ -167,22 +172,22 @@ class SubconsciousRunner:
         return parse_llm_json(raw_answer)
 
     async def _execute_actions(self, actions: List[ActionCall], pattern: Pattern) -> str:
-        results = []
-        for act in actions:
+        async def _runner(act: ActionCall) -> SkillResult:
             item = _REGISTRY.get(act.tool_name)
             if not item or pattern not in item.get("subconscious", []):
-                results.append(
-                    f"* {act.tool_name}: Access denied. Tool is not allowed for the {pattern.value.upper()} pattern."
+                return SkillResult.fail(
+                    f"Access denied. Tool is not allowed for the {pattern.value.upper()} pattern."
                 )
-                continue
 
             try:
-                res = await call_skill(act.tool_name, act.parameters, logger=subc_logger)
-                results.append(f"* {act.tool_name}: {res.message}")
+                return await call_skill(act.tool_name, act.parameters, logger=subc_logger)
             except Exception as e:
-                results.append(f"* {act.tool_name}: Internal error - {e}")
+                return SkillResult.fail(f"Internal error - {e}")
 
-        return "\n".join(results)
+        outcomes = await execute_action_plan(actions, _runner)
+        return "\n".join(
+            f"* {outcome.tool_name}: {outcome.message}" for outcome in outcomes
+        )
 
     def _get_allowed_skills(self, pattern: Pattern) -> str:
         allowed_docs = []

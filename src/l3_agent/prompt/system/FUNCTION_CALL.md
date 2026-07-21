@@ -9,12 +9,19 @@ When calling `execute_skill`, your arguments must strictly follow this structure
 1. `observation` (string): What did you observe from the previous step or incoming data?
 2. `reasoning` (string): Logical deduction. Why are you choosing the next tools?
 3. `reflection` (string): Free thought space. Hypotheses, scratchpad, or memos for your future self.
-4. `actions` (list): Array of specific tool objects to execute. Parallel execution of independent tasks recommended.
+4. `actions` (list): Array of specific tool objects to execute. Actions run sequentially by default.
+
+Each action may additionally declare:
+- `action_id`: unique ID for dependency references.
+- `depends_on`: IDs that must complete successfully before this action.
+- `parallel_group`: an explicit group for genuinely independent actions that may run concurrently.
+- `resources`: optional shared resource IDs that must not be accessed concurrently.
 
 ### Strict Constraints
 - Tool Calls Only: You are prohibited from generating conversational text containing ```json ... ```. Use the tool.
 - Isolation: Tool calls are encapsulated exclusively within the `actions` array of the `execute_skill` payload.
 - Format: `actions` must always be a list `[...]`.
+- Ordering: Keep dependent operations sequential. Never place read-modify-write, edit-test, or multiple writes to the same resource in a parallel group.
 - Termination: Passing `"actions":[]` triggers standard cycle exit and sleep.
 
 ### Arguments Example for `execute_skill` tool:

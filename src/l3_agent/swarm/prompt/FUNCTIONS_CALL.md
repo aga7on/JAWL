@@ -6,7 +6,15 @@ Do NOT output raw JSON blocks in your text response. Instead, pass the JSON payl
 1. `observation` (string): What did you observe from the previous step?
 2. `reasoning` (string): Why are you executing the following tools?
 3. `reflection` (string): Scratchpad for intermediate data and hypotheses.
-4. `actions` (list): Array of tool objects. Batch parallel execution is recommended for efficiency.
+4. `actions` (list): Array of tool objects. Actions run sequentially by default.
+
+Optional action coordination fields:
+- `action_id`: unique ID for dependency references.
+- `depends_on`: IDs that must complete successfully first.
+- `parallel_group`: use only for genuinely independent operations.
+- `resources`: shared resource IDs that must be serialized.
+
+Never parallelize read-modify-write, edit-test, or multiple writes to the same resource.
 
 ### Termination
 - Standard Exit: `"actions":[]`.

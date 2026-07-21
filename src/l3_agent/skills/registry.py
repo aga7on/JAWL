@@ -7,7 +7,6 @@ Role-Based Access Control (RBAC) for subagents.
 """
 
 import inspect
-import asyncio
 from dataclasses import dataclass
 from typing import Optional, Callable, Dict, Any, TypeVar, List
 import logging
@@ -19,6 +18,7 @@ from src.utils._tools import truncate_text
 from src.utils.settings import SubconsciousConfig
 
 from src.l3_agent.skills.schema import ActionCall
+from src.l3_agent.skills.execution import ActionExecutionEngine
 from src.l3_agent.swarm.roles import SubagentRole
 from src.l3_agent.subconscious.schema import Pattern
 
@@ -42,6 +42,17 @@ class SkillResult:
 
 
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
+_ACTION_ENGINE = ActionExecutionEngine()
+
+
+async def execute_action_plan(actions: List[ActionCall], runner: Callable) -> list:
+    """Execute actions through the shared deterministic engine.
+
+    Main, Swarm, and Subconscious callers provide their own RBAC-aware runner
+    while sharing dependency handling, resource locks, and cancellation rules.
+    """
+
+    return await _ACTION_ENGINE.execute(actions, runner)
 
 
 def clear_registry() -> None:
@@ -310,7 +321,7 @@ async def execute_skill(
     actions: List[ActionCall], logger: logging.Logger = agent_logger
 ) -> str:
     """
-    Asynchronously and parallelly executes an array of requested agent actions.
+    Executes actions deterministically, with explicit opt-in parallelism.
 
     Args:
         actions: List of ActionCall objects.
@@ -319,14 +330,11 @@ async def execute_skill(
     if not actions:
         return "Cycle completed: no actions provided."
 
-    tasks = []
-    for act in actions:
-        name = act.tool_name
-        params = act.parameters
-        tasks.append(call_skill(name, params, logger=logger))
+    async def _runner(action: ActionCall) -> SkillResult:
+        return await call_skill(action.tool_name, action.parameters, logger=logger)
 
-    results = await asyncio.gather(*tasks)
-    report = [f"* {actions[i].tool_name}: {res.message}" for i, res in enumerate(results)]
+    outcomes = await execute_action_plan(actions, _runner)
+    report = [f"* {outcome.tool_name}: {outcome.message}" for outcome in outcomes]
     return "\n".join(report)
 
 

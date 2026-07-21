@@ -15,6 +15,10 @@ from pydantic import BaseModel, Field
 class ActionCall(BaseModel):
     tool_name: str
     parameters: Dict[str, Any] = Field(default_factory=dict)
+    action_id: Optional[str] = None
+    depends_on: List[str] = Field(default_factory=list)
+    parallel_group: Optional[str] = None
+    resources: List[str] = Field(default_factory=list)
 
 
 class AgentResponse(BaseModel):
@@ -79,6 +83,24 @@ ACTION_SCHEMA = [
                                     "type": "object",
                                     "description": "Dictionary containing the arguments.",
                                     "additionalProperties": True,
+                                },
+                                "action_id": {
+                                    "type": "string",
+                                    "description": "Optional unique ID used by later actions in depends_on.",
+                                },
+                                "depends_on": {
+                                    "type": "array",
+                                    "description": "IDs of actions that must complete successfully first.",
+                                    "items": {"type": "string"},
+                                },
+                                "parallel_group": {
+                                    "type": "string",
+                                    "description": "Optional group name. Only ready actions in the same explicit group may run concurrently; actions are sequential by default.",
+                                },
+                                "resources": {
+                                    "type": "array",
+                                    "description": "Optional shared resource identifiers used to prevent concurrent conflicting access.",
+                                    "items": {"type": "string"},
                                 },
                             },
                             "required": ["tool_name", "parameters"],

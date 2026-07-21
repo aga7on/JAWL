@@ -15,7 +15,7 @@ from src.utils._tools import dump_prompt_to_file
 
 from src.l3_agent.llm.executor import LLMExecutor
 from src.l3_agent.skills.schema import AgentResponse, ActionCall, ACTION_SCHEMA, parse_llm_json
-from src.l3_agent.skills.registry import call_skill
+from src.l3_agent.skills.registry import SkillResult, call_skill, execute_action_plan
 from src.l3_agent.swarm.prompt.builder import SwarmPromptBuilder
 from src.l3_agent.swarm.context.builder import SwarmContextBuilder
 from src.l3_agent.swarm.roles import SubagentRole
@@ -207,21 +207,25 @@ class SubagentLoop:
                 f"* {act.tool_name}({json.dumps(act.parameters, ensure_ascii=False)})"
             )
 
+        async def _runner(act: ActionCall) -> SkillResult:
             if act.tool_name not in self.allowed_skills:
-                results.append(
-                    f"* {act.tool_name}: Access denied. This tool is not authorized for your role."
+                return SkillResult.fail(
+                    "Access denied. This tool is not authorized for your role."
                 )
-                continue
 
             try:
-                res = await call_skill(act.tool_name, act.parameters, logger=swarm_logger)
-                results.append(f"* {act.tool_name}: {res.message}")
-
-                if act.tool_name == "SubagentReport.submit_final_report" and res.is_success:
-                    self.report_submitted = True
-
+                return await call_skill(act.tool_name, act.parameters, logger=swarm_logger)
             except Exception as e:
-                results.append(f"* {act.tool_name}: Internal error - {e}")
+                return SkillResult.fail(f"Internal error - {e}")
+
+        outcomes = await execute_action_plan(actions, _runner)
+        for outcome in outcomes:
+            results.append(f"* {outcome.tool_name}: {outcome.message}")
+            if (
+                outcome.tool_name == "SubagentReport.submit_final_report"
+                and outcome.is_success
+            ):
+                self.report_submitted = True
 
         self.history.append(
             {
