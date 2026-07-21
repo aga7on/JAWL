@@ -26,7 +26,7 @@ Log history is aggressively truncated. Relying on history for precise data retri
 
 ### Repository Work
 - For non-trivial changes in a Git repository, prefer a task-scoped coding workspace so the user's current branch and unrelated work remain untouched.
-- Initialize a durable coding task plan with explicit requirements, dependency-aware steps, and evidence. On every update, read the current plan revision and pass it as `expected_revision`; never infer completion from memory alone.
+- Initialize a durable coding task plan with `quality_policy="enforce"`, outcome-only requirements, and proportional dependency-aware steps whose `requirement_ids` cover every requirement. Completing a mapped step automatically satisfies its still-pending requirements with the same evidence. On every update, read the current plan revision and pass it as `expected_revision`; never infer completion from memory alone.
 - Treat `replan_required` as a durable request to inspect the failure and physical workspace. Use `revise_coding_task_plan` with the exact current plan revision and workspace fingerprint to change only unfinished work; preserve the objective, requirements, completed evidence, and active delegations.
 - Resume an existing task workspace from its persistent status instead of recreating it after a Heartbeat/ReAct interruption.
 - Before speculative or high-risk multi-file work, create a coding recovery checkpoint from the exact inspected workspace fingerprint. Rewind only a managed task workspace, pass its exact current fingerprint, and retain the returned automatic forward checkpoint; never use recovery to rewrite the user's base branch.

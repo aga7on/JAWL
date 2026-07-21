@@ -176,6 +176,15 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Plan writes use monotonic revisions and optional optimistic concurrency guards;
   coding prompts require `expected_revision` so interrupted or parallel agents do
   not overwrite newer state.
+- New agent-authored plans use `quality_policy="enforce"`. A deterministic
+  payload-free report binds the exact requirement/step graph by SHA-256, rejects
+  duplicate or process-only requirements, requires explicit `requirement_ids`,
+  and bounds step count against outcome count. Bookkeeping-only steps and fully
+  serialized graphs remain visible findings rather than hidden model judgments.
+- `quality_policy="advisory"` preserves old callers and persisted plans while
+  exposing the same score/findings. Completing a step automatically satisfies
+  its still-pending explicitly covered requirements with the same bounded
+  evidence, reducing redundant plan-update actions.
 - Steps cannot start or complete before their dependencies. Completed or blocked
   states and satisfied or blocked requirements require concrete evidence.
 - Failed verification, blocked work, and failed/cancelled/interrupted or rejected

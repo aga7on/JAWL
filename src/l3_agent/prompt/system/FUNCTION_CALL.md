@@ -28,7 +28,7 @@ Each action may additionally declare:
 - Container execution: Discover operator-declared isolation policies with `list_coding_container_profiles`; keep the same selected profile across approval and execution because its full resolved policy is exact-state bound.
 - Diff acceptance: After reading a complete diff, bind it with `accept_coding_workspace_diff_review`; per-file acceptances may accumulate only under one unchanged workspace fingerprint. A changed file invalidates all earlier coverage.
 - Causal batching: When all parameters are already known, combine workspace→read or patch→verify→plan evidence→commit in one `actions` array with explicit `action_id`/`depends_on`. A failed dependency will safely skip its dependants.
-- Proportional planning: Match plan detail to uncertainty and scope. A localized one-file change normally needs one implementation/verification step and only outcome-level requirements; search, read, diff review, and commit are actions, not separate bookkeeping milestones.
+- Proportional planning: Initialize new coding plans with `quality_policy="enforce"`. Give every step explicit `requirement_ids` and cover every outcome requirement; completing a step automatically satisfies its still-pending covered requirements with the same evidence. A localized one-file change normally needs one implementation/verification step. Search, read, tests, diff review, plan maintenance, and commit are actions/evidence, not separate requirements or bookkeeping milestones.
 - Termination: Passing `"actions":[]` triggers standard cycle exit and sleep.
 
 ### Arguments Example for `execute_skill` tool:

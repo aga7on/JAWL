@@ -297,6 +297,17 @@
       ]
     },
     {
+      "id": "proportional_plan_quality",
+      "description": "New coding plans can fail closed on process overhead, missing outcome coverage, and disproportionate graphs while legacy plans remain advisory and explicit step evidence closes covered requirements without extra actions.",
+      "tests": [
+        "tests/unit/l2/host/os/test_coding_plan_quality.py::test_strict_quality_accepts_compact_explicit_outcome_coverage",
+        "tests/unit/l2/host/os/test_coding_plan_quality.py::test_strict_quality_rejects_recorded_overplanned_shape_without_leaking_text",
+        "tests/unit/l2/host/os/test_coding_plan_quality.py::test_advisory_quality_preserves_legacy_unmapped_plan",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_enforced_plan_quality_rejects_process_overhead_before_persistence",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_enforced_plan_quality_auto_satisfies_explicitly_covered_requirements"
+      ]
+    },
+    {
       "id": "exact_state_adaptive_replanning",
       "description": "Failures durably request replanning, while repeated exact revision and workspace guards preserve objectives, completed work, and commit safety.",
       "tests": [

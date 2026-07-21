@@ -100,6 +100,28 @@ configuration validation, a named profile is rejected by the host backend, and
 the complete resolved policy is part of the one-shot approval fingerprint. A
 policy changed after approval therefore cannot reuse that approval.
 
+## Coding plan quality
+
+`initialize_coding_task_plan` accepts `quality_policy` as `advisory` (the
+backward-compatible default) or `enforce`. Coding-agent prompts use `enforce`.
+Strict plans must contain only outcome requirements and must bind every one to
+one or more step `requirement_ids`; process bookkeeping such as repository
+inspection, test execution, diff review, plan updates, and commit stays inside
+the implementation action/evidence flow.
+
+The deterministic grader detects duplicate requirements/steps, uncovered
+requirements, orphan/bookkeeping steps, outcome-disproportionate step counts,
+and fully serialized graphs. Its persisted report contains counts, item IDs,
+finding codes, graph/report SHA-256 values, and no objective, requirement, or
+step text. Strict rejection occurs before registry mutation. Advisory plans
+remain executable and expose recommendations without changing the commit gate.
+
+When an explicitly mapped step completes, its evidence automatically satisfies
+all still-pending covered requirements. Blocked or already satisfied
+requirements are never overwritten. Revisions recompute the report, preserve
+coverage on protected work, and reject a strict graph before persistence if it
+drops coverage or exceeds the outcome-based budget.
+
 ## Coding verification stability
 
 `run_coding_verification` accepts only built-in verification profile names. Set

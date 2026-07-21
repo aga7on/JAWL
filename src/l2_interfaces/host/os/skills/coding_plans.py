@@ -14,6 +14,10 @@ from src.l2_interfaces.host.os.decorators import require_access
 from src.l2_interfaces.host.os.skills.coding_workspaces import (
     HostOSCodingWorkspaces,
 )
+from src.l2_interfaces.host.os.skills.coding_plan_quality import (
+    PlanQualityPolicy,
+    grade_coding_plan,
+)
 from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
 from src.utils._tools import redact_sensitive_text
@@ -79,7 +83,7 @@ class HostOSCodingPlans:
             raise ValueError("steps must contain between 1 and 50 items.")
         normalized = []
         identifiers: Set[str] = set()
-        allowed = {"id", "title", "depends_on"}
+        allowed = {"id", "title", "depends_on", "requirement_ids"}
         for index, raw in enumerate(raw_steps):
             if not isinstance(raw, dict):
                 raise ValueError(f"steps[{index}] must be an object.")
@@ -97,19 +101,35 @@ class HostOSCodingPlans:
                 isinstance(item, str) for item in dependencies
             ):
                 raise ValueError(f"steps[{index}].depends_on must be a string list.")
-            normalized.append(
-                {
-                    "id": identifier,
-                    "title": cls._bounded_text(
-                        raw.get("title", ""), f"steps[{index}].title", 1000
-                    ),
-                    "depends_on": list(dict.fromkeys(dependencies)),
-                    "status": "pending",
-                    "evidence": "",
-                    "updated_at": None,
-                    "completed_at": None,
-                }
-            )
+            raw_requirement_ids = raw.get("requirement_ids", [])
+            if not isinstance(raw_requirement_ids, list) or not all(
+                isinstance(item, str) for item in raw_requirement_ids
+            ):
+                raise ValueError(
+                    f"steps[{index}].requirement_ids must be a string list."
+                )
+            requirement_ids = [
+                cls._item_id(item, f"steps[{index}].requirement_ids")
+                for item in raw_requirement_ids
+            ]
+            if len(set(requirement_ids)) != len(requirement_ids):
+                raise ValueError(
+                    f"steps[{index}].requirement_ids cannot contain duplicates."
+                )
+            normalized_step = {
+                "id": identifier,
+                "title": cls._bounded_text(
+                    raw.get("title", ""), f"steps[{index}].title", 1000
+                ),
+                "depends_on": list(dict.fromkeys(dependencies)),
+                "status": "pending",
+                "evidence": "",
+                "updated_at": None,
+                "completed_at": None,
+            }
+            if requirement_ids:
+                normalized_step["requirement_ids"] = requirement_ids
+            normalized.append(normalized_step)
         for step in normalized:
             missing = set(step["depends_on"]) - identifiers
             if missing:
@@ -122,6 +142,20 @@ class HostOSCodingPlans:
                 raise ValueError(f"Step '{step['id']}' cannot depend on itself.")
         cls._assert_acyclic(normalized)
         return normalized
+
+    @staticmethod
+    def _validate_requirement_links(
+        requirements: List[Dict[str, Any]], steps: List[Dict[str, Any]]
+    ) -> None:
+        known = {item["id"] for item in requirements}
+        for step in steps:
+            unknown = set(step.get("requirement_ids", [])) - known
+            if unknown:
+                raise ValueError(
+                    f"Step '{step['id']}' covers unknown requirements: "
+                    + ", ".join(sorted(unknown))
+                    + "."
+                )
 
     @classmethod
     def _normalize_requirements(cls, raw: List[str]) -> List[Dict[str, Any]]:
@@ -147,6 +181,7 @@ class HostOSCodingPlans:
             item["status"] == "satisfied" for item in requirements
         )
         replanning = plan.get("replanning", {})
+        quality = plan.get("quality_report", {})
         return {
             "completed_steps": completed_steps,
             "total_steps": len(steps),
@@ -156,6 +191,10 @@ class HostOSCodingPlans:
             or any(item["status"] == "blocked" for item in requirements),
             "replan_required": bool(replanning.get("required")),
             "replan_reason_count": len(replanning.get("reasons", [])),
+            "plan_quality_status": quality.get("status", "not_evaluated"),
+            "plan_quality_score": quality.get("score"),
+            "plan_quality_revision_recommended": quality.get("status")
+            in {"advisory", "reject"},
             "ready_for_commit": completed_steps == len(steps)
             and satisfied_requirements == len(requirements)
             and not bool(replanning.get("required")),
@@ -172,6 +211,39 @@ class HostOSCodingPlans:
                 "last_applied_at": None,
             },
         )
+
+    @staticmethod
+    def _quality_view(report: Any) -> Optional[Dict[str, Any]]:
+        """Expose an actionable fixed-shape view without inflating ReAct context."""
+
+        if not isinstance(report, dict):
+            return None
+        metrics = report.get("metrics", {})
+        findings = []
+        for item in report.get("findings", []):
+            if not isinstance(item, dict):
+                continue
+            item_ids = item.get("item_ids", [])
+            if not isinstance(item_ids, list):
+                item_ids = []
+            findings.append(
+                {
+                    "code": item.get("code"),
+                    "severity": item.get("severity"),
+                    "item_count": len(item_ids),
+                    "item_ids": item_ids[:20],
+                }
+            )
+        return {
+            "status": report.get("status"),
+            "score": report.get("score"),
+            "report_sha256": report.get("report_sha256"),
+            "recommended_max_steps": metrics.get("recommended_max_steps"),
+            "covered_requirement_count": metrics.get(
+                "covered_requirement_count"
+            ),
+            "findings": findings[:10],
+        }
 
     def _mark_replan_required(
         self,
@@ -365,6 +437,8 @@ class HostOSCodingPlans:
             "requires_diff_review": bool(
                 plan.get("requires_diff_review", False)
             ),
+            "quality_policy": plan.get("quality_policy", "advisory"),
+            "quality_report": cls._quality_view(plan.get("quality_report")),
             "created_at": plan["created_at"],
             "updated_at": plan["updated_at"],
             "summary": cls._summary(plan),
@@ -403,6 +477,11 @@ class HostOSCodingPlans:
                     "status": step["status"],
                     "title": step["title"][:200],
                     "depends_on": step["depends_on"],
+                    **(
+                        {"requirement_ids": step["requirement_ids"]}
+                        if step.get("requirement_ids")
+                        else {}
+                    ),
                     **(
                         {"delegation_status": step["delegation_status"]}
                         if step.get("delegation_status")
@@ -796,11 +875,14 @@ class HostOSCodingPlans:
         requirements: List[str],
         steps: List[Dict[str, Any]],
         replace: bool = False,
+        quality_policy: PlanQualityPolicy = "advisory",
     ) -> SkillResult:
         """Create a durable requirement/step plan for an existing coding task.
 
-        Step objects accept only ``id``, ``title``, and ``depends_on``. Replacing
-        an existing plan is refused unless ``replace=true`` is explicit.
+        Step objects accept ``id``, ``title``, ``depends_on``, and optional
+        ``requirement_ids``. ``quality_policy='enforce'`` requires explicit
+        outcome coverage and rejects process-only or disproportionate plans.
+        Replacing an existing plan is refused unless ``replace=true`` is explicit.
         """
 
         try:
@@ -808,6 +890,17 @@ class HostOSCodingPlans:
             objective = self._bounded_text(objective, "objective", 4000)
             normalized_requirements = self._normalize_requirements(requirements)
             normalized_steps = self._normalize_steps(steps)
+            self._validate_requirement_links(
+                normalized_requirements, normalized_steps
+            )
+            quality_report = grade_coding_plan(
+                normalized_requirements, normalized_steps, quality_policy
+            )
+            if quality_policy == "enforce" and quality_report["status"] == "reject":
+                return SkillResult.fail(
+                    "Coding plan quality rejected: "
+                    + json.dumps(self._quality_view(quality_report), ensure_ascii=False)
+                )
             async with self.workspaces._lock:
                 registry = self.workspaces._load_registry()
                 entry = self.workspaces._get_entry(registry, task_id)
@@ -823,6 +916,8 @@ class HostOSCodingPlans:
                     "revision": 1,
                     "objective": objective,
                     "requires_diff_review": True,
+                    "quality_policy": quality_policy,
+                    "quality_report": quality_report,
                     "requirements": normalized_requirements,
                     "steps": normalized_steps,
                     "created_at": now,
@@ -838,7 +933,14 @@ class HostOSCodingPlans:
                             "event": "initialized",
                             "revision": 1,
                             "time": now,
-                            "details": {"replaced_existing": bool(existing_plan)},
+                            "details": {
+                                "replaced_existing": bool(existing_plan),
+                                "quality_policy": quality_policy,
+                                "quality_status": quality_report["status"],
+                                "quality_report_sha256": quality_report[
+                                    "report_sha256"
+                                ],
+                            },
                             "trace": current_trace(),
                         }
                     ],
@@ -940,6 +1042,7 @@ class HostOSCodingPlans:
                 if not plan:
                     return SkillResult.fail("Coding task has no initialized plan.")
                 self._check_revision(plan, expected_revision)
+                self._validate_requirement_links(plan["requirements"], proposed)
                 _, workspace = self.workspaces._entry_paths(entry)
                 if not workspace.is_dir():
                     return SkillResult.fail("Coding workspace directory is missing.")
@@ -1001,12 +1104,15 @@ class HostOSCodingPlans:
                 for step_id in sorted(protected):
                     old = current_by_id[step_id]
                     new = proposed_by_id[step_id]
-                    if old["title"] != new["title"] or old["depends_on"] != new[
-                        "depends_on"
-                    ]:
+                    if (
+                        old["title"] != new["title"]
+                        or old["depends_on"] != new["depends_on"]
+                        or old.get("requirement_ids", [])
+                        != new.get("requirement_ids", [])
+                    ):
                         raise ValueError(
                             f"Protected step '{step_id}' must retain its title and "
-                            "dependencies."
+                            "dependencies and requirement coverage."
                         )
 
                 retained_blocked = [
@@ -1046,6 +1152,9 @@ class HostOSCodingPlans:
                         **old,
                         "title": proposed_step["title"],
                         "depends_on": proposed_step["depends_on"],
+                        "requirement_ids": proposed_step.get(
+                            "requirement_ids", []
+                        ),
                     }
                     if step_id in reopen:
                         prior = retained.setdefault("replan_evidence_history", [])
@@ -1069,6 +1178,7 @@ class HostOSCodingPlans:
                         "id": step["id"],
                         "title": step["title"],
                         "depends_on": step["depends_on"],
+                        "requirement_ids": step.get("requirement_ids", []),
                         "status": step["status"],
                     }
                     for step in plan["steps"]
@@ -1078,6 +1188,7 @@ class HostOSCodingPlans:
                         "id": step["id"],
                         "title": step["title"],
                         "depends_on": step["depends_on"],
+                        "requirement_ids": step.get("requirement_ids", []),
                         "status": step["status"],
                     }
                     for step in rebuilt
@@ -1104,6 +1215,20 @@ class HostOSCodingPlans:
                         "The proposed revision only reorders steps and does not "
                         "change remaining work."
                     )
+                quality_policy = plan.get("quality_policy", "advisory")
+                quality_report = grade_coding_plan(
+                    plan["requirements"], rebuilt, quality_policy
+                )
+                if (
+                    quality_policy == "enforce"
+                    and quality_report["status"] == "reject"
+                ):
+                    return SkillResult.fail(
+                        "Coding plan quality rejected: "
+                        + json.dumps(
+                            self._quality_view(quality_report), ensure_ascii=False
+                        )
+                    )
                 latest_fingerprint = await self.workspaces.workspace_fingerprint(
                     workspace
                 )
@@ -1122,6 +1247,10 @@ class HostOSCodingPlans:
                 previous_revision = plan["revision"]
                 now = self.workspaces._utc_now()
                 plan["steps"] = rebuilt
+                previous_quality_sha256 = str(
+                    plan.get("quality_report", {}).get("report_sha256", "")
+                )
+                plan["quality_report"] = quality_report
                 state["required"] = False
                 state["reasons"] = []
                 state["last_applied_at"] = now
@@ -1141,6 +1270,9 @@ class HostOSCodingPlans:
                         "workspace_fingerprint": expected_workspace_fingerprint,
                         "resolved_reason_ids": resolved_reason_ids,
                         "changes": changes,
+                        "previous_quality_report_sha256": previous_quality_sha256,
+                        "quality_report_sha256": quality_report["report_sha256"],
+                        "quality_status": quality_report["status"],
                         "applied_at": now,
                         "trace": current_trace(),
                     }
@@ -1152,6 +1284,8 @@ class HostOSCodingPlans:
                     {
                         "reason": clean_reason,
                         "workspace_fingerprint": expected_workspace_fingerprint,
+                        "quality_status": quality_report["status"],
+                        "quality_report_sha256": quality_report["report_sha256"],
                         **changes,
                     },
                 )
@@ -1238,6 +1372,18 @@ class HostOSCodingPlans:
                 target["evidence"] = clean_evidence
                 target["updated_at"] = now
                 target["completed_at"] = now if status == "completed" else None
+                satisfied_requirement_ids: List[str] = []
+                if status == "completed":
+                    covered = set(target.get("requirement_ids", []))
+                    for requirement in plan["requirements"]:
+                        if (
+                            requirement["id"] in covered
+                            and requirement["status"] == "pending"
+                        ):
+                            requirement["status"] = "satisfied"
+                            requirement["evidence"] = clean_evidence
+                            requirement["updated_at"] = now
+                            satisfied_requirement_ids.append(requirement["id"])
                 if status == "blocked":
                     self._mark_replan_required(
                         plan,
@@ -1248,10 +1394,19 @@ class HostOSCodingPlans:
                 self._append_history(
                     plan,
                     "step_updated",
-                    {"step_id": step_id, "from": previous, "to": status},
+                    {
+                        "step_id": step_id,
+                        "from": previous,
+                        "to": status,
+                        "auto_satisfied_requirement_ids": satisfied_requirement_ids,
+                    },
                 )
                 self.workspaces._save_registry(registry)
                 payload = {**target, "revision": plan["revision"]}
+                if satisfied_requirement_ids:
+                    payload["auto_satisfied_requirement_ids"] = (
+                        satisfied_requirement_ids
+                    )
             return SkillResult.ok(json.dumps(payload, ensure_ascii=False))
         except (PermissionError, FileNotFoundError, ValueError, KeyError) as exc:
             return SkillResult.fail(str(exc))

@@ -38,6 +38,160 @@ def create_repository(root: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_enforced_plan_quality_rejects_process_overhead_before_persistence(
+    os_client,
+):
+    create_repository(os_client.sandbox_dir)
+    workspaces = HostOSCodingWorkspaces(os_client)
+    plans = HostOSCodingPlans(os_client, workspaces)
+    await workspaces.create_coding_workspace("sandbox/project", "quality-rejected")
+
+    rejected = await plans.initialize_coding_task_plan(
+        "quality-rejected",
+        "Change one value safely",
+        [
+            "The value is two",
+            "Repository verification passes",
+            "Plan evidence is completed and committed",
+        ],
+        [
+            {"id": "inspect", "title": "Inspect the current implementation"},
+            {
+                "id": "implement",
+                "title": "Implement the value change",
+                "depends_on": ["inspect"],
+                "requirement_ids": ["req_1"],
+            },
+            {
+                "id": "verify",
+                "title": "Run repository tests",
+                "depends_on": ["implement"],
+                "requirement_ids": ["req_2"],
+            },
+            {
+                "id": "commit",
+                "title": "Commit verified workspace",
+                "depends_on": ["verify"],
+                "requirement_ids": ["req_3"],
+            },
+        ],
+        quality_policy="enforce",
+    )
+
+    assert rejected.is_success is False
+    assert "Coding plan quality rejected" in rejected.message
+    report = json.loads(rejected.message.split(": ", 1)[1])
+    assert report["status"] == "reject"
+    assert {item["code"] for item in report["findings"]} >= {
+        "process_requirements",
+        "bookkeeping_steps",
+        "excessive_step_count",
+    }
+    assert (await plans.get_coding_task_plan("quality-rejected")).is_success is False
+    unknown_link = await plans.initialize_coding_task_plan(
+        "quality-rejected",
+        "Change one value safely",
+        ["The value is two"],
+        [
+            {
+                "id": "implement",
+                "title": "Implement the value change",
+                "requirement_ids": ["req_99"],
+            }
+        ],
+        quality_policy="enforce",
+    )
+    assert unknown_link.is_success is False
+    assert "unknown requirements: req_99" in unknown_link.message
+    assert (
+        await workspaces.remove_coding_workspace("quality-rejected", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
+async def test_enforced_plan_quality_auto_satisfies_explicitly_covered_requirements(
+    os_client,
+):
+    create_repository(os_client.sandbox_dir)
+    workspaces = HostOSCodingWorkspaces(os_client)
+    plans = HostOSCodingPlans(os_client, workspaces)
+    await workspaces.create_coding_workspace("sandbox/project", "quality-compact")
+
+    initialized = await plans.initialize_coding_task_plan(
+        "quality-compact",
+        "Change one value safely",
+        ["The value is two", "Existing behavior remains compatible"],
+        [
+            {
+                "id": "implement",
+                "title": "Implement and verify the compatible value change",
+                "requirement_ids": ["req_1", "req_2"],
+            }
+        ],
+        quality_policy="enforce",
+    )
+    payload = json.loads(initialized.message)
+
+    assert initialized.is_success is True, initialized.message
+    assert payload["quality_policy"] == "enforce"
+    assert payload["quality_report"]["status"] == "pass"
+    assert payload["summary"]["plan_quality_status"] == "pass"
+    workspace = Path(
+        json.loads(
+            (await workspaces.get_coding_workspace_status("quality-compact")).message
+        )["workspace_path"]
+    )
+    fingerprint = (await workspaces.workspace_fingerprint(workspace))["fingerprint"]
+    rejected_revision = await plans.revise_coding_task_plan(
+        "quality-compact",
+        "Attempt a revision that drops explicit coverage.",
+        [
+            {
+                "id": "implement",
+                "title": "Implement the value change",
+                "requirement_ids": ["req_1"],
+            },
+            {
+                "id": "verify",
+                "title": "Run compatibility checks",
+                "depends_on": ["implement"],
+            },
+        ],
+        expected_revision=1,
+        expected_workspace_fingerprint=fingerprint,
+    )
+    assert rejected_revision.is_success is False
+    assert "Coding plan quality rejected" in rejected_revision.message
+    unchanged = json.loads(
+        (await plans.get_coding_task_plan("quality-compact")).message
+    )
+    assert unchanged["revision"] == 1
+    assert unchanged["quality_report"]["status"] == "pass"
+    completed = await plans.update_coding_task_step(
+        "quality-compact",
+        "implement",
+        "completed",
+        "The exact diff was reviewed and verification passed.",
+        expected_revision=1,
+    )
+    completed_payload = json.loads(completed.message)
+    assert completed.is_success is True, completed.message
+    assert completed_payload["auto_satisfied_requirement_ids"] == [
+        "req_1",
+        "req_2",
+    ]
+
+    resumed = HostOSCodingPlans(os_client, HostOSCodingWorkspaces(os_client))
+    persisted = json.loads((await resumed.get_coding_task_plan("quality-compact")).message)
+    assert persisted["summary"]["satisfied_requirements"] == 2
+    assert persisted["summary"]["ready_for_commit"] is True
+    assert all(item["status"] == "satisfied" for item in persisted["requirements"])
+    assert (
+        await workspaces.remove_coding_workspace("quality-compact", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
 async def test_coding_plan_persists_dependencies_evidence_and_commit_gate(os_client):
     create_repository(os_client.sandbox_dir)
     workspaces = HostOSCodingWorkspaces(os_client)
