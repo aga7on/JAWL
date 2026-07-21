@@ -79,3 +79,14 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - A workspace mutation during or after verification invalidates the result.
 - Task commits require a current successful fingerprint by default. An explicit
   bypass remains available for justified non-executable changes and is recorded.
+
+## Context acquisition contract
+
+- `read_file_range` returns exact numbered lines plus a whole-file SHA-256 without
+  loading irrelevant file content into the model context.
+- `search_repository` provides globally bounded literal/regex results, Unicode
+  columns, nearby lines, glob filters, and a Python fallback when ripgrep is absent.
+- `get_repository_map` provides a bounded map of files, line counts, signatures,
+  and symbols across common programming languages without requiring prior indexing.
+- Lightweight maps complement the persistent Code Graph: use the map for immediate
+  navigation and the graph for semantic search and dependency history.

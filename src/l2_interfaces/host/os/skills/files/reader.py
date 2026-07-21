@@ -108,6 +108,101 @@ class HostOSReader:
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.SANDBOX)
+    async def read_file_range(
+        self,
+        filepath: str,
+        start_line: int = 1,
+        end_line: int | None = None,
+        max_lines: int = 400,
+    ) -> SkillResult:
+        """Read an exact line range with stable line numbers and file SHA-256.
+
+        Use this instead of loading a whole large file when only a symbol or error
+        location is relevant. At most ``max_lines`` (1-1000) and the configured
+        file character budget are returned.
+        """
+
+        if start_line < 1:
+            return SkillResult.fail("start_line must be at least 1.")
+        if max_lines < 1 or max_lines > 1000:
+            return SkillResult.fail("max_lines must be between 1 and 1000.")
+        requested_end = end_line if end_line is not None else start_line + max_lines - 1
+        if requested_end < start_line:
+            return SkillResult.fail("end_line must be greater than or equal to start_line.")
+        effective_end = min(requested_end, start_line + max_lines - 1)
+
+        try:
+            safe_path = self.host_os.validate_path(filepath, is_write=False)
+            if not safe_path.is_file():
+                return SkillResult.fail(
+                    f"Error: Path is not a file or does not exist ({filepath})."
+                )
+            max_chars = self.host_os.config.file_read_max_chars
+
+            def _read_range():
+                digest = hashlib.sha256()
+                selected = []
+                selected_chars = 0
+                total_lines = 0
+                chars_truncated = False
+                with open(safe_path, "rb") as stream:
+                    for line_number, raw_line in enumerate(stream, start=1):
+                        digest.update(raw_line)
+                        total_lines = line_number
+                        if line_number < start_line or line_number > effective_end:
+                            continue
+                        decoded = raw_line.decode("utf-8", errors="replace").rstrip(
+                            "\r\n"
+                        )
+                        rendered = f"{line_number:>6} | {decoded}"
+                        if selected_chars + len(rendered) + 1 > max_chars:
+                            chars_truncated = True
+                            continue
+                        selected.append(rendered)
+                        selected_chars += len(rendered) + 1
+                return selected, total_lines, digest.hexdigest(), chars_truncated
+
+            selected, total_lines, sha256, chars_truncated = await asyncio.to_thread(
+                _read_range
+            )
+            if start_line > total_lines and total_lines > 0:
+                return SkillResult.fail(
+                    f"start_line {start_line} is beyond the file's {total_lines} lines."
+                )
+            if total_lines == 0:
+                return SkillResult.ok(
+                    f"[File: {safe_path.name} | Empty | SHA-256: {sha256}]"
+                )
+
+            actual_end = min(effective_end, total_lines)
+            header = (
+                f"[File: {safe_path.name} | Lines: {start_line}-{actual_end} "
+                f"of {total_lines} | SHA-256: {sha256}]"
+            )
+            notices = []
+            if requested_end > effective_end:
+                notices.append(
+                    f"Requested range capped at max_lines={max_lines}."
+                )
+            if chars_truncated:
+                notices.append(
+                    f"Output capped at {max_chars} configured characters."
+                )
+            body = "\n".join(selected)
+            if notices:
+                body += "\n... [" + " ".join(notices) + "]"
+            main_logger.info(
+                f"[Host OS] Read line range {start_line}-{actual_end}: "
+                f"{safe_path.name}"
+            )
+            return SkillResult.ok(header + ("\n" + body if body else ""))
+        except PermissionError as e:
+            return SkillResult.fail(str(e))
+        except Exception as e:
+            return SkillResult.fail(f"Error reading file range: {e}")
+
+    @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
+    @require_access(HostOSAccessLevel.SANDBOX)
     async def read_files_in_directory(
         self, path: str = ".", max_files: int = 10, recursive: bool = False
     ) -> SkillResult:

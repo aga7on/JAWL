@@ -249,3 +249,44 @@ async def test_os_files_read_files_in_directory_char_limit(os_client):
     assert "Reached global character reading limit" in res.message
     # Третий файл банально не влезет в лимит 20 символов
     assert "f3.txt" not in res.message
+
+
+@pytest.mark.asyncio
+async def test_read_file_range_returns_numbered_bounded_lines_and_checksum(os_client):
+    reader = HostOSReader(os_client)
+    target = os_client.sandbox_dir / "numbered.py"
+    target.write_text(
+        "".join(f"line_{number}\n" for number in range(1, 11)), encoding="utf-8"
+    )
+
+    result = await reader.read_file_range(
+        "sandbox/numbered.py", start_line=3, end_line=9, max_lines=4
+    )
+
+    assert result.is_success is True
+    assert "Lines: 3-6 of 10" in result.message
+    assert "     3 | line_3" in result.message
+    assert "     6 | line_6" in result.message
+    assert "line_7" not in result.message
+    assert "Requested range capped" in result.message
+    assert hashlib.sha256(target.read_bytes()).hexdigest() in result.message
+
+
+@pytest.mark.asyncio
+async def test_read_file_range_rejects_invalid_or_out_of_bounds_ranges(os_client):
+    reader = HostOSReader(os_client)
+    target = os_client.sandbox_dir / "short.txt"
+    target.write_text("one\ntwo\n", encoding="utf-8")
+
+    invalid = await reader.read_file_range("sandbox/short.txt", start_line=0)
+    reversed_range = await reader.read_file_range(
+        "sandbox/short.txt", start_line=2, end_line=1
+    )
+    out_of_bounds = await reader.read_file_range(
+        "sandbox/short.txt", start_line=5
+    )
+
+    assert invalid.is_success is False
+    assert reversed_range.is_success is False
+    assert out_of_bounds.is_success is False
+    assert "beyond the file's 2 lines" in out_of_bounds.message

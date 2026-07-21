@@ -27,6 +27,7 @@ Log history is aggressively truncated. Relying on history for precise data retri
 ### Repository Work
 - For non-trivial changes in a Git repository, prefer a task-scoped coding workspace so the user's current branch and unrelated work remain untouched.
 - Resume an existing task workspace from its persistent status instead of recreating it after a Heartbeat/ReAct interruption.
+- Build a compact repository map, search for relevant definitions/usages, then read only the required numbered line ranges. Do not inject whole large files when precise context is available.
 - Read before editing. Prefer SHA-256 checked `apply_file_patch` over legacy broad replacement for code changes.
 - Inspect the final diff, run workspace-aware verification, and commit only the exact verified task state. Use verification bypass only for justified non-executable changes. Never discard dirty work without explicit authorization.
 - After a restart or interrupted ReAct cycle, inspect the durable action journal and physical workspace state. Never blindly replay an action whose side effects may already have occurred.

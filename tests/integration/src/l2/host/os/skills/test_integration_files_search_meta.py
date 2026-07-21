@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from src.l2_interfaces.host.os.skills.files.search import HostOSSearch
 from src.l2_interfaces.host.os.skills.files.metadata import HostOSMetadata
@@ -55,6 +57,85 @@ async def test_search_content_in_files(os_client):
     assert res.is_success is True
     assert "app.py:2" in res.message
     assert "config.json:1" in res.message
+
+
+@pytest.mark.asyncio
+async def test_repository_search_returns_bounded_context_and_unicode_column(os_client):
+    search = HostOSSearch(os_client)
+    source_dir = os_client.sandbox_dir / "repo_search"
+    source_dir.mkdir()
+    (source_dir / "app.py").write_text(
+        "before\n\u043f\u0440\u0435\u0444\u0438\u043a\u0441 target_call()\nafter\n",
+        encoding="utf-8",
+    )
+    (source_dir / "notes.md").write_text("target_call ignored\n", encoding="utf-8")
+
+    result = await search.search_repository(
+        "target_call",
+        "sandbox/repo_search",
+        globs=["*.py"],
+        context_lines=1,
+    )
+    payload = json.loads(result.message)
+
+    assert result.is_success is True
+    assert payload["match_count"] == 1
+    assert payload["matches"][0]["path"].endswith("app.py")
+    assert payload["matches"][0]["line"] == 2
+    assert payload["matches"][0]["column"] == 9
+    assert payload["matches"][0]["before"][0]["text"] == "before"
+    assert payload["matches"][0]["after"][0]["text"] == "after"
+
+
+@pytest.mark.asyncio
+async def test_repository_search_python_fallback_and_global_limit(os_client, monkeypatch):
+    search = HostOSSearch(os_client)
+    source_dir = os_client.sandbox_dir / "fallback_search"
+    source_dir.mkdir()
+    for number in range(4):
+        (source_dir / f"file_{number}.txt").write_text(
+            f"needle_{number}\n", encoding="utf-8"
+        )
+    monkeypatch.setattr(
+        "src.l2_interfaces.host.os.skills.files.search.shutil.which",
+        lambda executable: None,
+    )
+
+    result = await search.search_repository(
+        r"needle_\d", "sandbox/fallback_search", regex=True, max_matches=2
+    )
+    payload = json.loads(result.message)
+
+    assert result.is_success is True
+    assert payload["backend"] == "python"
+    assert payload["match_count"] == 2
+    assert payload["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_repository_search_enforces_serialized_output_budget(os_client):
+    search = HostOSSearch(os_client)
+    source_dir = os_client.sandbox_dir / "budget_search"
+    source_dir.mkdir()
+    for number in range(20):
+        (source_dir / f"large_{number}.txt").write_text(
+            "before " + "a" * 300 + "\nneedle\nafter " + "b" * 300 + "\n",
+            encoding="utf-8",
+        )
+    os_client.config.file_read_max_chars = 500
+
+    result = await search.search_repository(
+        "needle",
+        "sandbox/budget_search",
+        context_lines=2,
+        max_matches=20,
+    )
+    payload = json.loads(result.message)
+
+    assert result.is_success is True
+    assert payload["truncated"] is True
+    assert payload["serialized_chars"] <= 1000
+    assert len(result.message) <= 1000
 
 
 @pytest.mark.asyncio
