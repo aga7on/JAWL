@@ -209,6 +209,24 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   environment overrides, and arbitrary commands are rejected; the policy hash
   is stored with each run.
 
+## Task command execution contract
+
+- `run_coding_command` accepts an argv array, never a shell string, and resolves
+  its working directory strictly inside one managed task worktree.
+- Every invocation requires an optimistic workspace fingerprint. Output is
+  drained with hard byte bounds, secrets are redacted, timeouts and cancellation
+  terminate the runtime process tree, and before/after fingerprints expose all
+  mutations to the subsequent diff and verification gates.
+- The default policy is `disabled`. The `host` backend requires exact executable
+  names pre-approved in human configuration and supplies a scrubbed environment;
+  it is explicitly not an OS security boundary.
+- The optional Docker/Podman backend bind-mounts only the task workspace, invokes
+  argv directly, drops all capabilities, enables `no-new-privileges`, and applies
+  network, memory, CPU, and PID policy from configuration. No automatic fallback
+  to host execution occurs when the runtime or image is unavailable.
+- Raw `execute_shell_command` remains ROOT-only for compatibility and is excluded
+  from the normal coding-agent workflow.
+
 ## Context acquisition contract
 
 - `read_file_range` returns exact numbered lines plus a whole-file SHA-256 without

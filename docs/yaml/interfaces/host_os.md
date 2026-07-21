@@ -24,3 +24,33 @@ These parameters protect the system prompt from being overloaded by giant direct
 * **`workspace_max_opened_files`**: Maximum number of "editor tabs" (files currently held open by the agent in its context).
 * **`recent_file_changes_limit`**: How many of the latest file diffs are preserved in memory (MRU cache).
 * **`workspace_max_file_chars`**: Maximum size of a file (in characters) that can be held open in the agent's editor tabs.
+
+## Coding command policy
+
+`run_coding_command` never invokes a shell and operates only in a managed task
+worktree. It requires the exact fingerprint returned by
+`get_coding_workspace_status` or the diff skill, so a command cannot start from
+stale inspected state.
+
+* **`coding_execution_backend: disabled`** is the safe default. No ad-hoc task
+  commands run; built-in verification profiles remain available.
+* **`coding_execution_backend: host`** runs directly on the workstation, but
+  only when `argv[0]` exactly matches a human-provided executable name or the
+  basename of an absolute pinned path in `coding_host_allowed_commands`.
+  Absolute configured paths provide stronger PATH-hijack resistance while the
+  model still supplies only a name. It strips credentials from the child
+  environment and does not accept command paths or shell strings. This is
+  pre-authorization, not OS isolation: an approved interpreter can still access
+  resources available to the JAWL process.
+* **`coding_execution_backend: container`** uses the configured `docker` or
+  `podman` runtime. Only the task worktree is bind-mounted, capabilities are
+  dropped, `no-new-privileges` is enabled, and memory, CPU, and PID limits are
+  applied. Network defaults to `none`; selecting `bridge` is an explicit human
+  policy decision. The configured image is trusted infrastructure and should be
+  pinned by digest for stronger reproducibility.
+
+Both executable output streams are byte-bounded while being drained, timeout or
+cancellation terminates the complete local runtime process tree, and the result
+returns before/after workspace fingerprints. Legacy `execute_shell_command`
+remains a separate ROOT-only compatibility path and is not used by the coding
+workflow.

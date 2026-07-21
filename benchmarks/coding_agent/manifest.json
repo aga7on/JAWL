@@ -155,6 +155,16 @@
       ]
     },
     {
+      "id": "policy_controlled_task_execution",
+      "description": "Task commands are exact-state, shell-free, bounded, pre-approved on host or isolated by explicit container policy.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_execution.py::test_host_coding_command_requires_policy_allowlist_and_exact_state",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_execution.py::test_container_command_is_shell_free_task_mounted_and_resource_bounded",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_execution.py::test_coding_workspace_status_exposes_current_execution_fingerprint",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_execution.py::test_host_coding_command_bounds_output_and_kills_timed_out_process_tree"
+      ]
+    },
+    {
       "id": "cross_layer_trace_correlation",
       "description": "Async trace IDs survive child tasks, cancellation, actions, verification, and commits without leaking contexts.",
       "tests": [

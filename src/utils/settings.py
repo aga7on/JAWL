@@ -34,6 +34,14 @@ class HostOSConfig(BaseModel):
 
     monitoring_interval_sec: int = 30
     execution_timeout_sec: int = 60
+    coding_execution_backend: Literal["disabled", "host", "container"] = "disabled"
+    coding_host_allowed_commands: list[str] = Field(default_factory=list)
+    coding_container_runtime: Literal["docker", "podman"] = "docker"
+    coding_container_image: str = "python:3.11-slim"
+    coding_container_network: Literal["none", "bridge"] = "none"
+    coding_container_memory_mb: int = Field(default=2048, ge=128, le=32768)
+    coding_container_cpus: float = Field(default=2.0, ge=0.1, le=32.0)
+    coding_container_pids: int = Field(default=256, ge=16, le=4096)
     file_read_max_chars: int = 10000
     file_list_limit: int = 100
     top_processes_limit: int = 10

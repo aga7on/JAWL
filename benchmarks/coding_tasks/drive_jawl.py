@@ -31,6 +31,7 @@ from src.l1_databases.sql.management.ticks import SQLTicks
 from src.l2_interfaces.host.os.client import HostOSClient
 from src.l2_interfaces.host.os.skills.coding_context import HostOSCodingContext
 from src.l2_interfaces.host.os.skills.coding_dependencies import HostOSCodingDependencies
+from src.l2_interfaces.host.os.skills.coding_execution import HostOSCodingExecution
 from src.l2_interfaces.host.os.skills.coding_files import HostOSCodingFiles
 from src.l2_interfaces.host.os.skills.coding_lsp import HostOSCodingLanguageServer
 from src.l2_interfaces.host.os.skills.coding_plans import HostOSCodingPlans
@@ -286,6 +287,7 @@ async def run_live_task(
             workspaces,
             HostOSCodingFiles(host, workspaces, reader, editor, search),
             HostOSCodingPlans(host, workspaces),
+            HostOSCodingExecution(host, workspaces),
             HostOSCodingVerification(host, workspaces),
         ]
         for instance in coding_instances:

@@ -14,6 +14,17 @@ host:
     monitoring_interval_sec: 30
     execution_timeout_sec: 60 
 
+    # Task-scoped argv execution: disabled, explicitly pre-approved host
+    # executables, or an isolated Docker/Podman container.
+    coding_execution_backend: disabled
+    coding_host_allowed_commands: []
+    coding_container_runtime: docker
+    coding_container_image: "python:3.11-slim"
+    coding_container_network: none
+    coding_container_memory_mb: 2048
+    coding_container_cpus: 2.0
+    coding_container_pids: 256
+
     file_read_max_chars: 10000
     file_list_limit: 100
     top_processes_limit: 10

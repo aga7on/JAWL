@@ -502,9 +502,12 @@ class HostOSCodingWorkspaces:
         _, diff_stat, _ = await self._run_git(
             workspace, "diff", "--stat", "HEAD", "--"
         )
+        fingerprint = await self.workspace_fingerprint(workspace)
         payload["state"] = "dirty" if status.splitlines()[1:] else "clean"
         payload["status"] = truncate_text(status, max_chars=6000)
         payload["diff_stat"] = truncate_text(diff_stat, max_chars=6000)
+        payload["head"] = fingerprint["head"]
+        payload["workspace_fingerprint"] = fingerprint["fingerprint"]
         return payload
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
