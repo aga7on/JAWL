@@ -41,6 +41,25 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   `sandbox/_system/` area.
 - `restore_file_checkpoint` refuses to overwrite content changed after the patch.
 
+## Symbol navigation contract
+
+- `locate_code_symbol` scans a bounded source set without requiring a persistent
+  index and returns definitions before references with file, line, column,
+  preview, backend, and confidence metadata.
+- Python occurrences come from the standard AST, so comments and strings do not
+  become false references. Other supported languages use tree-sitter when its
+  parser is available; parser/version failures degrade to an explicitly labeled
+  lexical fallback instead of aborting the ReAct cycle.
+- Result count, source-file size, file count, match count, serialized output,
+  and fallback diagnostics are bounded. Shared cached parsers are serialized
+  because concurrent tree-sitter parsing is not assumed to be thread-safe.
+- This feature finds syntax-aware occurrences; it does not claim project-wide
+  type resolution. A future LSP adapter may refine ambiguous occurrences while
+  preserving the current zero-index fallback.
+- `constraints.txt` pins the tree-sitter constructor API expected by
+  `tree-sitter-languages` for newly bootstrapped environments. Existing
+  incompatible environments remain functional through the fallback path.
+
 ## Task workspace contract
 
 - Non-trivial repository work can be isolated with `create_coding_workspace`.

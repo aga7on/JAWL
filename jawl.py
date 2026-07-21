@@ -87,6 +87,7 @@ def setup_and_run() -> None:
     root_dir = Path(__file__).resolve().parent
     venv_dir = root_dir / "venv"
     req_file = root_dir / "requirements.txt"
+    constraints_file = root_dir / "constraints.txt"
 
     recover_deploy_crashes(root_dir)
 
@@ -120,10 +121,17 @@ def setup_and_run() -> None:
 
                 print("\n[*] Installing dependencies from requirements.txt.\n")
 
-                result = subprocess.run(
-                    [str(venv_python), "-m", "pip", "install", "-r", str(req_file)],
-                    check=False,
-                )
+                install_command = [
+                    str(venv_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "-r",
+                    str(req_file),
+                ]
+                if constraints_file.exists():
+                    install_command.extend(["-c", str(constraints_file)])
+                result = subprocess.run(install_command, check=False)
 
                 # FALLBACK LOGIC
                 if result.returncode != 0:
@@ -168,18 +176,23 @@ def setup_and_run() -> None:
                         )
 
                         print("[*] uv: Installing dependencies.")
+                        uv_install_command = [
+                            sys.executable,
+                            "-m",
+                            "uv",
+                            "pip",
+                            "install",
+                            "--python",
+                            str(venv_python),
+                            "-r",
+                            str(req_file),
+                        ]
+                        if constraints_file.exists():
+                            uv_install_command.extend(
+                                ["-c", str(constraints_file)]
+                            )
                         uv_result = subprocess.run(
-                            [
-                                sys.executable,
-                                "-m",
-                                "uv",
-                                "pip",
-                                "install",
-                                "--python",
-                                str(venv_python),
-                                "-r",
-                                str(req_file),
-                            ],
+                            uv_install_command,
                             check=False,
                         )
 

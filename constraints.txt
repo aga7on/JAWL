@@ -1,0 +1,2 @@
+# tree-sitter-languages 1.10.x uses the pre-0.22 Language constructor.
+tree-sitter>=0.21.0,<0.22.0

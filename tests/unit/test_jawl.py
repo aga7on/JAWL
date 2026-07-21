@@ -102,6 +102,10 @@ def test_setup_and_run_classic_pip_success(
 
         # pip install и pip upgrade вызвались, вопросов к юзеру не было
         assert mock_run.call_count == 2
+        install_args = next(
+            call.args[0] for call in mock_run.call_args_list if "-r" in call.args[0]
+        )
+        assert "-c" in install_args
         mock_input.assert_not_called()
 
 
@@ -157,6 +161,12 @@ def test_setup_and_run_uv_fallback_accepted(
         assert any(
             "uv" in c[0][0] and "venv" in c[0][0] and "--python" in c[0][0] for c in calls
         )  # uv venv --python 3.11
+        uv_install_args = next(
+            call.args[0]
+            for call in calls
+            if "uv" in call.args[0] and "pip" in call.args[0] and "-r" in call.args[0]
+        )
+        assert "-c" in uv_install_args
 
         # Проверяем, что битый venv был удален
         mock_rmtree.assert_called_once_with(mock_venv_dir, ignore_errors=True)
