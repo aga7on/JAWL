@@ -1,6 +1,38 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.l2_interfaces.telegram.telethon.skills.messages import TelethonMessages
+from src.l3_agent.skills.registry import SkillResult
+
+
+@pytest.mark.asyncio
+async def test_get_messages_compatibility_alias(mock_tg_client):
+    expected = SkillResult.ok("history")
+    with patch(
+        "src.l2_interfaces.telegram.telethon.skills.chats.TelethonChats.read_chat",
+        new_callable=AsyncMock,
+        return_value=expected,
+    ) as read_chat:
+        result = await TelethonMessages(mock_tg_client).get_messages(
+            chat_id=123,
+            limit=999,
+        )
+
+    assert result == expected
+    read_chat.assert_awaited_once_with(chat_id=123, limit=50)
+
+
+@pytest.mark.asyncio
+async def test_get_unread_messages_compatibility_alias(mock_tg_client):
+    expected = SkillResult.ok("unread")
+    with patch(
+        "src.l2_interfaces.telegram.telethon.skills.chats.TelethonChats.get_unread_chats",
+        new_callable=AsyncMock,
+        return_value=expected,
+    ) as get_unread_chats:
+        result = await TelethonMessages(mock_tg_client).get_unread_messages(limit=999)
+
+    assert result == expected
+    get_unread_chats.assert_awaited_once_with(limit=100)
 
 
 @pytest.mark.asyncio

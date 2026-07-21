@@ -26,6 +26,30 @@ class TelethonMessages:
         self.tg_client = tg_client
 
     @skill()
+    async def get_messages(
+        self, chat_id: Union[int, str], limit: int = 10
+    ) -> SkillResult:
+        """Compatibility alias that reads recent chat messages."""
+        # Models naturally group message reads under TelethonMessages, while
+        # the historical implementation placed the operation in
+        # TelethonChats.read_chat. Keep both exact names valid.
+        from src.l2_interfaces.telegram.telethon.skills.chats import TelethonChats
+
+        return await TelethonChats(self.tg_client).read_chat(
+            chat_id=chat_id,
+            limit=max(1, min(int(limit), 50)),
+        )
+
+    @skill()
+    async def get_unread_messages(self, limit: int = 20) -> SkillResult:
+        """Compatibility alias that lists chats containing unread messages."""
+        from src.l2_interfaces.telegram.telethon.skills.chats import TelethonChats
+
+        return await TelethonChats(self.tg_client).get_unread_chats(
+            limit=max(1, min(int(limit), 100))
+        )
+
+    @skill()
     async def send_message(
         self,
         to_id: Union[int, str],
