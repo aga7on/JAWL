@@ -27,6 +27,7 @@ tasks safely, recoverably, and with measurable evidence.
 | Command isolation | Strong | Disabled-by-default task runner, shell-free argv, exact-state guard, host pre-approval, optional Docker/Podman capability/network/resource isolation, exact named toolchain/container profiles, expiring one-shot approvals, passive desktop/Telegram pushes, and opt-in exact chat/actor-bound Telegram decisions intercepted before agent routing | Host backend remains authorization rather than OS containment; remote review is command-based rather than a richer signed UI |
 | LLM protocol | Good | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, noisy Qwen payload recovery, bounded transient retries, configurable Thinking policy, persisted failures, terminal step-limit record | QWB exposes only a Boolean Thinking switch, not a token/time budget; adaptive per-task policy still needs measured validation |
 | Telemetry | Strong | Async-safe traces link calls/ticks/actions/plans/verification/commits; durable bounded coding rollups expose separate estimated/provider tokens, request/tool latency, outcomes, coverage, and a passive payload-free dashboard export | Monetary cost is intentionally unavailable until a trusted per-model price catalogue exists; historical aggregates are bounded by tick/journal retention |
+| MCP interoperability | Strong | Opt-in stdio and Streamable HTTP client, progressive discovery, exact allowlists, fresh schema-hash guard, local JSON Schema validation, lifecycle-owned sessions, cancellation propagation, no automatic replay of unknown outcomes, bounded/redacted results, and payload-free health context | Server-specific OAuth discovery and interactive elicitation are intentionally not automated; operators configure credentials and authority explicitly |
 | Evaluation | Strong substrate | Deterministic capability gate, fixed hidden-test repositories, isolated real-ReAct driver, recorded QWB calibrations, quota-free external-command preflight, cryptographic task/grader contracts, and fail-closed cross-agent comparison | No equivalent external-agent live baseline has been executed yet; the installed Codex CLI run would consume account quota |
 | Planning | Strong | Persistent task-local requirements, dependency steps, revision guards, evidence history, automatic failure/replan state, objective-preserving unfinished-graph revisions, deterministic payload-free proportionality/coverage grading, explicit step-to-requirement bindings, and automatic covered-requirement evidence | Plan synthesis remains model-authored; JAWL-specific quality heuristics and their effect on live task latency still need comparative calibration |
 
@@ -42,9 +43,9 @@ tasks safely, recoverably, and with measurable evidence.
 3. Revisit true mid-generation steering only when QWB/provider transport exposes
    an authenticated request-ID-bound input endpoint with an acknowledgement;
    do not emulate it by cancelling or racing a second generation.
-4. Add a policy-controlled MCP client after the delivery workflow: bounded
-   discovery, stdio and Streamable HTTP transports, exact schema projection,
-   cancellation, approval boundaries, and durable payload-free health evidence.
+4. Validate the new policy-controlled MCP client against the specific servers
+   selected for production before enabling them; keep each exact tool allowlist
+   limited to the authority JAWL actually needs.
 
 ## External baseline preflight
 

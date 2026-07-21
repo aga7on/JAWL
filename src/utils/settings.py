@@ -7,9 +7,11 @@ automatic config migration, and environment-driven override fallbacks.
 """
 
 import shutil
+import re
 import yaml
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -322,6 +324,143 @@ class MultimodalityConfig(BaseModel):
     enabled: bool = False
 
 
+class MCPServerConfig(BaseModel):
+    """One explicitly operator-configured MCP server boundary."""
+
+    name: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+    enabled: bool = True
+    transport: Literal["stdio", "streamable_http"] = "stdio"
+    command: str | None = Field(default=None, min_length=1, max_length=1000)
+    args: list[str] = Field(default_factory=list, max_length=128)
+    cwd: str = Field(default=".", min_length=1, max_length=1000)
+    url: str | None = Field(default=None, min_length=1, max_length=2000)
+    env_passthrough: list[str] = Field(default_factory=list, max_length=64)
+    bearer_token_env: str | None = Field(default=None, min_length=1, max_length=128)
+    headers_from_env: dict[str, str] = Field(default_factory=dict)
+    allowed_tools: list[str] = Field(default_factory=list, max_length=500)
+    resources_enabled: bool = False
+    prompts_enabled: bool = False
+
+    @field_validator("args")
+    @classmethod
+    def validate_args(cls, args: list[str]) -> list[str]:
+        if any("\x00" in item or len(item) > 4096 for item in args):
+            raise ValueError("MCP server args must be NUL-free and bounded")
+        if sum(len(item) for item in args) > 32768:
+            raise ValueError("MCP server args exceed 32768 characters")
+        return args
+
+    @field_validator("env_passthrough")
+    @classmethod
+    def validate_env_passthrough(cls, values: list[str]) -> list[str]:
+        pattern = r"^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+        if len(values) != len(set(values)) or any(
+            not re.fullmatch(pattern, value) for value in values
+        ):
+            raise ValueError(
+                "MCP env_passthrough must contain unique environment names"
+            )
+        return values
+
+    @field_validator("allowed_tools")
+    @classmethod
+    def validate_allowed_tools(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)) or any(
+            not value or "\x00" in value or len(value) > 256 for value in values
+        ):
+            raise ValueError("MCP allowed_tools must contain unique bounded names")
+        return values
+
+    @field_validator("headers_from_env")
+    @classmethod
+    def validate_headers(cls, headers: dict[str, str]) -> dict[str, str]:
+        if len(headers) > 32:
+            raise ValueError("MCP headers_from_env exceeds 32 headers")
+        blocked = {
+            "authorization",
+            "connection",
+            "content-length",
+            "host",
+            "mcp-session-id",
+            "transfer-encoding",
+        }
+        name_pattern = r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}$"
+        env_pattern = r"^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+        for header, env_name in headers.items():
+            if (
+                not re.fullmatch(name_pattern, header)
+                or header.lower() in blocked
+                or not re.fullmatch(env_pattern, env_name)
+            ):
+                raise ValueError("Invalid MCP header/environment mapping")
+        return headers
+
+    @model_validator(mode="after")
+    def validate_transport(self) -> "MCPServerConfig":
+        cwd = Path(self.cwd)
+        if cwd.is_absolute() or ".." in cwd.parts or "\x00" in self.cwd:
+            raise ValueError("MCP cwd must stay relative to the JAWL root")
+        if self.bearer_token_env and not re.fullmatch(
+            r"^[A-Za-z_][A-Za-z0-9_]{0,127}$", self.bearer_token_env
+        ):
+            raise ValueError("Invalid MCP bearer_token_env")
+        if self.transport == "stdio":
+            if not self.command or self.url is not None:
+                raise ValueError("stdio MCP servers require command and no url")
+            if "\x00" in self.command:
+                raise ValueError("MCP command must be NUL-free")
+            if self.bearer_token_env or self.headers_from_env:
+                raise ValueError("stdio MCP servers cannot configure HTTP headers")
+            return self
+        if self.command is not None or self.args:
+            raise ValueError(
+                "streamable_http MCP servers require url and no command/args"
+            )
+        if self.env_passthrough:
+            raise ValueError(
+                "streamable_http MCP servers cannot pass subprocess environment"
+            )
+        if not self.url:
+            raise ValueError("streamable_http MCP servers require url")
+        parsed = urlsplit(self.url)
+        if parsed.username or parsed.password or parsed.fragment:
+            raise ValueError("MCP URL cannot contain credentials or a fragment")
+        hostname = (parsed.hostname or "").lower()
+        local_http = hostname in {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme != "https" and not (
+            parsed.scheme == "http" and local_http
+        ):
+            raise ValueError(
+                "Remote MCP URLs require HTTPS; HTTP is limited to localhost"
+            )
+        return self
+
+
+class MCPConfig(BaseModel):
+    enabled: bool = False
+    startup_timeout_sec: float = Field(default=30.0, gt=0, le=120)
+    request_timeout_sec: float = Field(default=60.0, gt=0, le=600)
+    max_catalog_items: int = Field(default=500, ge=1, le=5000)
+    max_result_chars: int = Field(default=20000, ge=1000, le=100000)
+    max_binary_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        le=100 * 1024 * 1024,
+    )
+    servers: list[MCPServerConfig] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_server_names(self) -> "MCPConfig":
+        names = [server.name for server in self.servers]
+        if len(names) != len(set(names)):
+            raise ValueError("MCP server names must be unique")
+        return self
+
+
 class CalendarConfig(BaseModel):
     enabled: bool = True
     polling_interval_sec: int = 60
@@ -383,6 +522,7 @@ class InterfacesConfig(BaseModel):
     meta: MetaConfig = Field(default_factory=MetaConfig)
     code_graph: CodeGraphConfig = Field(default_factory=CodeGraphConfig)
     multimodality: MultimodalityConfig = Field(default_factory=MultimodalityConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
     calendar: CalendarConfig = Field(default_factory=CalendarConfig)
     email: EmailConfig = Field(default_factory=EmailConfig)
     voice: VoiceInterfacesConfig = Field(default_factory=VoiceInterfacesConfig)

@@ -441,6 +441,18 @@
         "tests/integration/src/l2/host/os/skills/test_integration_coding_delivery.py::test_delivery_preflight_reports_conflicts_without_mutation",
         "tests/integration/src/l2/host/os/skills/test_integration_coding_delivery.py::test_delivery_requires_managed_unbypassed_clean_commit"
       ]
+    },
+    {
+      "id": "policy_controlled_mcp_interoperability",
+      "description": "MCP remains opt-in and progressively discovered; exact allowlists and fresh schema hashes guard real stdio calls while resources, prompts, outputs, lifecycle, and configuration stay bounded.",
+      "tests": [
+        "tests/unit/utils/test_settings.py::test_mcp_config_enforces_transport_and_authorization_boundaries",
+        "tests/unit/l2/mcp/test_mcp_worker.py::test_guarded_call_rejects_schema_change_before_dispatch",
+        "tests/unit/l2/mcp/test_mcp_worker.py::test_bounded_json_redacts_secrets_and_enforces_limit",
+        "tests/unit/l2/mcp/test_plugin.py::test_mcp_plugin_registers_lifecycle_client_and_payload_free_context",
+        "tests/integration/src/l2/mcp/test_mcp_client.py::test_real_stdio_mcp_progressive_discovery_and_guarded_call",
+        "tests/integration/src/l2/mcp/test_mcp_client.py::test_real_stdio_mcp_resources_prompts_and_bounded_projection"
+      ]
     }
   ]
 }

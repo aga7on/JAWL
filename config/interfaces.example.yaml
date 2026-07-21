@@ -177,6 +177,35 @@ meta:
 multimodality:
   enabled: false
 
+# Подробнее: docs/yaml/interfaces/mcp.md
+mcp:
+  enabled: false
+  startup_timeout_sec: 30
+  request_timeout_sec: 60
+  max_catalog_items: 500
+  max_result_chars: 20000
+  max_binary_bytes: 10485760
+  servers: []
+  # servers:
+  #   - name: local_tools
+  #     transport: stdio
+  #     command: python
+  #     args: ["path/to/server.py"]
+  #     cwd: "."
+  #     env_passthrough: ["EXAMPLE_API_KEY"]
+  #     allowed_tools: ["search", "read"]
+  #     resources_enabled: false
+  #     prompts_enabled: false
+  #   - name: remote_tools
+  #     transport: streamable_http
+  #     url: "https://mcp.example.com/mcp"
+  #     bearer_token_env: "EXAMPLE_MCP_TOKEN"
+  #     headers_from_env:
+  #       X-Workspace: "EXAMPLE_WORKSPACE"
+  #     allowed_tools: ["search"]
+  #     resources_enabled: false
+  #     prompts_enabled: false
+
 # Подробнее: docs/yaml/interfaces/calendar.md
 calendar:
   enabled: false

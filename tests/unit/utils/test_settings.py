@@ -11,9 +11,57 @@ from src.utils.settings import (
     TelethonConfig,
     AiogramConfig,
     LifecycleCommandHookConfig,
+    MCPConfig,
+    MCPServerConfig,
     _log_missing_defaults,
     SystemConfig,
 )
+
+
+def test_mcp_config_enforces_transport_and_authorization_boundaries():
+    stdio = MCPServerConfig(
+        name="local",
+        command="python",
+        args=["server.py"],
+        allowed_tools=["search"],
+    )
+    assert stdio.transport == "stdio"
+    assert stdio.allowed_tools == ["search"]
+
+    remote = MCPServerConfig(
+        name="remote",
+        transport="streamable_http",
+        url="https://mcp.example.com/mcp",
+        bearer_token_env="MCP_TOKEN",
+    )
+    assert remote.url == "https://mcp.example.com/mcp"
+
+    with pytest.raises(ValueError, match="require HTTPS"):
+        MCPServerConfig(
+            name="remote",
+            transport="streamable_http",
+            url="http://mcp.example.com/mcp",
+        )
+    with pytest.raises(ValueError, match="credentials"):
+        MCPServerConfig(
+            name="remote",
+            transport="streamable_http",
+            url="https://user:secret@mcp.example.com/mcp",
+        )
+    with pytest.raises(ValueError, match="Invalid MCP header"):
+        MCPServerConfig(
+            name="remote",
+            transport="streamable_http",
+            url="https://mcp.example.com/mcp",
+            headers_from_env={"Authorization": "TOKEN"},
+        )
+    with pytest.raises(ValueError, match="must be unique"):
+        MCPConfig(
+            servers=[
+                {"name": "duplicate", "command": "python"},
+                {"name": "duplicate", "command": "python"},
+            ]
+        )
 
 
 def test_load_yaml_success(tmp_path: Path):

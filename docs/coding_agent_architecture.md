@@ -518,6 +518,24 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   Network publication, PR creation, and integration/conflict resolution are
   separate explicit operations and must consume a still-current exact contract.
 
+## Policy-controlled MCP client
+
+- MCP is an opt-in L2 plugin supporting stdio and Streamable HTTP servers. Stdio
+  uses exact argv without a shell and a minimal environment; remote HTTP requires
+  TLS, environment-backed credentials, and refuses redirects.
+- Remote tool catalogues are discovered progressively. The repeated L0 context
+  exposes only payload-free health/counts, while `search_tools` returns only
+  relevant current schemas.
+- Every tool call requires the exact SHA-256 of its current advertised contract.
+  JAWL re-lists immediately before dispatch, enforces the configured exact tool
+  allowlist, and validates arguments plus structured results with JSON Schema.
+- Each persistent server session is owned by one lifecycle worker task. Queued
+  requests propagate cancellation safely; a dispatched tool timeout is reported
+  as an unknown external outcome and is never automatically retried.
+- Resources and prompts are independently disabled by default. Returned text is
+  bounded/redacted and binary content is decoded under a strict limit into the
+  sandbox. No inputs, outputs, prompts, or resources enter L0 health state.
+
 ## Capability benchmark contract
 
 - `benchmarks/coding_agent/manifest.json` maps critical coding properties to
