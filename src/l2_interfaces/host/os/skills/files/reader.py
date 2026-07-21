@@ -4,6 +4,7 @@ Includes mechanisms for mass reading and context window protection.
 """
 
 import asyncio
+import hashlib
 from typing import Literal
 
 from src.utils.logger import main_logger
@@ -46,6 +47,11 @@ class HostOSReader:
                 with open(safe_path, "rb") as f:
                     f.seek(0, 2)
                     file_size = f.tell()
+                    f.seek(0)
+                    digest = hashlib.sha256()
+                    while chunk := f.read(1024 * 1024):
+                        digest.update(chunk)
+                    sha256 = digest.hexdigest()
 
                     if file_size <= max_chars:
                         f.seek(0)
@@ -53,14 +59,16 @@ class HostOSReader:
                             f.read().decode("utf-8", errors="replace").replace("\r\n", "\n"),
                             False,
                             file_size,
+                            sha256,
                         )
 
                     if read_from == "tail":
                         f.seek(file_size - max_chars)
                         return (
                             f.read().decode("utf-8", errors="replace").replace("\r\n", "\n"),
-                            False,
+                            True,
                             file_size,
+                            sha256,
                         )
                     else:
                         f.seek(0)
@@ -68,12 +76,18 @@ class HostOSReader:
                             f.read(max_chars).decode("utf-8", errors="replace"),
                             True,
                             file_size,
+                            sha256,
                         )
 
-            content, is_truncated, file_size = await asyncio.to_thread(_read_fast)
+            content, is_truncated, file_size, sha256 = await asyncio.to_thread(
+                _read_fast
+            )
 
             size_str = format_size(file_size)
-            header = f"[File: {safe_path.name} | Read: {len(content)} chars | Original size: {size_str}]\n{'='*40}\n"
+            header = (
+                f"[File: {safe_path.name} | Read: {len(content)} chars | "
+                f"Original size: {size_str} | SHA-256: {sha256}]\n{'='*40}\n"
+            )
 
             if is_truncated:
                 if read_from == "tail":

@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 import pytest
 
 from src.l2_interfaces.host.os.skills.files.reader import HostOSReader
@@ -18,6 +21,7 @@ async def test_os_files_write_and_read(os_client):
     res_read = await reader.read_file(filepath)
     assert res_read.is_success is True
     assert "Hello World" in res_read.message
+    assert hashlib.sha256(b"Hello World").hexdigest() in res_read.message
 
 
 @pytest.mark.asyncio
@@ -150,6 +154,79 @@ async def test_os_files_patch_file(os_client):
     res_fail = await editor.patch_file("sandbox/script.py", "return a * b", "return a / b")
     assert res_fail.is_success is False
     assert "not found" in res_fail.message
+
+
+@pytest.mark.asyncio
+async def test_safe_file_patch_is_precise_and_reversible(os_client):
+    editor = HostOSEditor(os_client)
+    target = os_client.sandbox_dir / "safe_patch.py"
+    original = "value = 1\nlabel = 'before'\n"
+    target.write_text(original, encoding="utf-8")
+    original_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+
+    result = await editor.apply_file_patch(
+        filepath="sandbox/safe_patch.py",
+        edits=[
+            {"search": "value = 1", "replace": "value = 2"},
+            {"search": "label = 'before'", "replace": "label = 'after'"},
+        ],
+        expected_sha256=original_sha256,
+    )
+
+    assert result.is_success is True
+    payload = json.loads(result.message)
+    assert payload["edits_applied"] == 2
+    assert payload["before_sha256"] == original_sha256
+    assert target.read_text(encoding="utf-8") == "value = 2\nlabel = 'after'\n"
+
+    restored = await editor.restore_file_checkpoint(payload["checkpoint_id"])
+
+    assert restored.is_success is True
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+async def test_safe_file_patch_rejects_ambiguous_or_stale_edits(os_client):
+    editor = HostOSEditor(os_client)
+    target = os_client.sandbox_dir / "ambiguous.py"
+    original = "flag = False\nflag = False\n"
+    target.write_text(original, encoding="utf-8")
+
+    ambiguous = await editor.apply_file_patch(
+        filepath="sandbox/ambiguous.py",
+        edits=[{"search": "flag = False", "replace": "flag = True"}],
+    )
+    stale = await editor.apply_file_patch(
+        filepath="sandbox/ambiguous.py",
+        edits=[{"search": original, "replace": "flag = True\n"}],
+        expected_sha256="0" * 64,
+    )
+
+    assert ambiguous.is_success is False
+    assert "found 2" in ambiguous.message
+    assert stale.is_success is False
+    assert "file changed since it was read" in stale.message
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_restore_refuses_to_overwrite_newer_changes(os_client):
+    editor = HostOSEditor(os_client)
+    target = os_client.sandbox_dir / "evolved.py"
+    target.write_text("version = 1\n", encoding="utf-8")
+
+    patched = await editor.apply_file_patch(
+        filepath="sandbox/evolved.py",
+        edits=[{"search": "version = 1", "replace": "version = 2"}],
+    )
+    checkpoint_id = json.loads(patched.message)["checkpoint_id"]
+    target.write_text("version = 3\n", encoding="utf-8")
+
+    restored = await editor.restore_file_checkpoint(checkpoint_id)
+
+    assert restored.is_success is False
+    assert "target changed after the checkpoint" in restored.message
+    assert target.read_text(encoding="utf-8") == "version = 3\n"
 
 
 @pytest.mark.asyncio

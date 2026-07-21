@@ -28,3 +28,15 @@ event-driven identity, local memory, interfaces, heartbeat, or personality model
 
 This contract is the foundation for later worktree isolation, durable action
 journaling, checkpoint/rewind, native patch application, and coding evaluation.
+
+## Safe editing contract
+
+- The legacy `patch_file` skill remains available to existing prompts.
+- New coding flows should use `apply_file_patch` with the SHA-256 returned by the
+  preceding read whenever possible.
+- Every search block must match exactly once; ambiguous edits fail without
+  changing the file.
+- A multi-edit file patch is computed completely before a single atomic write.
+- Every successful safe patch creates a persistent checkpoint under the protected
+  `sandbox/_system/` area.
+- `restore_file_checkpoint` refuses to overwrite content changed after the patch.
