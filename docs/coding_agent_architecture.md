@@ -86,6 +86,14 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Every successful safe patch creates a persistent checkpoint under the protected
   `sandbox/_system/` area.
 - `restore_file_checkpoint` refuses to overwrite content changed after the patch.
+- `inspect_coding_symbol` returns one unique parser-backed definition plus exact
+  file and symbol hashes. Python supports qualified nested identities; supported
+  non-Python languages use tree-sitter. Structural write boundaries never use
+  lexical fallback.
+- `replace_coding_symbol` requires both hashes, preserves the definition's current
+  indentation/newline style, reparses the complete result, and requires the same
+  unique qualified identity and node kind before creating a normal reversible
+  checkpoint and atomically writing the file.
 
 ## Symbol navigation contract
 
@@ -341,8 +349,16 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - A truncated task-wide diff or file-list page is only a change index. The agent
   must page through every affected file before verification; staged and unstaged
   views remain separately addressable.
-- The normal coding loop is map -> search -> numbered range -> checked patch ->
-  exact per-file diff -> deterministic verification -> verified-state commit.
+- Every returned unified hunk has bounded add/delete counts, a stable hash of the
+  reviewed redacted text, and up to three overlapping parser-backed definitions.
+  The aggregate hunk hash is stable for the same review response without storing
+  raw hunk text twice.
+- `hunk_analysis_complete` is false whenever diff collection/text, file paging,
+  hunk paging, or the final hunk is incomplete. It is an explicit instruction to
+  request narrower/per-file output, not proof that the workspace was reviewed.
+- The normal coding loop is map -> search -> numbered range or structural symbol
+  inspection -> checked patch/replacement -> exact per-file diff -> deterministic
+  verification -> verified-state commit.
 
 ## Capability benchmark contract
 

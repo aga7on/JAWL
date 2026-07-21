@@ -78,6 +78,7 @@ class HostOsPlugin(BaseInterface):
         reader = HostOSReader(client)
         editor = HostOSEditor(client)
         search = HostOSSearch(client)
+        coding_context = HostOSCodingContext(client)
         register_instance(reader)
         register_instance(HostOSWriter(client))
         register_instance(editor)
@@ -86,7 +87,7 @@ class HostOsPlugin(BaseInterface):
         register_instance(HostOSWorkspace(client))
         register_instance(HostOSMetadata(client))
         register_instance(HostOSDocuments(client))
-        coding_workspaces = HostOSCodingWorkspaces(client)
+        coding_workspaces = HostOSCodingWorkspaces(client, coding_context)
         container.coding_workspaces = coding_workspaces
         coding_approvals = CodingApprovalStore(
             client.system_dir / "coding_approvals.json"
@@ -94,7 +95,9 @@ class HostOsPlugin(BaseInterface):
         container.coding_approvals = coding_approvals
         register_instance(coding_workspaces)
         register_instance(
-            HostOSCodingFiles(client, coding_workspaces, reader, editor, search)
+            HostOSCodingFiles(
+                client, coding_workspaces, reader, editor, search, coding_context
+            )
         )
         coding_plans = HostOSCodingPlans(client, coding_workspaces)
         container.coding_plans = coding_plans
@@ -116,7 +119,6 @@ class HostOsPlugin(BaseInterface):
         register_instance(
             HostOSCodingVerification(client, coding_workspaces, coding_plans)
         )
-        coding_context = HostOSCodingContext(client)
         register_instance(coding_context)
         coding_lsp = HostOSCodingLanguageServer(client, coding_context)
         container.coding_lsp = coding_lsp

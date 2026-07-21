@@ -12,11 +12,11 @@ tasks safely, recoverably, and with measurable evidence.
 
 | Capability | State | Evidence | Remaining gap |
 | --- | --- | --- | --- |
-| Atomic editing | Strong | SHA-checked exact-match patches, atomic writes, reversible checkpoints | No syntax-aware patch primitive |
+| Atomic editing | Strong | SHA-checked exact-match patches plus parser-guarded whole-definition replacement with dual file/symbol hashes, whole-file reparse, atomic writes, and reversible checkpoints | No project-wide transactional rename/refactor primitive |
 | Task isolation | Strong | Persistent branch/worktree per task, dirty-base guard, recovery stash | No automatic branch publication or merge conflict assistant |
 | Context navigation | Strong | Bounded map/search/range reads, syntax-aware occurrences, directed local dependency slices, and allowlisted lifecycle-managed incremental LSP sessions with document sync, process/document LRUs, explicit reset, and zero-index fallback | Workspace-wide out-of-band edits rely on server file watching or explicit session reset |
 | Dynamic context | Good | Hard per-turn budget, task/event-routed skill namespaces, compact omitted-namespace index, exact signatures through `SkillCatalog`, newest-tick and current-trigger retention | Needs organic QWB latency/token validation and learned relevance ranking |
-| Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
+| Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction, stable hunk hashes, add/delete counts, parser-backed symbol overlap, and explicit incomplete-analysis state | Review acknowledgement is not yet durable or bound to the exact commit state |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph, automatic failure signals, and exact-state revision of unfinished work | Replanning strategy quality is not yet scored on live tasks |
 | Delegated work | Strong | Bounded durable status registry, redacted summaries, exact-revision parent-step binding, restart reconciliation, exact-handle cancel, shutdown draining, identity-bound reports, report hashing, workspace/verification-gated acceptance, and post-persistence terminal events | Delegation strategy and result quality still need model-level comparative scoring |
@@ -43,8 +43,8 @@ tasks safely, recoverably, and with measurable evidence.
    comparative performance claims; it holds candidate inputs, patch limits,
    timeout handling, and grading constant. Adversarial hidden-test isolation
    still requires the candidate CLI's sandbox or an external container.
-5. Add syntax-aware patch/hunk grouping if live traces show that textual checked
-   patches, rather than navigation or provider latency, dominate repair loops.
+5. Persist accepted hunk-review evidence against the exact workspace fingerprint
+   and require it at the final commit gate without breaking legacy ad-hoc flows.
 
 ## Current reference architecture comparison
 

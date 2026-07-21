@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.l2_interfaces.host.os.client import HostOSAccessLevel, HostOSClient
 from src.l2_interfaces.host.os.decorators import require_access
+from src.l2_interfaces.host.os.skills.coding_context import HostOSCodingContext
 from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
 from src.utils._tools import redact_sensitive_text, truncate_text
@@ -34,8 +35,13 @@ class HostOSCodingWorkspaces:
         "__pycache__",
     }
 
-    def __init__(self, host_os_client: HostOSClient) -> None:
+    def __init__(
+        self,
+        host_os_client: HostOSClient,
+        coding_context: Optional[HostOSCodingContext] = None,
+    ) -> None:
         self.host_os = host_os_client
+        self.coding_context = coding_context or HostOSCodingContext(host_os_client)
         # Hidden from the global file watcher/context tree to prevent every task
         # checkout from multiplying heartbeat noise and prompt size.
         self.worktrees_dir = self.host_os.sandbox_dir / ".jawl-worktrees"
@@ -90,7 +96,11 @@ class HostOSCodingWorkspaces:
         return normalized
 
     async def _run_git(
-        self, cwd: Path, *args: str, timeout: float = 120
+        self,
+        cwd: Path,
+        *args: str,
+        timeout: float = 120,
+        strip_output: bool = True,
     ) -> Tuple[int, str, str]:
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
@@ -107,11 +117,12 @@ class HostOSCodingWorkspaces:
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(), timeout=timeout
             )
-            return (
-                process.returncode,
-                stdout.decode("utf-8", errors="replace").strip(),
-                stderr.decode("utf-8", errors="replace").strip(),
-            )
+            decoded_stdout = stdout.decode("utf-8", errors="replace")
+            decoded_stderr = stderr.decode("utf-8", errors="replace")
+            if strip_output:
+                decoded_stdout = decoded_stdout.strip()
+                decoded_stderr = decoded_stderr.strip()
+            return process.returncode, decoded_stdout, decoded_stderr
         except FileNotFoundError as exc:
             raise FileNotFoundError("'git' utility was not found.") from exc
         except asyncio.TimeoutError as exc:
@@ -275,7 +286,12 @@ class HostOSCodingWorkspaces:
         if code != 0:
             raise ValueError(f"Unable to fingerprint unstaged workspace diff: {err}")
         code, untracked_output, err = await self._run_git(
-            workspace, "ls-files", "--others", "--exclude-standard", "-z"
+            workspace,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            strip_output=False,
         )
         if code != 0:
             raise ValueError(f"Unable to list untracked workspace files: {err}")
@@ -559,6 +575,164 @@ class HostOSCodingWorkspaces:
         line_count = max(1, len(lines) + int(preview_truncated))
         return header + f"@@ -0,0 +1,{line_count} @@\n" + body
 
+    def _structured_diff_hunks(
+        self,
+        workspace: Path,
+        diff_text: str,
+        diff_truncated: bool,
+        max_hunks: int = 200,
+    ) -> Dict[str, Any]:
+        """Parse reviewed unified text into bounded, symbol-aware hunk metadata."""
+
+        header_pattern = re.compile(
+            r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$"
+        )
+        current_file = ""
+        old_file = ""
+        current: Optional[Dict[str, Any]] = None
+        hunks: List[Dict[str, Any]] = []
+        total_hunks = 0
+
+        def finish() -> None:
+            nonlocal current, total_hunks
+            if current is None:
+                return
+            total_hunks += 1
+            raw = "".join(current.pop("_raw"))
+            current["reviewed_hunk_sha256"] = hashlib.sha256(
+                raw.encode("utf-8")
+            ).hexdigest()
+            if len(hunks) < max_hunks:
+                hunks.append(current)
+            current = None
+
+        for line in diff_text.splitlines(keepends=True):
+            if line.startswith("diff --git "):
+                finish()
+                current_file = ""
+                old_file = ""
+                continue
+            if current is None and line.startswith("--- "):
+                candidate = line[4:].strip().strip('"')
+                if candidate != "/dev/null":
+                    old_file = (
+                        candidate[2:] if candidate.startswith("a/") else candidate
+                    )
+                continue
+            if current is None and line.startswith("+++ "):
+                candidate = line[4:].strip().strip('"')
+                if candidate != "/dev/null":
+                    current_file = (
+                        candidate[2:] if candidate.startswith("b/") else candidate
+                    )
+                else:
+                    current_file = old_file
+                continue
+            match = header_pattern.match(line.rstrip("\r\n"))
+            if match:
+                finish()
+                old_count = int(match.group(2) or "1")
+                new_count = int(match.group(4) or "1")
+                current = {
+                    "file": current_file,
+                    "old_start": int(match.group(1)),
+                    "old_count": old_count,
+                    "new_start": int(match.group(3)),
+                    "new_count": new_count,
+                    "header_context": match.group(5).strip()[:240],
+                    "additions": 0,
+                    "deletions": 0,
+                    "complete": True,
+                    "_raw": [line],
+                }
+                continue
+            if current is None:
+                continue
+            current["_raw"].append(line)
+            if line.startswith("+") and not line.startswith("+++"):
+                current["additions"] += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                current["deletions"] += 1
+        finish()
+        if diff_truncated and hunks:
+            hunks[-1]["complete"] = False
+
+        spans_by_file: Dict[str, Tuple[List[Dict[str, Any]], Optional[str]]] = {}
+        workspace_root = workspace.resolve()
+        for hunk in hunks:
+            relative = hunk["file"]
+            if relative not in spans_by_file:
+                candidate = (workspace / relative).resolve()
+                spans: List[Dict[str, Any]] = []
+                error: Optional[str] = None
+                try:
+                    if (
+                        candidate.is_relative_to(workspace_root)
+                        and candidate.is_file()
+                        and candidate.stat().st_size
+                        <= self.coding_context._MAX_SOURCE_BYTES
+                    ):
+                        source = candidate.read_text(encoding="utf-8", errors="strict")
+                        spans, error, _ = self.coding_context.definition_spans(
+                            candidate, source
+                        )
+                    else:
+                        error = "source unavailable or over structural limit"
+                except (OSError, UnicodeError) as exc:
+                    error = f"source read failed: {type(exc).__name__}"
+                spans_by_file[relative] = spans, error
+            spans, error = spans_by_file[relative]
+            start = int(hunk["new_start"])
+            end = start + max(1, int(hunk["new_count"])) - 1
+            matches = [
+                span
+                for span in spans
+                if int(span["start_line"]) <= end
+                and int(span["end_line"]) >= start
+            ]
+            matches.sort(
+                key=lambda item: (
+                    int(item["end_line"]) - int(item["start_line"]),
+                    item["qualified_name"],
+                )
+            )
+            hunk["symbols"] = [
+                {
+                    "qualified_name": item["qualified_name"],
+                    "kind": item["kind"],
+                    "start_line": item["start_line"],
+                    "end_line": item["end_line"],
+                    "backend": item["backend"],
+                }
+                for item in matches[:3]
+            ]
+            hunk["symbol_context_truncated"] = len(matches) > 3
+            if error:
+                hunk["symbol_context_error"] = error[:240]
+
+        review_contract = [
+            {
+                key: value
+                for key, value in hunk.items()
+                if key not in {"symbols", "symbol_context_error"}
+            }
+            for hunk in hunks
+        ]
+        return {
+            "hunk_count": total_hunks,
+            "hunks_returned": len(hunks),
+            "hunks_truncated": total_hunks > len(hunks),
+            "hunks": hunks,
+            "hunk_review_sha256": hashlib.sha256(
+                json.dumps(
+                    review_contract,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.SANDBOX)
     async def get_coding_workspace_diff(
@@ -609,8 +783,11 @@ class HostOSCodingWorkspaces:
                     pathspec = requested.as_posix()
 
                 tracked_args = [
+                    "-c",
+                    "core.quotePath=false",
                     "diff",
                     "--name-only",
+                    "-z",
                     "--no-ext-diff",
                 ]
                 if staged:
@@ -621,7 +798,7 @@ class HostOSCodingWorkspaces:
                 if pathspec:
                     tracked_args.append(pathspec)
                 code, tracked_output, err = await self._run_git(
-                    workspace, *tracked_args
+                    workspace, *tracked_args, strip_output=False
                 )
                 if code != 0:
                     return SkillResult.fail(
@@ -629,7 +806,7 @@ class HostOSCodingWorkspaces:
                     )
                 tracked_files = [
                     line.replace("\\", "/")
-                    for line in tracked_output.splitlines()
+                    for line in tracked_output.split("\x00")
                     if line
                 ]
 
@@ -643,6 +820,7 @@ class HostOSCodingWorkspaces:
                         "-z",
                         "--",
                         *([pathspec] if pathspec else []),
+                        strip_output=False,
                     )
                     if code != 0:
                         return SkillResult.fail(
@@ -672,6 +850,8 @@ class HostOSCodingWorkspaces:
                 ]
 
                 diff_args = [
+                    "-c",
+                    "core.quotePath=false",
                     "diff",
                     "--no-ext-diff",
                     f"--unified={context_lines}",
@@ -761,6 +941,19 @@ class HostOSCodingWorkspaces:
                     "truncated": truncated,
                     "diff": diff_text,
                 }
+                hunk_payload = await asyncio.to_thread(
+                    self._structured_diff_hunks,
+                    workspace,
+                    diff_text,
+                    truncated,
+                )
+                payload.update(hunk_payload)
+                payload["hunk_analysis_complete"] = bool(
+                    not truncated
+                    and not payload["file_page_has_more"]
+                    and not hunk_payload["hunks_truncated"]
+                    and all(item["complete"] for item in hunk_payload["hunks"])
+                )
             return SkillResult.ok(json.dumps(payload, ensure_ascii=False))
         except (PermissionError, FileNotFoundError, TimeoutError, ValueError, KeyError) as exc:
             return SkillResult.fail(str(exc))

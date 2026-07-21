@@ -457,6 +457,129 @@ class HostOSCodingContext:
                     )
         return occurrences
 
+    def definition_spans(
+        self, path: Path, source: str, symbol: str = ""
+    ) -> Tuple[List[Dict[str, Any]], Optional[str], str]:
+        """Return parser-backed definition line spans for safe local consumers.
+
+        An empty symbol returns all definitions. Lexical guesses are deliberately
+        excluded because callers may use these spans as write boundaries.
+        """
+
+        language = self._language(path)
+        if language is None:
+            return [], "file language is unsupported", "unsupported"
+        target = symbol.rsplit(".", maxsplit=1)[-1] if symbol else ""
+        require_qualified = bool(symbol and "." in symbol)
+        if language == "python":
+            try:
+                tree = ast.parse(source)
+            except SyntaxError as exc:
+                return (
+                    [],
+                    f"SyntaxError at line {exc.lineno}: {exc.msg}",
+                    "python_ast",
+                )
+            spans: List[Dict[str, Any]] = []
+
+            def walk(node: ast.AST, owners: Tuple[str, ...] = ()) -> None:
+                next_owners = owners
+                if isinstance(
+                    node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+                ):
+                    qualified_name = ".".join((*owners, node.name))
+                    matches = not symbol or (
+                        qualified_name == symbol
+                        if require_qualified
+                        else node.name == target
+                    )
+                    if matches:
+                        decorators = getattr(node, "decorator_list", [])
+                        start_line = min(
+                            [node.lineno]
+                            + [item.lineno for item in decorators if item.lineno]
+                        )
+                        spans.append(
+                            {
+                                "qualified_name": qualified_name,
+                                "name": node.name,
+                                "kind": (
+                                    "class"
+                                    if isinstance(node, ast.ClassDef)
+                                    else (
+                                        "async_function"
+                                        if isinstance(node, ast.AsyncFunctionDef)
+                                        else "function"
+                                    )
+                                ),
+                                "node_type": type(node).__name__,
+                                "start_line": start_line,
+                                "end_line": getattr(node, "end_lineno", node.lineno),
+                                "backend": "python_ast",
+                            }
+                        )
+                    next_owners = (*owners, node.name)
+
+                # Walk every AST container rather than only direct ``ast.stmt``
+                # children. Exception handlers and pattern-match cases are not
+                # statements themselves but may contain valid nested definitions.
+                for child in ast.iter_child_nodes(node):
+                    walk(child, next_owners)
+
+            walk(tree)
+            return spans, None, "python_ast"
+
+        if require_qualified:
+            return (
+                [],
+                "qualified structural symbols are supported only for Python",
+                "tree_sitter",
+            )
+        parser, error = self._get_tree_sitter_parser(language)
+        if parser is None:
+            return [], error, "tree_sitter"
+        source_bytes = source.encode("utf-8")
+        try:
+            with self._parser_lock:
+                root = parser.parse(source_bytes).root_node
+            if getattr(root, "has_error", False):
+                return [], "tree-sitter reported a syntax error", "tree_sitter"
+            spans = []
+            stack = [root]
+            while stack:
+                node = stack.pop()
+                stack.extend(reversed(node.children))
+                kind = self._TREE_SITTER_DEFINITIONS.get(node.type)
+                if kind is None:
+                    continue
+                name_node = node.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                name = source_bytes[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors="replace"
+                )
+                if symbol and name != target:
+                    continue
+                end_line = node.end_point[0] + (1 if node.end_point[1] else 0)
+                spans.append(
+                    {
+                        "qualified_name": name,
+                        "name": name,
+                        "kind": kind,
+                        "node_type": node.type,
+                        "start_line": node.start_point[0] + 1,
+                        "end_line": max(node.start_point[0] + 1, end_line),
+                        "backend": "tree_sitter",
+                    }
+                )
+            return spans, None, "tree_sitter"
+        except Exception as exc:
+            return (
+                [],
+                f"tree-sitter parse failed: {type(exc).__name__}: {exc}",
+                "tree_sitter",
+            )
+
     def _find_symbol(
         self,
         root: Path,

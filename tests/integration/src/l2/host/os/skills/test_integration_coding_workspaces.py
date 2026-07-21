@@ -391,6 +391,8 @@ async def test_workspace_diff_includes_untracked_redacts_secrets_and_bounds_outp
     assert secret not in payload["diff"]
     assert "[REDACTED]" in payload["diff"]
     assert payload["truncated"] is True
+    assert payload["hunk_analysis_complete"] is False
+    assert payload["hunks"][-1]["complete"] is False
     assert escaped.is_success is False
     assert (await manager.remove_coding_workspace("diff-review", force=True)).is_success
 
@@ -438,10 +440,95 @@ async def test_workspace_diff_paginates_changed_files(os_client):
     assert first["changed_file_count"] == 5
     assert first["changed_files"] == ["new_0.py", "new_1.py"]
     assert first["file_page_has_more"] is True
+    assert first["hunk_analysis_complete"] is False
     assert "new_2.py" not in first["diff"]
     assert last["changed_files"] == ["new_4.py"]
     assert last["file_page_has_more"] is False
     assert (await manager.remove_coding_workspace("diff-pagination", force=True)).is_success
+
+
+@pytest.mark.asyncio
+async def test_workspace_diff_returns_stable_symbol_aware_hunk_contract(os_client):
+    repository = create_repository(os_client.sandbox_dir)
+    source_name = "ревью.py"
+    original = (
+        "def first(value):\n"
+        "    return value - 1\n"
+        + "\n" * 10
+        + "def second(value):\n"
+        "    return value - 2\n"
+    )
+    (repository / source_name).write_text(original, encoding="utf-8")
+    run_git(repository, "add", source_name)
+    run_git(repository, "commit", "-m", "add functions")
+    manager = HostOSCodingWorkspaces(os_client)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "structured-diff"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    updated = original.replace("value - 1", "value + 1").replace(
+        "value - 2", "value + 2"
+    )
+    (workspace / source_name).write_text(updated, encoding="utf-8")
+
+    first = await manager.get_coding_workspace_diff(
+        "structured-diff", file_path=source_name, context_lines=1
+    )
+    second = await manager.get_coding_workspace_diff(
+        "structured-diff", file_path=source_name, context_lines=1
+    )
+    assert first.is_success is True, first.message
+    payload = json.loads(first.message)
+    repeated = json.loads(second.message)
+    assert payload["hunk_count"] == 2
+    assert payload["hunks_returned"] == 2
+    assert payload["hunks_truncated"] is False
+    assert payload["hunk_analysis_complete"] is True
+    assert payload["hunk_review_sha256"] == repeated["hunk_review_sha256"]
+    assert [item["additions"] for item in payload["hunks"]] == [1, 1]
+    assert [item["deletions"] for item in payload["hunks"]] == [1, 1]
+    assert [item["file"] for item in payload["hunks"]] == [source_name, source_name]
+    assert [
+        item["symbols"][0]["qualified_name"] for item in payload["hunks"]
+    ] == ["first", "second"]
+    assert all(
+        len(item["reviewed_hunk_sha256"]) == 64 for item in payload["hunks"]
+    )
+    assert (
+        await manager.remove_coding_workspace("structured-diff", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
+async def test_workspace_diff_keeps_deleted_file_hunk_identity(os_client):
+    repository = create_repository(os_client.sandbox_dir)
+    deleted_name = "удалённый.py"
+    (repository / deleted_name).write_text(
+        "def removed():\n    return True\n", encoding="utf-8"
+    )
+    run_git(repository, "add", deleted_name)
+    run_git(repository, "commit", "-m", "add removable source")
+    manager = HostOSCodingWorkspaces(os_client)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "deleted-hunk"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / deleted_name).unlink()
+
+    result = await manager.get_coding_workspace_diff(
+        "deleted-hunk", file_path=deleted_name
+    )
+    assert result.is_success is True, result.message
+    payload = json.loads(result.message)
+    assert payload["changed_files"] == [deleted_name]
+    assert payload["hunks"][0]["file"] == deleted_name
+    assert payload["hunks"][0]["deletions"] == 2
+    assert payload["hunks"][0]["symbol_context_error"] == (
+        "source unavailable or over structural limit"
+    )
+    assert (
+        await manager.remove_coding_workspace("deleted-hunk", force=True)
+    ).is_success
 
 
 @pytest.mark.asyncio
@@ -463,6 +550,7 @@ async def test_workspace_diff_bounds_tracked_git_output_during_collection(os_cli
 
     assert result.is_success is True
     assert payload["diff_collection_truncated"] is True
+    assert payload["hunk_analysis_complete"] is False
     assert payload["original_diff_chars"] is None
     assert payload["collected_diff_chars"] <= 4000
     assert "Git output byte limit reached" in payload["diff"]

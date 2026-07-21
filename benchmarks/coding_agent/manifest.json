@@ -55,6 +55,17 @@
       ]
     },
     {
+      "id": "parser_guarded_structural_editing_and_hunk_review",
+      "description": "Whole-definition edits require exact parser boundaries and dual state guards, while bounded diff hunks expose stable hashes, symbol overlap, and fail-closed completeness.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_files.py::test_structural_python_symbol_edit_is_exact_validated_and_reversible",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_files.py::test_structural_tree_sitter_edit_refuses_lexical_fallback",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_returns_stable_symbol_aware_hunk_contract",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_keeps_deleted_file_hunk_identity",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_workspace_diff_bounds_tracked_git_output_during_collection"
+      ]
+    },
+    {
       "id": "deterministic_action_orchestration",
       "description": "Dependencies and shared resource locks determine action ordering.",
       "tests": [
