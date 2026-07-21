@@ -61,3 +61,17 @@ def test_prompt_builder_read_error(fake_prompt_dir):
         with pytest.raises(RuntimeError) as exc:
             builder.build()
         assert "Error reading prompt file" in str(exc.value)
+
+
+def test_prompt_builder_selects_only_requested_tool_protocol(tmp_path):
+    system_dir = tmp_path / "system"
+    system_dir.mkdir()
+    (system_dir / "FUNCTION_CALL.md").write_text("WRAPPER", encoding="utf-8")
+    (system_dir / "FUNCTION_CALL_NATIVE.md").write_text("NATIVE", encoding="utf-8")
+    (system_dir / "FUNCTION_CALL_HYBRID.md").write_text("HYBRID", encoding="utf-8")
+
+    native = PromptBuilder(tmp_path, tool_transport="native").build()
+    hybrid = PromptBuilder(tmp_path, tool_transport="hybrid").build()
+
+    assert native == "NATIVE"
+    assert hybrid == "HYBRID"

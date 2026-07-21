@@ -73,6 +73,16 @@
       ]
     },
     {
+      "id": "dual_tool_transport",
+      "description": "Wrapper compatibility and typed native/hybrid skill calls share one validation and execution path.",
+      "tests": [
+        "tests/unit/l3/skills/test_skills_registry.py::test_native_schema_is_reversible_typed_and_hybrid_compatible",
+        "tests/unit/l3/skills/test_skills_registry.py::test_native_schema_enforces_selection_limit",
+        "tests/unit/l3/llm/test_executor.py::test_executor_converts_native_tool_call_and_plain_completion",
+        "tests/unit/l3/react/test_react_loop.py::test_react_executes_resolved_native_tool_and_dynamic_schema"
+      ]
+    },
+    {
       "id": "durable_coding_plan",
       "description": "Task plans persist dependency state and evidence, reject stale writers, and gate final commits.",
       "tests": [

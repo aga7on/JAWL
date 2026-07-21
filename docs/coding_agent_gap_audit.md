@@ -19,18 +19,16 @@ tasks safely, recoverably, and with measurable evidence.
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks | No cross-step dependency graph or requirement-level plan |
 | Interruption recovery | Good | Durable action lifecycle, restart classification, persistent worktree state | Recovery is inspect-first but not yet an automatic reconciliation state machine |
-| LLM protocol | Improving | Multiple wrapper calls merged, invalid output persisted, terminal step-limit record | Skills are still described in prompt text behind one wrapper instead of native per-skill schemas |
+| LLM protocol | Strong | Compatible wrapper plus bounded native/hybrid schema export, multiple-call merge, persisted protocol failures, terminal step-limit record | Provider-specific capability auto-probing is not yet implemented |
 | Telemetry | Good | Async-safe cycle trace links LLM calls, ticks, actions, plans, verification and commits; request/action timing and usage snapshots | No cost rollup or dashboard export |
 | Evaluation | Basic-good | Versioned deterministic capability gate with JSON reports | No fixed-repository end-to-end patch benchmark with quality/token/time grading |
 | Planning | Strong | Persistent task-local requirements, dependency steps, revision guards, evidence history, and commit gate | No automatic plan synthesis quality grader |
 
 ## Priority order
 
-1. Add an adapter that can expose selected registered skills as native tool
-   schemas while retaining `execute_skill` for Qwen and legacy providers.
-3. Upgrade code navigation with optional tree-sitter/LSP-backed definitions,
+1. Upgrade code navigation with optional tree-sitter/LSP-backed definitions,
    references, and dependency slices; retain the current zero-index fallback.
-4. Add fixed-task end-to-end evaluation repositories and grade patch correctness,
+2. Add fixed-task end-to-end evaluation repositories and grade patch correctness,
    regression safety, tool calls, wall time, and context/token use separately.
 
 ## Compatibility guardrail

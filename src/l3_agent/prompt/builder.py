@@ -28,6 +28,7 @@ class PromptBuilder:
         tot_enabled: bool = False,
         subconscious_enabled: bool = False,
         hypotheses_enabled: bool = False,
+        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
     ) -> None:
         """
         Initializes the builder.
@@ -58,6 +59,7 @@ class PromptBuilder:
         self.tot_enabled = tot_enabled
         self.subconscious_enabled = subconscious_enabled
         self.hypotheses_enabled = hypotheses_enabled
+        self.tool_transport = tool_transport
 
     def _gather_markdown(self, sub_folder: Literal["personality", "system", "custom"]) -> str:
         """
@@ -80,6 +82,18 @@ class PromptBuilder:
 
         valid_files = [
             f for f in target_dir.rglob("*.md") if not f.name.endswith(".example.md")
+        ]
+        protocol_files = {
+            "wrapper": "FUNCTION_CALL.md",
+            "native": "FUNCTION_CALL_NATIVE.md",
+            "hybrid": "FUNCTION_CALL_HYBRID.md",
+        }
+        selected_protocol = protocol_files[self.tool_transport]
+        valid_files = [
+            file
+            for file in valid_files
+            if not file.name.upper().startswith("FUNCTION_CALL")
+            or file.name.upper() == selected_protocol.upper()
         ]
 
         # Filter system modules (if they are disabled in settings)

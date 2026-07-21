@@ -7,7 +7,7 @@ commits results (Ticks) to the database.
 """
 
 import asyncio
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Callable, Dict, Any, List, Literal, Optional, Tuple, Union
 
 import base64
 import re
@@ -33,7 +33,7 @@ from src.l3_agent.context.builder import ContextBuilder
 
 from src.l3_agent.tot.generator import ToTGenerator
 
-from src.l3_agent.skills.registry import execute_skill
+from src.l3_agent.skills.registry import execute_skill, resolve_native_tool_name
 from src.l3_agent.skills.schema import AgentResponse, ActionCall, parse_llm_json
 
 
@@ -51,8 +51,9 @@ class ReactLoop:
         agent_state: AgentState,
         sql_ticks: SQLTicks,
         vector_manager: VectorManager,
-        tools: list,
+        tools: Union[list, Callable[[], list]],
         event_bus: EventBus,
+        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
         cooldown_sec: int = 30,
         tot_config: Optional[TreeOfThoughtsConfig] = None,
         tot_generator: Optional[ToTGenerator] = None,
@@ -85,6 +86,7 @@ class ReactLoop:
         self.vector_manager = vector_manager
 
         self.tools = tools
+        self.tool_transport = tool_transport
         self.cooldown_sec = cooldown_sec
 
         self.event_bus = event_bus
@@ -168,7 +170,8 @@ class ReactLoop:
                     temperature=self.agent_state.temperature,
                     logger=agent_logger,
                     log_prefix="[LLM]",
-                    tools=self.tools,
+                    tools=self.tools() if callable(self.tools) else self.tools,
+                    tool_transport=self.tool_transport,
                     max_timeout_retries=1,
                 )
                 if raw_answer is None:
@@ -415,7 +418,15 @@ class ReactLoop:
         """
         Parses the agent's JSON response.
         """
-        return parse_llm_json(raw_answer)
+        parsed, error = parse_llm_json(raw_answer)
+        if parsed is None or error:
+            return parsed, error
+        for action in parsed.actions:
+            resolved = resolve_native_tool_name(action.tool_name)
+            if action.tool_name.startswith("jawl_") and resolved == action.tool_name:
+                return None, f"System Error: Unknown native tool '{action.tool_name}'."
+            action.tool_name = resolved
+        return parsed, None
 
     def add_realtime_event(self, event_data: Dict[str, Any]) -> None:
         """

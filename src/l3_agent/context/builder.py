@@ -6,7 +6,7 @@ and merges them in a strict hierarchical order. Ensures optimal performance of t
 LLM attention mechanism by placing critical information closer to attention horizons.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 from src.l0_state.agent.state import AgentState
 from src.utils.settings import SubconsciousConfig
@@ -26,6 +26,7 @@ class ContextBuilder:
         agent_state: AgentState,
         registry: ContextRegistry,
         subconscious_config: SubconsciousConfig = None,
+        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
     ) -> None:
         """
         Initializes the builder and automatically registers mandatory system providers.
@@ -37,6 +38,7 @@ class ContextBuilder:
         self.agent_state = agent_state
         self.registry = registry
         self.subconscious_config = subconscious_config
+        self.tool_transport = tool_transport
 
         self.registry.register_provider(
             "skills", self._skills_provider, section=ContextSection.SKILLS
@@ -80,6 +82,12 @@ class ContextBuilder:
         """
         Returns a formatted block describing currently available skills.
         """
+        if self.tool_transport == "native":
+            return (
+                "## SKILLS\nAvailable actions are exposed through native function "
+                "schemas. Use those exact schemas; no textual skill catalogue is "
+                "injected in native-only mode."
+            )
         return f"## SKILLS\n{get_skills_library(self.subconscious_config)}"
 
     async def _heartbeat_provider(

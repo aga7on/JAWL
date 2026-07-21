@@ -97,6 +97,19 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Invalid structured output is redacted, bounded, persisted as a protocol-error
   tick, and made visible to the next reasoning step for self-correction.
 
+## Dual tool transport contract
+
+- `wrapper` remains the default and preserves QWB/Qwen plus every legacy
+  `execute_skill` payload. No migration is required for existing settings.
+- `native` exports visible registry guards as typed OpenAI function schemas;
+  canonical dotted skill names are encoded into stable provider-safe names and
+  resolved before the existing RBAC/validation/execution layer.
+- `hybrid` exposes a bounded hot path natively while retaining the wrapper for
+  the complete dynamic catalogue and dependency-aware multi-action plans.
+- Native export shares the exact wrapper visibility checks, fails when the
+  configured tool count is exceeded, refreshes dynamically each ReAct step, and
+  accepts ordinary no-tool assistant text as a terminal cycle response.
+
 ## Trace correlation contract
 
 - Every main ReAct wakeup starts an async-context trace with a stable ID. Child

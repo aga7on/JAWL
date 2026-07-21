@@ -7,6 +7,9 @@ from src.l3_agent.skills.registry import (
     execute_skill,
     SkillResult,
     get_skills_library,
+    build_tools_schema,
+    get_native_tools_schema,
+    resolve_native_tool_name,
 )
 
 # ===================================================================
@@ -17,13 +20,17 @@ from src.l3_agent.skills.registry import (
 @pytest.fixture(autouse=True)
 def clean_registry():
     original_registry = registry._REGISTRY.copy()
+    original_native_index = registry._NATIVE_TOOL_INDEX.copy()
 
     registry._REGISTRY.clear()
+    registry._NATIVE_TOOL_INDEX.clear()
 
     yield
 
     registry._REGISTRY.clear()
     registry._REGISTRY.update(original_registry)
+    registry._NATIVE_TOOL_INDEX.clear()
+    registry._NATIVE_TOOL_INDEX.update(original_native_index)
 
 
 class DummyInterface:
@@ -64,6 +71,33 @@ async def test_plain_function_registration(mock_plain_func):
     assert "mock.plain_func" in registry._REGISTRY
     docs = get_skills_library()
     assert "mock.plain_func" in docs
+
+
+def test_native_schema_is_reversible_typed_and_hybrid_compatible(mock_typed_func):
+    native = get_native_tools_schema(prefixes=["mock."], limit=5)
+    assert len(native) == 1
+    function = native[0]["function"]
+
+    assert len(function["name"]) <= 64
+    assert function["name"].startswith("jawl_")
+    assert resolve_native_tool_name(function["name"]) == "mock.typed_func"
+    assert function["parameters"]["properties"]["my_int"]["type"] == "integer"
+    assert "my_list" in function["parameters"]["required"]
+
+    hybrid = build_tools_schema(
+        "hybrid", native_prefixes=["mock."], native_limit=5
+    )
+    assert hybrid[0]["function"]["name"] == "execute_skill"
+    assert hybrid[1]["function"]["name"] == function["name"]
+
+
+def test_native_schema_enforces_selection_limit(mock_plain_func):
+    @skill(name_override="mock.second")
+    async def second() -> SkillResult:
+        return SkillResult.ok("ok")
+
+    with pytest.raises(ValueError, match="exceeding"):
+        get_native_tools_schema(prefixes=["mock."], limit=1)
 
 
 @pytest.mark.asyncio

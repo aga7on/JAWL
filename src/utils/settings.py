@@ -9,6 +9,7 @@ automatic config migration, and environment-driven override fallbacks.
 import shutil
 import yaml
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from yaml.constructor import ConstructorError
 
@@ -254,6 +255,16 @@ class LLMConfig(BaseModel):
     is_multimodal: bool = False
     temperature: float = 1.0
     max_react_steps: int = 15
+    tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper"
+    native_tool_prefixes: list[str] = Field(
+        default_factory=lambda: [
+            "HostOSCoding",
+            "HostOSReader",
+            "HostOSSearch",
+            "HostOSEditor",
+        ]
+    )
+    native_tool_limit: int = Field(default=64, ge=1, le=128)
 
 
 class LoggingConfig(BaseModel):

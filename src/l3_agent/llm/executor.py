@@ -16,7 +16,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Literal, Optional
 
 import openai
 
@@ -53,6 +53,7 @@ class LLMExecutor:
         log_prefix: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None, 
+        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
         max_retries: int = 1,
         max_timeout_retries: int = 1,
     ) -> Optional[str]:
@@ -76,7 +77,7 @@ class LLMExecutor:
         """
 
         self.tracker.add_input_record(messages, log_prefix=log_prefix, logger=logger)
-        request_id = uuid.uuid4().hex
+        request_id = str(uuid.uuid4().hex)
         started = time.perf_counter()
         self.last_call_metrics = {
             "request_id": request_id,
@@ -106,7 +107,7 @@ class LLMExecutor:
                 response = await session.chat.completions.create(**kwargs)
 
                 # Extract content and count tokens
-                raw_answer = self._extract_response_text(response)
+                raw_answer = self._extract_response_text(response, tool_transport)
 
                 self.tracker.add_output_record(
                     raw_answer, log_prefix=log_prefix, logger=logger
@@ -215,7 +216,11 @@ class LLMExecutor:
     # Private Helpers
     # -------------------------------------------------------------------------
 
-    def _extract_response_text(self, response: Any) -> str:
+    def _extract_response_text(
+        self,
+        response: Any,
+        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
+    ) -> str:
         """
         Extracts raw text content or tool JSON arguments from the OpenAI response.
         """
@@ -223,32 +228,50 @@ class LLMExecutor:
         message_obj = response.choices[0].message
 
         if message_obj.tool_calls:
-            arguments = [str(call.function.arguments) for call in message_obj.tool_calls]
-            if len(arguments) == 1:
-                return arguments[0]
-
+            calls = list(message_obj.tool_calls)
+            if len(calls) == 1 and (
+                tool_transport == "wrapper"
+                or calls[0].function.name == "execute_skill"
+            ):
+                return str(calls[0].function.arguments)
             merged = {
                 "observation": [],
                 "reasoning": [],
                 "reflection": [],
                 "actions": [],
             }
-            for argument in arguments:
+            if isinstance(message_obj.content, str) and message_obj.content.strip():
+                merged["reflection"].append(message_obj.content.strip())
+            raw_arguments = []
+            for call in calls:
+                argument = str(call.function.arguments)
+                raw_arguments.append(argument)
                 try:
                     payload = json.loads(argument)
                 except (TypeError, json.JSONDecodeError):
                     # Preserve all provider output so the protocol parser can
                     # reject it visibly instead of silently dropping calls.
-                    return "\n".join(arguments)
-                if not isinstance(payload, dict) or not isinstance(
-                    payload.get("actions", []), list
+                    return "\n".join(raw_arguments)
+                if not isinstance(payload, dict):
+                    return "\n".join(raw_arguments)
+                if (
+                    tool_transport == "wrapper"
+                    or call.function.name == "execute_skill"
                 ):
-                    return "\n".join(arguments)
-                for field in ("observation", "reasoning", "reflection"):
-                    value = payload.get(field)
-                    if isinstance(value, str) and value.strip():
-                        merged[field].append(value.strip())
-                merged["actions"].extend(payload.get("actions", []))
+                    if not isinstance(payload.get("actions", []), list):
+                        return "\n".join(raw_arguments)
+                    for field in ("observation", "reasoning", "reflection"):
+                        value = payload.get(field)
+                        if isinstance(value, str) and value.strip():
+                            merged[field].append(value.strip())
+                    merged["actions"].extend(payload.get("actions", []))
+                else:
+                    merged["actions"].append(
+                        {
+                            "tool_name": call.function.name,
+                            "parameters": payload,
+                        }
+                    )
 
             return json.dumps(
                 {
@@ -260,7 +283,24 @@ class LLMExecutor:
                 ensure_ascii=False,
             )
 
-        return message_obj.content or ""
+        content = message_obj.content or ""
+        if tool_transport in {"native", "hybrid"}:
+            try:
+                existing = json.loads(content)
+            except (TypeError, json.JSONDecodeError):
+                existing = None
+            if isinstance(existing, dict) and "actions" in existing:
+                return content
+            return json.dumps(
+                {
+                    "observation": "[Native response]",
+                    "reasoning": "",
+                    "reflection": content,
+                    "actions": [],
+                },
+                ensure_ascii=False,
+            )
+        return content
 
     @staticmethod
     def _plain_metric(value: Any) -> Optional[Any]:

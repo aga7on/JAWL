@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.l0_state.agent.state import AgentStatus
 from src.l3_agent.react.loop import ReactLoop
@@ -104,6 +105,57 @@ async def test_react_cancellation_persists_terminal_tick(mock_dependencies):
     assert saved["results"]["trace"]["trace_id"]
     assert deps["agent_state"].state == AgentStatus.IDLE
     assert deps["agent_state"].current_trace_id == ""
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.react.loop.resolve_native_tool_name")
+@patch("src.l3_agent.react.loop.execute_skill", new_callable=AsyncMock)
+async def test_react_executes_resolved_native_tool_and_dynamic_schema(
+    mock_execute_skill, mock_resolve, mock_dependencies
+):
+    deps = mock_dependencies
+    tools_provider = MagicMock(
+        return_value=[{"type": "function", "function": {"name": "jawl_read_hash"}}]
+    )
+    deps["tools"] = tools_provider
+    deps["tool_transport"] = "native"
+    deps["executor"].execute.side_effect = [
+        json.dumps(
+            {
+                "observation": "need file",
+                "reasoning": "",
+                "reflection": "",
+                "actions": [
+                    {
+                        "tool_name": "jawl_read_hash",
+                        "parameters": {"path": "README.md"},
+                    }
+                ],
+            }
+        ),
+        json.dumps(
+            {
+                "observation": "done",
+                "reasoning": "",
+                "reflection": "complete",
+                "actions": [],
+            }
+        ),
+    ]
+    mock_resolve.side_effect = lambda name: (
+        "HostOSReader.read_file" if name == "jawl_read_hash" else name
+    )
+    mock_execute_skill.return_value = "file contents"
+    loop = ReactLoop(**deps)
+
+    await loop.run("TEST", {}, missed_events=[])
+
+    tools_provider.assert_called()
+    first_call = deps["executor"].execute.await_args_list[0].kwargs
+    assert first_call["tool_transport"] == "native"
+    assert first_call["tools"] == tools_provider.return_value
+    action = mock_execute_skill.await_args.kwargs["actions"][0]
+    assert action.tool_name == "HostOSReader.read_file"
 
 
 @pytest.mark.asyncio

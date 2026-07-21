@@ -7,6 +7,8 @@ Role-Based Access Control (RBAC) for subagents.
 """
 
 import inspect
+import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, TypeVar, List
@@ -44,6 +46,7 @@ class SkillResult:
 
 
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
+_NATIVE_TOOL_INDEX: Dict[str, str] = {}
 _ACTION_ENGINE = ActionExecutionEngine()
 
 
@@ -68,6 +71,7 @@ async def execute_action_plan(actions: List[ActionCall], runner: Callable) -> li
 def clear_registry() -> None:
     """Clears the global registry (called during agent reboot)."""
     _REGISTRY.clear()
+    _NATIVE_TOOL_INDEX.clear()
     _ACTION_ENGINE.journal = NullActionJournal()
 
 
@@ -256,6 +260,126 @@ def register_instance(instance: Any) -> None:
             )
 
 
+def _visible_skill_items(
+    subconscious_config: Optional[SubconsciousConfig] = None,
+) -> List[tuple[str, Dict[str, Any]]]:
+    """Return registry items using the same visibility rules for every transport."""
+
+    visible = []
+    for skill_name in sorted(_REGISTRY.keys()):
+        data = _REGISTRY[skill_name]
+        if data.get("hidden", False):
+            continue
+        if subconscious_config and subconscious_config.enabled:
+            patterns_list = data.get("subconscious", [])
+            if any(
+                (cfg := getattr(subconscious_config.patterns, pattern.value, None))
+                and cfg.enabled
+                for pattern in patterns_list
+            ):
+                continue
+        func = data["func"]
+        instance = data["instance"]
+        req_level = getattr(func, "__required_os_level__", None)
+        if req_level is not None and instance is not None:
+            host_os = getattr(instance, "host_os", None)
+            if host_os is not None and host_os.access_level.value < req_level:
+                continue
+        visibility_check = getattr(func, "__visibility_check__", None)
+        if visibility_check and instance is not None:
+            try:
+                if not visibility_check(instance):
+                    continue
+            except Exception as exc:
+                agent_logger.warning(
+                    f"[Skills Registry] Exception in __visibility_check__ for "
+                    f"{skill_name}: {exc}"
+                )
+                continue
+        visible.append((skill_name, data))
+    return visible
+
+
+def _native_tool_name(skill_name: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", skill_name).strip("_") or "skill"
+    digest = hashlib.sha256(skill_name.encode("utf-8")).hexdigest()[:10]
+    return f"jawl_{slug[:47]}_{digest}"[:64]
+
+
+def get_native_tools_schema(
+    prefixes: Optional[List[str]] = None,
+    limit: int = 64,
+    subconscious_config: Optional[SubconsciousConfig] = None,
+) -> List[Dict[str, Any]]:
+    """Export visible registered skills as reversible OpenAI native tools."""
+
+    if limit < 1 or limit > 128:
+        raise ValueError("native tool limit must be between 1 and 128")
+    normalized_prefixes = [prefix for prefix in (prefixes or []) if prefix]
+    selected = [
+        (name, data)
+        for name, data in _visible_skill_items(subconscious_config)
+        if not normalized_prefixes
+        or any(name.startswith(prefix) for prefix in normalized_prefixes)
+    ]
+    if len(selected) > limit:
+        raise ValueError(
+            f"Native tool selection contains {len(selected)} skills, exceeding "
+            f"the configured limit of {limit}. Narrow native_tool_prefixes."
+        )
+    tools = []
+    for skill_name, data in selected:
+        native_name = _native_tool_name(skill_name)
+        _NATIVE_TOOL_INDEX[native_name] = skill_name
+        parameters = data["guard"].model_json_schema()
+        parameters.pop("title", None)
+        parameters.setdefault("type", "object")
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": native_name,
+                    "description": truncate_text(
+                        data["doc_string"], max_chars=1000, suffix="..."
+                    ),
+                    "parameters": parameters,
+                },
+            }
+        )
+    return tools
+
+
+def resolve_native_tool_name(name: str) -> str:
+    """Resolve an encoded native name while leaving legacy skill names intact."""
+
+    return _NATIVE_TOOL_INDEX.get(name, name)
+
+
+def build_tools_schema(
+    transport: str = "wrapper",
+    native_prefixes: Optional[List[str]] = None,
+    native_limit: int = 64,
+    subconscious_config: Optional[SubconsciousConfig] = None,
+) -> List[Dict[str, Any]]:
+    """Build wrapper, native, or hybrid provider schemas on demand."""
+
+    from src.l3_agent.skills.schema import ACTION_SCHEMA
+
+    if transport not in {"wrapper", "native", "hybrid"}:
+        raise ValueError("tool transport must be wrapper, native, or hybrid")
+    wrapper = list(ACTION_SCHEMA) if transport in {"wrapper", "hybrid"} else []
+    native = (
+        get_native_tools_schema(
+            prefixes=native_prefixes,
+            limit=native_limit,
+            subconscious_config=subconscious_config,
+        )
+        if transport in {"native", "hybrid"}
+        else []
+    )
+    return wrapper + native
+
+
 def get_skills_library(subconscious_config: Optional[SubconsciousConfig] = None) -> str:
     """
     Collects all skills. Automatically hides skills if they are delegated to
@@ -264,49 +388,13 @@ def get_skills_library(subconscious_config: Optional[SubconsciousConfig] = None)
     active_docs = []
     custom_docs = []
 
-    for skill_name in sorted(_REGISTRY.keys()):
-        data = _REGISTRY[skill_name]
-
-        if data.get("hidden", False):
-            continue
+    for skill_name, data in _visible_skill_items(subconscious_config):
 
         if data.get("is_custom"):
             custom_docs.append(data["doc_string"])
             continue
 
-        # Dynamic Visibility for Subconscious
-        if subconscious_config and subconscious_config.enabled:
-            patterns_list = data.get("subconscious", [])
-            if patterns_list:
-                is_used_by_active_pattern = False
-                for p in patterns_list:
-                    p_cfg = getattr(subconscious_config.patterns, p.value, None)
-                    if p_cfg and p_cfg.enabled:
-                        is_used_by_active_pattern = True
-                        break
-
-                if is_used_by_active_pattern:
-                    continue
-
-        func = data["func"]
-        instance = data["instance"]
         doc = data["doc_string"]
-
-        req_level = getattr(func, "__required_os_level__", None)
-        if req_level is not None and instance is not None:
-            host_os = getattr(instance, "host_os", None)
-            if host_os is not None and host_os.access_level.value < req_level:
-                continue
-
-        visibility_check = getattr(func, "__visibility_check__", None)
-        if visibility_check and instance is not None:
-            try:
-                if not visibility_check(instance):
-                    continue
-            except Exception as e:
-                agent_logger.warning(
-                    f"[Skills Registry] Exception in __visibility_check__ for {skill_name}: {e}"
-                )
 
         active_docs.append(doc)
 

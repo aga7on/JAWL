@@ -30,9 +30,12 @@ from src.l3_agent.context.rag.memories import RAGMemories
 from src.l3_agent.context.rag.skills import MemoryRecallSkill
 from src.l3_agent.react.loop import ReactLoop
 from src.l3_agent.heartbeat import Heartbeat
-from src.l3_agent.skills.registry import configure_action_journal, register_instance
+from src.l3_agent.skills.registry import (
+    build_tools_schema,
+    configure_action_journal,
+    register_instance,
+)
 from src.l3_agent.skills.journal_skills import ActionJournalSkills
-from src.l3_agent.skills.schema import ACTION_SCHEMA
 from src.l3_agent.swarm.skills.report import SubagentReport
 from src.l3_agent.swarm.spawn import SwarmManager
 from src.l3_agent.tot.generator import ToTGenerator
@@ -98,6 +101,7 @@ class SystemBuilder:
             max_custom_drives=self.system_config.db.sql.drives.max_custom_drives,
             fundamental_config=self.system_config.db.sql.drives.fundamental.model_dump(),
             hypotheses_enabled=self.system_config.db.sql.hypotheses.enabled,
+            tool_transport=self.container.settings.llm.tool_transport,
             max_clusters_hypotheses=self.system_config.db.sql.hypotheses.max_clusters,
             max_hypotheses=self.system_config.db.sql.hypotheses.max_hypotheses,
             timezone=self.system_config.timezone,
@@ -261,6 +265,7 @@ class SystemBuilder:
             agent_state=self.container.agent_state,
             registry=self.container.context_registry,
             subconscious_config=self.system_config.subconscious,
+            tool_transport=self.container.settings.llm.tool_transport,
         )
 
         token_tracker = TokenTracker()
@@ -306,7 +311,13 @@ class SystemBuilder:
             agent_state=self.container.agent_state,
             sql_ticks=self.container.sql.ticks,
             vector_manager=self.container.vector,
-            tools=ACTION_SCHEMA,
+            tools=lambda: build_tools_schema(
+                transport=self.container.settings.llm.tool_transport,
+                native_prefixes=self.container.settings.llm.native_tool_prefixes,
+                native_limit=self.container.settings.llm.native_tool_limit,
+                subconscious_config=self.system_config.subconscious,
+            ),
+            tool_transport=self.container.settings.llm.tool_transport,
             event_bus=self.container.event_bus,
             tot_config=self.system_config.tree_of_thoughts,
             tot_generator=tot_generator,

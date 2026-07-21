@@ -7,6 +7,9 @@ The `llm` block in `settings.yaml` manages the interaction with language models.
 * **`is_multimodal`**: `true` / `false`. Set to `true` only if your model physically supports image processing. This enables passing screenshots into the prompt.
 * **`temperature`**: Creativity factor from 0.0 (highly deterministic) to 1.0+ (highly creative).
 * **`max_react_steps`**: Hard limit on the number of "Thought -> Tool Call -> Result" iterations per single wakeup step. If the agent gets stuck in a loop or encounters an unresolvable error, the system will forcibly put it to sleep after reaching this limit to protect your API balance.
+* **`tool_transport`**: `wrapper` (default), `native`, or `hybrid`. Keep `wrapper` for QWB/Qwen and providers that reliably support the existing `execute_skill` envelope. `native` exports selected registered skills as individual function schemas. `hybrid` exposes the selected hot path natively while retaining the wrapper for the complete catalogue and dependency-aware action plans.
+* **`native_tool_prefixes`**: Prefix filter over canonical JAWL skill names. The default selects coding and file-navigation skills. An empty list selects every visible skill and may exceed provider tool-count/context limits.
+* **`native_tool_limit`**: Hard guard from 1 to 128. Schema export fails visibly when the prefix selection is larger instead of silently dropping skills.
 
 ## Connecting Local Models (Ollama, vLLM, LM Studio)
 

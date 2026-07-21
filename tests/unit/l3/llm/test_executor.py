@@ -88,6 +88,7 @@ async def test_executor_merges_multiple_execute_skill_tool_calls(mock_executor_d
     mock_session = AsyncMock()
     llm.get_session.return_value = mock_session
     first = MagicMock()
+    first.function.name = "execute_skill"
     first.function.arguments = json.dumps(
         {
             "observation": "first",
@@ -97,6 +98,7 @@ async def test_executor_merges_multiple_execute_skill_tool_calls(mock_executor_d
         }
     )
     second = MagicMock()
+    second.function.name = "execute_skill"
     second.function.arguments = json.dumps(
         {
             "observation": "second",
@@ -119,6 +121,43 @@ async def test_executor_merges_multiple_execute_skill_tool_calls(mock_executor_d
     ]
     assert payload["observation"] == "first\nsecond"
     assert executor.last_call_metrics["tool_call_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_executor_converts_native_tool_call_and_plain_completion(mock_executor_deps):
+    llm, tracker = mock_executor_deps
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    call = MagicMock()
+    call.function.name = "jawl_native_read_deadbeef00"
+    call.function.arguments = json.dumps({"path": "README.md"})
+    tool_response = MagicMock()
+    tool_response.choices[0].message.tool_calls = [call]
+    tool_response.choices[0].message.content = "I need the file."
+    completion = MagicMock()
+    completion.choices[0].message.tool_calls = None
+    completion.choices[0].message.content = "Done."
+    session.chat.completions.create.side_effect = [tool_response, completion]
+    executor = LLMExecutor(llm, tracker)
+
+    tool_raw = await executor.execute(
+        "model", [], 0.0, MagicMock(), "[Log]", tool_transport="native"
+    )
+    final_raw = await executor.execute(
+        "model", [], 0.0, MagicMock(), "[Log]", tool_transport="native"
+    )
+
+    tool_payload = json.loads(tool_raw)
+    final_payload = json.loads(final_raw)
+    assert tool_payload["actions"] == [
+        {
+            "tool_name": "jawl_native_read_deadbeef00",
+            "parameters": {"path": "README.md"},
+        }
+    ]
+    assert "I need the file" in tool_payload["reflection"]
+    assert final_payload["actions"] == []
+    assert final_payload["reflection"] == "Done."
 
 
 @pytest.mark.asyncio
