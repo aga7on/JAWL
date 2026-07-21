@@ -296,6 +296,15 @@
       ]
     },
     {
+      "id": "named_container_policy_profiles",
+      "description": "Operator-declared OCI profiles select exact image/network/resource limits, remain backward compatible with the default policy, and are cryptographically bound into one-shot approvals.",
+      "tests": [
+        "tests/unit/utils/test_settings.py::test_host_os_config_validation",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_execution.py::test_container_command_is_shell_free_task_mounted_and_resource_bounded",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_execution.py::test_named_container_profile_is_exact_listed_and_approval_bound"
+      ]
+    },
+    {
       "id": "cross_layer_trace_correlation",
       "description": "Async trace IDs survive child tasks, cancellation, actions, verification, and commits without leaking contexts.",
       "tests": [

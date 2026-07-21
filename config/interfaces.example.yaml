@@ -28,6 +28,17 @@ host:
     #     argv: [python.exe, -m, pytest, -q]
     #     relative_cwd: "."
     #     timeout_seconds: 60
+    #     container_profile: python-ci
+    # Reusable exact OCI isolation policies. Omit container_profile on a command
+    # to retain the compatible global coding_container_* defaults below.
+    coding_container_profiles: []
+    # coding_container_profiles:
+    #   - name: python-ci
+    #     image: "python@sha256:<64 lowercase hex chars>"
+    #     network: none
+    #     memory_mb: 2048
+    #     cpus: 2.0
+    #     pids: 256
     coding_container_runtime: docker
     coding_container_image: "python:3.11-slim"
     coding_container_network: none

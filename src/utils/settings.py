@@ -27,6 +27,12 @@ class CodingCommandProfileConfig(BaseModel):
     argv: list[str] = Field(min_length=1, max_length=128)
     relative_cwd: str = Field(default=".", min_length=1, max_length=1000)
     timeout_seconds: int | None = Field(default=None, ge=1, le=7200)
+    container_profile: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
 
     @field_validator("argv")
     @classmethod
@@ -39,6 +45,27 @@ class CodingCommandProfileConfig(BaseModel):
         if sum(len(item) for item in argv) > 32768:
             raise ValueError("coding command profile argv exceeds 32768 characters")
         return argv
+
+
+class CodingContainerProfileConfig(BaseModel):
+    """Operator-declared reusable OCI isolation policy."""
+
+    name: str = Field(
+        min_length=1, max_length=100, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    )
+    image: str = Field(
+        min_length=1,
+        max_length=500,
+        pattern=(
+            r"^(?:[A-Za-z0-9.-]+(?::[0-9]+)?/)?"
+            r"[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*"
+            r"(?::[A-Za-z0-9._-]+)?(?:@sha256:[0-9a-f]{64})?$"
+        ),
+    )
+    network: Literal["none", "bridge"] = "none"
+    memory_mb: int = Field(default=2048, ge=128, le=32768)
+    cpus: float = Field(default=2.0, ge=0.1, le=32.0)
+    pids: int = Field(default=256, ge=16, le=4096)
 
 
 class HostOSConfig(BaseModel):
@@ -62,6 +89,9 @@ class HostOSConfig(BaseModel):
     coding_command_profiles: list[CodingCommandProfileConfig] = Field(
         default_factory=list, max_length=100
     )
+    coding_container_profiles: list[CodingContainerProfileConfig] = Field(
+        default_factory=list, max_length=100
+    )
     coding_container_runtime: Literal["docker", "podman"] = "docker"
     coding_container_image: str = "python:3.11-slim"
     coding_container_network: Literal["none", "bridge"] = "none"
@@ -82,6 +112,25 @@ class HostOSConfig(BaseModel):
         names = [profile.name for profile in self.coding_command_profiles]
         if len(names) != len(set(names)):
             raise ValueError("coding command profile names must be unique")
+        container_names = [
+            profile.name for profile in self.coding_container_profiles
+        ]
+        if len(container_names) != len(set(container_names)):
+            raise ValueError("coding container profile names must be unique")
+        available = set(container_names)
+        missing = sorted(
+            {
+                profile.container_profile
+                for profile in self.coding_command_profiles
+                if profile.container_profile
+                and profile.container_profile not in available
+            }
+        )
+        if missing:
+            raise ValueError(
+                "coding command profiles reference unknown container profiles: "
+                + ", ".join(missing)
+            )
         return self
 
 

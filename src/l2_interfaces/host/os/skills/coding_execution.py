@@ -20,7 +20,10 @@ from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorks
 from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
 from src.utils._tools import redact_sensitive_text, truncate_text
-from src.utils.settings import CodingCommandProfileConfig
+from src.utils.settings import (
+    CodingCommandProfileConfig,
+    CodingContainerProfileConfig,
+)
 from src.utils.tracing import current_trace
 
 
@@ -94,7 +97,10 @@ class HostOSCodingExecution:
         return digest.hexdigest()
 
     async def _execution_identity(
-        self, backend: str, command: List[str]
+        self,
+        backend: str,
+        command: List[str],
+        container_policy: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         executable_sha256 = await asyncio.to_thread(
             self._file_sha256, Path(command[0]).resolve()
@@ -104,16 +110,48 @@ class HostOSCodingExecution:
                 "kind": "host",
                 "executable_sha256": executable_sha256,
             }
-        config = self.host_os.config
+        policy = container_policy or self._container_policy(None)
         return {
             "kind": "container",
-            "runtime": config.coding_container_runtime,
+            "runtime": self.host_os.config.coding_container_runtime,
             "runtime_sha256": executable_sha256,
-            "image": config.coding_container_image,
-            "network": config.coding_container_network,
-            "memory_mb": config.coding_container_memory_mb,
-            "cpus": config.coding_container_cpus,
-            "pids": config.coding_container_pids,
+            **policy,
+        }
+
+    def _container_policy(
+        self, profile_name: Optional[str]
+    ) -> Dict[str, Any]:
+        config = self.host_os.config
+        if profile_name is None:
+            return {
+                "profile": None,
+                "image": str(config.coding_container_image),
+                "network": config.coding_container_network,
+                "memory_mb": int(config.coding_container_memory_mb),
+                "cpus": float(config.coding_container_cpus),
+                "pids": int(config.coding_container_pids),
+            }
+        normalized = str(profile_name)
+        if not self._PROFILE_NAME.fullmatch(normalized):
+            raise ValueError("Coding container profile name is invalid.")
+        profiles = [
+            profile
+            for profile in config.coding_container_profiles
+            if profile.name == normalized
+        ]
+        if len(profiles) != 1:
+            raise ValueError(
+                "Coding container profile must resolve exactly once "
+                f"({normalized})."
+            )
+        profile: CodingContainerProfileConfig = profiles[0]
+        return {
+            "profile": profile.name,
+            "image": profile.image,
+            "network": profile.network,
+            "memory_mb": int(profile.memory_mb),
+            "cpus": float(profile.cpus),
+            "pids": int(profile.pids),
         }
 
     @classmethod
@@ -317,14 +355,19 @@ class HostOSCodingExecution:
         return [str(resolved), *argv[1:]], env
 
     def _build_container_command(
-        self, workspace: Path, cwd: Path, argv: List[str]
+        self,
+        workspace: Path,
+        cwd: Path,
+        argv: List[str],
+        policy: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         config = self.host_os.config
         runtime = config.coding_container_runtime
         resolved_runtime = shutil.which(runtime)
         if resolved_runtime is None:
             raise FileNotFoundError(f"Container runtime was not found ({runtime}).")
-        image = str(config.coding_container_image).strip()
+        policy = policy or self._container_policy(None)
+        image = str(policy["image"]).strip()
         if not self._IMAGE.fullmatch(image) or image.startswith("-"):
             raise ValueError("coding_container_image is not a valid bounded OCI image.")
         workspace_text = str(workspace.resolve())
@@ -342,13 +385,13 @@ class HostOSCodingExecution:
             "run",
             "--rm",
             "--network",
-            config.coding_container_network,
+            str(policy["network"]),
             "--memory",
-            f"{config.coding_container_memory_mb}m",
+            f"{int(policy['memory_mb'])}m",
             "--cpus",
-            f"{config.coding_container_cpus:g}",
+            f"{float(policy['cpus']):g}",
             "--pids-limit",
-            str(config.coding_container_pids),
+            str(int(policy["pids"])),
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -370,6 +413,7 @@ class HostOSCodingExecution:
         expected_workspace_fingerprint: str,
         relative_cwd: str = ".",
         timeout_seconds: Optional[int] = None,
+        container_profile_name: Optional[str] = None,
     ) -> SkillResult:
         """Create a pending one-shot approval for an exact command contract."""
 
@@ -405,11 +449,24 @@ class HostOSCodingExecution:
                         "Coding approval rejected: workspace changed since inspection "
                         f"(expected {expected}, current {current['fingerprint']})."
                     )
+                container_policy = None
                 if backend == "host":
+                    if container_profile_name is not None:
+                        raise ValueError(
+                            "container_profile_name is only valid for the "
+                            "container execution backend."
+                        )
                     command, _ = self._build_host_command(workspace, argv)
                 else:
-                    command = self._build_container_command(workspace, cwd, argv)
-                execution_identity = await self._execution_identity(backend, command)
+                    container_policy = self._container_policy(
+                        container_profile_name
+                    )
+                    command = self._build_container_command(
+                        workspace, cwd, argv, container_policy
+                    )
+                execution_identity = await self._execution_identity(
+                    backend, command, container_policy
+                )
                 subject = self._approval_subject(
                     task_id,
                     backend,
@@ -426,13 +483,18 @@ class HostOSCodingExecution:
                 )
             payload = {
                 "approval": request,
+                "container_profile": (
+                    execution_identity.get("profile")
+                    if backend == "container"
+                    else None
+                ),
                 "operator_command": (
                     f"python jawl.py --approvals approve {request['id']}"
                 ),
                 "note": (
                     "Approval is one-shot and bound to the exact task, argv, "
                     "workspace fingerprint, cwd, backend, executable/runtime, "
-                    "container policy, and timeout."
+                    "named container policy, and timeout."
                 ),
             }
             return SkillResult.ok(json.dumps(payload, ensure_ascii=False))
@@ -490,9 +552,34 @@ class HostOSCodingExecution:
                     "argument_count": max(0, len(profile.argv) - 1),
                     "relative_cwd": profile.relative_cwd,
                     "timeout_seconds": profile.timeout_seconds,
+                    "container_profile": profile.container_profile,
                 }
             )
         return SkillResult.ok(json.dumps({"profiles": profiles}, ensure_ascii=False))
+
+    @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def list_coding_container_profiles(self) -> SkillResult:
+        """List effective bounded OCI policies without starting a runtime."""
+
+        try:
+            default = self._container_policy(None)
+            profiles = [
+                self._container_policy(profile.name)
+                for profile in self.host_os.config.coding_container_profiles
+            ]
+            return SkillResult.ok(
+                json.dumps(
+                    {
+                        "runtime": self.host_os.config.coding_container_runtime,
+                        "default": default,
+                        "profiles": profiles,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        except ValueError as exc:
+            return SkillResult.fail(str(exc))
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.SANDBOX)
@@ -514,6 +601,7 @@ class HostOSCodingExecution:
             expected_workspace_fingerprint,
             relative_cwd=profile.relative_cwd,
             timeout_seconds=profile.timeout_seconds,
+            container_profile_name=profile.container_profile,
         )
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
@@ -538,6 +626,7 @@ class HostOSCodingExecution:
             relative_cwd=profile.relative_cwd,
             timeout_seconds=profile.timeout_seconds,
             approval_id=approval_id,
+            container_profile_name=profile.container_profile,
         )
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
@@ -550,6 +639,7 @@ class HostOSCodingExecution:
         relative_cwd: str = ".",
         timeout_seconds: Optional[int] = None,
         approval_id: Optional[str] = None,
+        container_profile_name: Optional[str] = None,
     ) -> SkillResult:
         """Run a shell-free command in a task workspace under configured policy.
 
@@ -585,10 +675,21 @@ class HostOSCodingExecution:
                         f"(expected {expected}, current {before['fingerprint']})."
                     )
 
+                container_policy = None
                 if backend == "host":
+                    if container_profile_name is not None:
+                        raise ValueError(
+                            "container_profile_name is only valid for the "
+                            "container execution backend."
+                        )
                     command, env = self._build_host_command(workspace, argv)
                 else:
-                    command = self._build_container_command(workspace, cwd, argv)
+                    container_policy = self._container_policy(
+                        container_profile_name
+                    )
+                    command = self._build_container_command(
+                        workspace, cwd, argv, container_policy
+                    )
                     env = None
 
                 if self.host_os.config.coding_approval_mode == "required":
@@ -606,7 +707,9 @@ class HostOSCodingExecution:
                         expected,
                         relative,
                         timeout,
-                        await self._execution_identity(backend, command),
+                        await self._execution_identity(
+                            backend, command, container_policy
+                        ),
                     )
                     await asyncio.to_thread(
                         self.approvals.consume, approval_id, subject
@@ -620,6 +723,11 @@ class HostOSCodingExecution:
             payload = {
                 "task_id": task_id,
                 "backend": backend,
+                "container_profile": (
+                    container_policy.get("profile")
+                    if container_policy is not None
+                    else None
+                ),
                 "executable": argv[0],
                 "exit_code": exit_code,
                 "stdout": truncate_text(

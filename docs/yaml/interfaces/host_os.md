@@ -85,6 +85,16 @@ can discover redacted profile metadata with `list_coding_command_profiles` and,
 when approval is required, use `request_coding_profile_approval` without ever
 reconstructing the configured argv.
 
+`coding_container_profiles` defines reusable named OCI policies containing an
+exact image, network mode, memory, CPU, and PID limits. A command profile may
+select one through `container_profile`; ad-hoc calls may pass
+`container_profile_name` after discovering policies with
+`list_coding_container_profiles`. Omitting the name preserves the existing
+global `coding_container_*` defaults. Unknown or duplicate names fail during
+configuration validation, a named profile is rejected by the host backend, and
+the complete resolved policy is part of the one-shot approval fingerprint. A
+policy changed after approval therefore cannot reuse that approval.
+
 ## Durable coding diff review
 
 `get_coding_workspace_diff` returns a `reviewed_diff_sha256`, structured hunk

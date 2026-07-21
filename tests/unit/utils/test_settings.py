@@ -82,6 +82,23 @@ def test_host_os_config_validation():
                 {"name": "tests", "argv": ["python", "-m", "pytest", "-q"]},
             ]
         )
+    with pytest.raises(ValueError, match="container profile names must be unique"):
+        HostOSConfig(
+            coding_container_profiles=[
+                {"name": "ci", "image": "python:3.12-slim"},
+                {"name": "ci", "image": "python:3.13-slim"},
+            ]
+        )
+    with pytest.raises(ValueError, match="unknown container profiles"):
+        HostOSConfig(
+            coding_command_profiles=[
+                {
+                    "name": "tests",
+                    "argv": ["python", "-m", "pytest"],
+                    "container_profile": "missing",
+                }
+            ]
+        )
 
 
 def test_lifecycle_command_hook_config_is_exact_argv_not_shell_text():

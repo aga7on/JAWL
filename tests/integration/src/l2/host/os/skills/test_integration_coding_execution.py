@@ -10,7 +10,10 @@ import psutil
 from src.l2_interfaces.host.os.skills.coding_execution import HostOSCodingExecution
 from src.l2_interfaces.host.os.skills.coding_workspaces import HostOSCodingWorkspaces
 from src.l2_interfaces.host.os.coding_approvals import CodingApprovalStore
-from src.utils.settings import CodingCommandProfileConfig
+from src.utils.settings import (
+    CodingCommandProfileConfig,
+    CodingContainerProfileConfig,
+)
 
 
 def run_git(cwd: Path, *args: str) -> None:
@@ -272,6 +275,7 @@ async def test_named_toolchain_profile_uses_user_declared_exact_argv(os_client):
             "argument_count": 2,
             "relative_cwd": ".",
             "timeout_seconds": 10,
+            "container_profile": None,
         }
     ]
     requested = await execution.request_coding_profile_approval(
@@ -295,3 +299,105 @@ async def test_named_toolchain_profile_uses_user_declared_exact_argv(os_client):
     )
     assert unknown.is_success is False
     assert "resolve exactly once" in unknown.message
+
+
+@pytest.mark.asyncio
+async def test_named_container_profile_is_exact_listed_and_approval_bound(
+    os_client, monkeypatch
+):
+    workspaces, workspace = await create_workspace(os_client, "container-profile")
+    approvals = CodingApprovalStore(
+        os_client.system_dir / "container-profile-approvals.json"
+    )
+    execution = HostOSCodingExecution(os_client, workspaces, approvals)
+    os_client.config.coding_execution_backend = "container"
+    os_client.config.coding_container_runtime = "docker"
+    os_client.config.coding_approval_mode = "required"
+    os_client.config.coding_container_profiles = [
+        CodingContainerProfileConfig(
+            name="python-ci",
+            image="python:3.12-slim",
+            network="none",
+            memory_mb=1024,
+            cpus=1.5,
+            pids=96,
+        )
+    ]
+    os_client.config.coding_command_profiles = [
+        CodingCommandProfileConfig(
+            name="tests-in-ci",
+            argv=["python", "-m", "pytest", "-q"],
+            timeout_seconds=30,
+            container_profile="python-ci",
+        )
+    ]
+    monkeypatch.setattr(
+        "src.l2_interfaces.host.os.skills.coding_execution.shutil.which",
+        lambda command: sys.executable if command == "docker" else None,
+    )
+    captured = {}
+
+    async def fake_run(command, cwd, timeout, env):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["timeout"] = timeout
+        captured["env"] = env
+        return 0, "profile-ok", "", False, False
+
+    monkeypatch.setattr(execution, "_run_bounded", fake_run)
+    listed = await execution.list_coding_container_profiles()
+    assert listed.is_success is True, listed.message
+    listed_payload = json.loads(listed.message)
+    assert listed_payload["runtime"] == "docker"
+    assert listed_payload["profiles"] == [
+        {
+            "profile": "python-ci",
+            "image": "python:3.12-slim",
+            "network": "none",
+            "memory_mb": 1024,
+            "cpus": 1.5,
+            "pids": 96,
+        }
+    ]
+    fingerprint = await workspaces.workspace_fingerprint(workspace)
+    requested = await execution.request_coding_profile_approval(
+        "container-profile", "tests-in-ci", fingerprint["fingerprint"]
+    )
+    assert requested.is_success is True, requested.message
+    request_payload = json.loads(requested.message)
+    assert request_payload["container_profile"] == "python-ci"
+    approval_id = request_payload["approval"]["id"]
+    approvals.decide(approval_id, approved=True, actor="test")
+
+    os_client.config.coding_container_profiles[0].image = "python:3.13-slim"
+    changed_policy = await execution.run_coding_profile(
+        "container-profile",
+        "tests-in-ci",
+        fingerprint["fingerprint"],
+        approval_id=approval_id,
+    )
+    assert changed_policy.is_success is False
+    assert "does not match the exact" in changed_policy.message
+
+    os_client.config.coding_container_profiles[0].image = "python:3.12-slim"
+    executed = await execution.run_coding_profile(
+        "container-profile",
+        "tests-in-ci",
+        fingerprint["fingerprint"],
+        approval_id=approval_id,
+    )
+    assert executed.is_success is True, executed.message
+    payload = json.loads(executed.message)
+    assert payload["container_profile"] == "python-ci"
+    assert payload["stdout"] == "profile-ok"
+    command = captured["command"]
+    assert command[command.index("--network") + 1] == "none"
+    assert command[command.index("--memory") + 1] == "1024m"
+    assert command[command.index("--cpus") + 1] == "1.5"
+    assert command[command.index("--pids-limit") + 1] == "96"
+    assert command[command.index("python:3.12-slim") + 1 :] == [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+    ]
