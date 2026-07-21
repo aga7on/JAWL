@@ -16,7 +16,7 @@ from pathlib import Path
 
 from src.utils.logger import main_logger, agent_logger
 from src.utils.settings import TreeOfThoughtsConfig
-from src.utils._tools import dump_prompt_to_file
+from src.utils._tools import dump_prompt_to_file, redact_sensitive_text, truncate_text
 
 from src.utils.event.bus import EventBus
 from src.utils.event.registry import Events
@@ -114,6 +114,7 @@ class ReactLoop:
             agent_logger.info(log)
 
             prompt = self.prompt_builder.build()
+            cycle_concluded = False
 
             # ==================================================================
             # MAIN LOOP
@@ -175,6 +176,7 @@ class ReactLoop:
 
                 parsed_response, error_msg = self._parse_response(raw_answer)
                 if error_msg:
+                    await self._handle_protocol_error(raw_answer, error_msg)
                     self.agent_state.next_step()
                     continue
 
@@ -191,6 +193,7 @@ class ReactLoop:
 
                 if not actions:
                     await self._handle_completion(thoughts)
+                    cycle_concluded = True
                     break
 
                 # --------------------------------------------------------------
@@ -200,6 +203,12 @@ class ReactLoop:
                 await self._execute_actions(thoughts, actions)
 
                 self.agent_state.next_step()
+
+            if (
+                not cycle_concluded
+                and self.agent_state.current_step > self.agent_state.max_react_steps
+            ):
+                await self._handle_step_limit()
 
         finally:
             self.agent_state.update_state(AgentStatus.IDLE)
@@ -280,6 +289,7 @@ class ReactLoop:
                 "execution_report": results_str,
                 "step": self.agent_state.current_step,
                 "max_steps": self.agent_state.max_react_steps,
+                "llm_metrics": self._llm_metrics_snapshot(),
             },
         )
         await self.event_bus.publish(Events.REACT_TICK_SAVED)
@@ -302,9 +312,68 @@ class ReactLoop:
                 "status": "completed",
                 "step": self.agent_state.current_step,
                 "max_steps": self.agent_state.max_react_steps,
+                "llm_metrics": self._llm_metrics_snapshot(),
             },
         )
         await self.event_bus.publish(Events.REACT_TICK_SAVED)
+
+    async def _handle_protocol_error(self, raw_answer: str, error_msg: str) -> None:
+        """Persist invalid provider output so the next step can self-correct."""
+
+        safe_error = truncate_text(
+            redact_sensitive_text(error_msg), max_chars=2000
+        )
+        safe_excerpt = truncate_text(
+            redact_sensitive_text(raw_answer), max_chars=4000
+        )
+        self.agent_state.last_thoughts = ""
+        self.agent_state.last_action_error = safe_error
+        self.agent_state.last_actions_result = (
+            "LLM tool protocol error. Correct the response format on the next step: "
+            + safe_error
+        )
+        agent_logger.warning(f"[ReAct] Tool protocol error: {safe_error}")
+        await self.sql_ticks.save_tick(
+            thoughts="[Protocol error: provider response rejected]",
+            actions=[],
+            results={
+                "status": "protocol_error",
+                "error": safe_error,
+                "response_excerpt": safe_excerpt,
+                "step": self.agent_state.current_step,
+                "max_steps": self.agent_state.max_react_steps,
+                "llm_metrics": self._llm_metrics_snapshot(),
+            },
+        )
+        await self.event_bus.publish(Events.REACT_TICK_SAVED)
+
+    async def _handle_step_limit(self) -> None:
+        """Write a terminal record when a cycle exhausts its reasoning budget."""
+
+        message = (
+            f"ReAct cycle exhausted its {self.agent_state.max_react_steps}-step "
+            "budget before producing a terminal response. Resume from durable "
+            "ticks and the action journal on the next wakeup."
+        )
+        self.agent_state.last_action_error = message
+        self.agent_state.last_actions_result = message
+        agent_logger.warning(f"[ReAct] {message}")
+        await self.sql_ticks.save_tick(
+            thoughts="[Cycle stopped: step budget exhausted]",
+            actions=[],
+            results={
+                "status": "max_steps_exhausted",
+                "error": message,
+                "step": self.agent_state.max_react_steps,
+                "max_steps": self.agent_state.max_react_steps,
+                "llm_metrics": self._llm_metrics_snapshot(),
+            },
+        )
+        await self.event_bus.publish(Events.REACT_TICK_SAVED)
+
+    def _llm_metrics_snapshot(self) -> Dict[str, Any]:
+        metrics = getattr(self.executor, "last_call_metrics", {})
+        return copy.deepcopy(metrics) if isinstance(metrics, dict) else {}
 
     def _parse_response(
         self, raw_answer: str

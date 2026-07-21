@@ -345,7 +345,14 @@ async def execute_skill(
         return await call_skill(action.tool_name, action.parameters, logger=logger)
 
     outcomes = await execute_action_plan(actions, _runner)
-    report = [f"* {outcome.tool_name}: {outcome.message}" for outcome in outcomes]
+    report = []
+    for outcome in outcomes:
+        status = "success" if outcome.is_success else "failed"
+        report.append(f"* {outcome.tool_name}: {outcome.message}")
+        report.append(
+            f"  [action_id={outcome.action_id}; status={status}; "
+            f"duration_ms={outcome.duration_ms:g}]"
+        )
     return "\n".join(report)
 
 

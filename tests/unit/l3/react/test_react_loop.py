@@ -53,6 +53,28 @@ async def test_react_max_steps_limit(mock_execute_skill, mock_dependencies):
 
     assert deps["executor"].execute.call_count == 2
     assert deps["agent_state"].current_step == 3
+    assert deps["sql_ticks"].save_tick.await_count == 3
+    terminal = deps["sql_ticks"].save_tick.await_args_list[-1].kwargs
+    assert terminal["results"]["status"] == "max_steps_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_react_protocol_error_is_persisted_before_retry(mock_dependencies):
+    deps = mock_dependencies
+    loop = ReactLoop(**deps)
+    deps["executor"].execute.side_effect = [
+        "not valid tool json",
+        '{"observation": "recovered", "reasoning": "", "reflection": "", "actions": []}',
+    ]
+
+    await loop.run("TEST", {}, missed_events=[])
+
+    assert deps["executor"].execute.call_count == 2
+    assert deps["sql_ticks"].save_tick.await_count == 2
+    protocol = deps["sql_ticks"].save_tick.await_args_list[0].kwargs
+    assert protocol["results"]["status"] == "protocol_error"
+    assert "not valid tool json" in protocol["results"]["response_excerpt"]
+    assert deps["agent_state"].last_action_error
 
 
 @pytest.mark.asyncio

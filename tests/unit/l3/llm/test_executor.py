@@ -1,5 +1,6 @@
 import pytest
 import openai
+import json
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from src.l3_agent.llm.executor import LLMExecutor
@@ -30,6 +31,48 @@ async def test_executor_success(mock_executor_deps):
 
     assert res == "Success Content"
     tracker.add_output_record.assert_called_once()
+    assert executor.last_call_metrics["status"] == "completed"
+    assert executor.last_call_metrics["output_chars"] == len("Success Content")
+    assert executor.last_call_metrics["tool_call_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_executor_merges_multiple_execute_skill_tool_calls(mock_executor_deps):
+    llm, _ = mock_executor_deps
+    mock_session = AsyncMock()
+    llm.get_session.return_value = mock_session
+    first = MagicMock()
+    first.function.arguments = json.dumps(
+        {
+            "observation": "first",
+            "reasoning": "",
+            "reflection": "",
+            "actions": [{"tool_name": "read", "parameters": {}}],
+        }
+    )
+    second = MagicMock()
+    second.function.arguments = json.dumps(
+        {
+            "observation": "second",
+            "reasoning": "",
+            "reflection": "",
+            "actions": [{"tool_name": "search", "parameters": {}}],
+        }
+    )
+    response = MagicMock()
+    response.choices[0].message.tool_calls = [first, second]
+    mock_session.chat.completions.create.return_value = response
+
+    executor = LLMExecutor(llm, MagicMock())
+    raw = await executor.execute("model", [], 0.0, MagicMock(), "[Log]")
+    payload = json.loads(raw)
+
+    assert [action["tool_name"] for action in payload["actions"]] == [
+        "read",
+        "search",
+    ]
+    assert payload["observation"] == "first\nsecond"
+    assert executor.last_call_metrics["tool_call_count"] == 2
 
 
 @pytest.mark.asyncio

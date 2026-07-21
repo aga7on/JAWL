@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,7 @@ class ActionOutcome:
     tool_name: str
     is_success: bool
     message: str
+    duration_ms: float = 0.0
 
 
 class ActionExecutionEngine:
@@ -265,6 +267,7 @@ class ActionExecutionEngine:
             "tool_name": outcome.tool_name,
             "is_success": outcome.is_success,
             "message": outcome.message,
+            "duration_ms": outcome.duration_ms,
         }
 
     def _ensure_loop_state(self) -> None:
@@ -318,6 +321,7 @@ class ActionExecutionEngine:
                     parameters=plan.call.parameters,
                     resources=resource_keys,
                 )
+                started = time.perf_counter()
                 try:
                     result = await runner(plan.call)
                     outcome = ActionOutcome(
@@ -326,6 +330,9 @@ class ActionExecutionEngine:
                         tool_name=plan.call.tool_name,
                         is_success=bool(getattr(result, "is_success", False)),
                         message=str(getattr(result, "message", result)),
+                        duration_ms=round(
+                            (time.perf_counter() - started) * 1000, 1
+                        ),
                     )
                     await self._safe_record(
                         "action_finished",
@@ -341,12 +348,19 @@ class ActionExecutionEngine:
                             action_id=plan.action_id,
                             index=plan.index,
                             tool_name=plan.call.tool_name,
+                            duration_ms=round(
+                                (time.perf_counter() - started) * 1000, 1
+                            ),
                         )
                     )
                     raise
                 except Exception as exc:
                     outcome = self._failure(
-                        plan, f"Internal action execution error: {exc}"
+                        plan,
+                        f"Internal action execution error: {exc}",
+                        duration_ms=round(
+                            (time.perf_counter() - started) * 1000, 1
+                        ),
                     )
                     await self._safe_record(
                         "action_finished",
@@ -376,11 +390,14 @@ class ActionExecutionEngine:
         return sorted(keys)
 
     @staticmethod
-    def _failure(plan: PlannedAction, message: str) -> ActionOutcome:
+    def _failure(
+        plan: PlannedAction, message: str, duration_ms: float = 0.0
+    ) -> ActionOutcome:
         return ActionOutcome(
             index=plan.index,
             action_id=plan.action_id,
             tool_name=plan.call.tool_name,
             is_success=False,
             message=message,
+            duration_ms=duration_ms,
         )

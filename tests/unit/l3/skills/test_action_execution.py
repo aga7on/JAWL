@@ -40,11 +40,12 @@ async def test_actions_are_sequential_by_default():
         order.append(f"end:{action.tool_name}")
         return result()
 
-    await engine.execute(
+    outcomes = await engine.execute(
         [ActionCall(tool_name="first"), ActionCall(tool_name="second")], runner
     )
 
     assert order == ["start:first", "end:first", "start:second", "end:second"]
+    assert all(outcome.duration_ms >= 0 for outcome in outcomes)
 
 
 @pytest.mark.asyncio

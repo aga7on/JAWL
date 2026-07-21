@@ -125,7 +125,10 @@ async def test_e2e_react_loop_creates_task_and_saves_tick(tmp_path: Path):
     # Б. Проверяем, что лог действий (Tick) РЕАЛЬНО записался в базу
     ticks = await sql_ticks.get_ticks(limit=5)
     assert len(ticks) >= 1
-    last_tick = ticks[-1]
+    action_ticks = [tick for tick in ticks if tick.actions]
+    assert action_ticks
+    last_tick = action_ticks[-1]
+    assert ticks[-1].results["status"] == "max_steps_exhausted"
 
     # Проверяем мысли
     assert "занесу это в задачи" in last_tick.thoughts.lower()

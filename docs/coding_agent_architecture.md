@@ -65,6 +65,21 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - A plan left unfinished by an older process session is reported as interrupted.
 - Journal inspection never automatically replays uncertain side effects. Recovery
   begins by comparing journal evidence with the persistent task workspace.
+- Action completion and cancellation records include elapsed time. ReAct protocol
+  errors and max-step exhaustion are terminally recorded in ticks rather than
+  silently consuming the cycle budget.
+
+## LLM transport observability contract
+
+- The compatible string-returning executor API remains intact, while every call
+  exposes a structured metrics snapshot with request ID, model, attempts,
+  latency, finish reason, tool-call count, provider usage when available, and
+  terminal error state.
+- If a provider emits multiple `execute_skill` calls in one response, their
+  action arrays are merged in source order. Malformed multi-call output is
+  surfaced to the protocol parser instead of silently discarding later calls.
+- Invalid structured output is redacted, bounded, persisted as a protocol-error
+  tick, and made visible to the next reasoning step for self-correction.
 
 ## Verification contract
 

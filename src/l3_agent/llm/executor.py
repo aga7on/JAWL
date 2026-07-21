@@ -11,15 +11,18 @@ Adheres strictly to Single Responsibility Principle (SRP): agent reasoning loops
 (ReAct, Swarm) remain completely unaware of raw HTTP errors.
 """
 
-import time
 import asyncio
+import json
 import logging
+import time
+import uuid
 from typing import Dict, Any, List, Optional
 
 import openai
 
 from src.l3_agent.llm.client import LLMClient
 from src.l3_agent.llm.exceptions import AllKeysExhaustedError
+from src.utils._tools import redact_sensitive_text
 from src.utils.token_tracker import TokenTracker
 
 
@@ -38,6 +41,7 @@ class LLMExecutor:
 
         self.llm = llm_client
         self.tracker = token_tracker
+        self.last_call_metrics: Dict[str, Any] = {}
 
     async def execute(
         self,
@@ -71,9 +75,18 @@ class LLMExecutor:
         """
 
         self.tracker.add_input_record(messages, log_prefix=log_prefix, logger=logger)
+        request_id = uuid.uuid4().hex
+        started = time.perf_counter()
+        self.last_call_metrics = {
+            "request_id": request_id,
+            "model": model_name,
+            "status": "running",
+            "attempts": 0,
+        }
         timeout_count = 0
 
         for attempt in range(max_retries):
+            self.last_call_metrics["attempts"] = attempt + 1
             try:
                 # Retrieve an active authenticated session
                 session = self.llm.get_session()
@@ -96,6 +109,15 @@ class LLMExecutor:
 
                 self.tracker.add_output_record(
                     raw_answer, log_prefix=log_prefix, logger=logger
+                )
+
+                self.last_call_metrics = self._response_metrics(
+                    response=response,
+                    request_id=request_id,
+                    model_name=model_name,
+                    attempts=attempt + 1,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    output_chars=len(raw_answer),
                 )
 
                 return raw_answer
@@ -134,6 +156,14 @@ class LLMExecutor:
                     logger.error(
                         f"{log_prefix} API unavailable after {max_timeout_retries} timeouts. Aborting."
                     )
+                    self._finish_error_metrics(
+                        request_id,
+                        model_name,
+                        attempt + 1,
+                        started,
+                        "timeout",
+                        "API request timeout",
+                    )
                     return None
 
                 logger.warning(
@@ -145,12 +175,28 @@ class LLMExecutor:
                 # Pause briefly before retry on unexpected system/network errors
                 if attempt == max_retries - 1:
                     logger.error(f"{log_prefix} Fatal API error: {e}")
+                    self._finish_error_metrics(
+                        request_id,
+                        model_name,
+                        attempt + 1,
+                        started,
+                        "error",
+                        str(e),
+                    )
                     return None
 
                 logger.error(f"{log_prefix} Internal API error: {e}. Retrying request.")
                 await asyncio.sleep(2)
                 continue
 
+        self._finish_error_metrics(
+            request_id,
+            model_name,
+            max_retries,
+            started,
+            "exhausted",
+            "LLM retries exhausted",
+        )
         return None
 
     # -------------------------------------------------------------------------
@@ -165,9 +211,103 @@ class LLMExecutor:
         message_obj = response.choices[0].message
 
         if message_obj.tool_calls:
-            return str(message_obj.tool_calls[0].function.arguments)
+            arguments = [str(call.function.arguments) for call in message_obj.tool_calls]
+            if len(arguments) == 1:
+                return arguments[0]
+
+            merged = {
+                "observation": [],
+                "reasoning": [],
+                "reflection": [],
+                "actions": [],
+            }
+            for argument in arguments:
+                try:
+                    payload = json.loads(argument)
+                except (TypeError, json.JSONDecodeError):
+                    # Preserve all provider output so the protocol parser can
+                    # reject it visibly instead of silently dropping calls.
+                    return "\n".join(arguments)
+                if not isinstance(payload, dict) or not isinstance(
+                    payload.get("actions", []), list
+                ):
+                    return "\n".join(arguments)
+                for field in ("observation", "reasoning", "reflection"):
+                    value = payload.get(field)
+                    if isinstance(value, str) and value.strip():
+                        merged[field].append(value.strip())
+                merged["actions"].extend(payload.get("actions", []))
+
+            return json.dumps(
+                {
+                    "observation": "\n".join(merged["observation"]),
+                    "reasoning": "\n".join(merged["reasoning"]),
+                    "reflection": "\n".join(merged["reflection"]),
+                    "actions": merged["actions"],
+                },
+                ensure_ascii=False,
+            )
 
         return message_obj.content or ""
+
+    @staticmethod
+    def _plain_metric(value: Any) -> Optional[Any]:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return None
+
+    def _response_metrics(
+        self,
+        response: Any,
+        request_id: str,
+        model_name: str,
+        attempts: int,
+        duration_ms: float,
+        output_chars: int,
+    ) -> Dict[str, Any]:
+        choice = response.choices[0]
+        message = choice.message
+        usage = getattr(response, "usage", None)
+        return {
+            "request_id": request_id,
+            "response_id": self._plain_metric(getattr(response, "id", None)),
+            "model": model_name,
+            "status": "completed",
+            "attempts": attempts,
+            "duration_ms": round(duration_ms, 1),
+            "finish_reason": self._plain_metric(
+                getattr(choice, "finish_reason", None)
+            ),
+            "tool_call_count": len(getattr(message, "tool_calls", None) or []),
+            "output_chars": output_chars,
+            "provider_prompt_tokens": self._plain_metric(
+                getattr(usage, "prompt_tokens", None)
+            ),
+            "provider_completion_tokens": self._plain_metric(
+                getattr(usage, "completion_tokens", None)
+            ),
+            "provider_total_tokens": self._plain_metric(
+                getattr(usage, "total_tokens", None)
+            ),
+        }
+
+    def _finish_error_metrics(
+        self,
+        request_id: str,
+        model_name: str,
+        attempts: int,
+        started: float,
+        status: str,
+        error: str,
+    ) -> None:
+        self.last_call_metrics = {
+            "request_id": request_id,
+            "model": model_name,
+            "status": status,
+            "attempts": attempts,
+            "duration_ms": round((time.perf_counter() - started) * 1000, 1),
+            "error": redact_sensitive_text(error)[:1000],
+        }
 
     def _calculate_rate_limit_cooldown(self, error: openai.RateLimitError) -> int:
         """

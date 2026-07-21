@@ -60,6 +60,15 @@
         "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_commit_requires_verification_of_exact_workspace_state",
         "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_verification_detects_workspace_change_during_checks"
       ]
+    },
+    {
+      "id": "protocol_failure_observability",
+      "description": "Multiple tool calls survive transport and failed or exhausted ReAct steps leave durable evidence.",
+      "tests": [
+        "tests/unit/l3/llm/test_executor.py::test_executor_merges_multiple_execute_skill_tool_calls",
+        "tests/unit/l3/react/test_react_loop.py::test_react_protocol_error_is_persisted_before_retry",
+        "tests/unit/l3/react/test_react_loop.py::test_react_max_steps_limit"
+      ]
     }
   ]
 }
