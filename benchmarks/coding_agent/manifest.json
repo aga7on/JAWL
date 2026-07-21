@@ -210,6 +210,15 @@
       ]
     },
     {
+      "id": "exact_state_adaptive_replanning",
+      "description": "Failures durably request replanning, while repeated exact revision and workspace guards preserve objectives, completed work, and commit safety.",
+      "tests": [
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_plan_revision_rebuilds_only_unfinished_graph_under_exact_state",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_failed_verification_requires_replan_and_blocks_unverified_commit",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_failed_delegation_blocks_parent_step_and_requests_replan"
+      ]
+    },
+    {
       "id": "transactional_coding_recovery",
       "description": "Guarded checkpoints round-trip workspace content, Git index, plan, and append-only context while compensating failed rewinds.",
       "tests": [

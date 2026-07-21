@@ -6,6 +6,7 @@ import json
 import hashlib
 import re
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from src.l2_interfaces.host.os.client import HostOSAccessLevel, HostOSClient
@@ -23,6 +24,7 @@ class HostOSCodingPlans:
     """Owns the durable plan embedded in each coding workspace record."""
 
     _ITEM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$")
+    _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
     _STEP_STATES = {"pending", "in_progress", "completed", "blocked"}
     _REQUIREMENT_STATES = {"pending", "satisfied", "blocked"}
 
@@ -144,6 +146,7 @@ class HostOSCodingPlans:
         satisfied_requirements = sum(
             item["status"] == "satisfied" for item in requirements
         )
+        replanning = plan.get("replanning", {})
         return {
             "completed_steps": completed_steps,
             "total_steps": len(steps),
@@ -151,9 +154,95 @@ class HostOSCodingPlans:
             "total_requirements": len(requirements),
             "blocked": any(step["status"] == "blocked" for step in steps)
             or any(item["status"] == "blocked" for item in requirements),
+            "replan_required": bool(replanning.get("required")),
+            "replan_reason_count": len(replanning.get("reasons", [])),
             "ready_for_commit": completed_steps == len(steps)
-            and satisfied_requirements == len(requirements),
+            and satisfied_requirements == len(requirements)
+            and not bool(replanning.get("required")),
         }
+
+    @staticmethod
+    def _replanning_state(plan: Dict[str, Any]) -> Dict[str, Any]:
+        return plan.setdefault(
+            "replanning",
+            {
+                "required": False,
+                "generation": 0,
+                "reasons": [],
+                "last_applied_at": None,
+            },
+        )
+
+    def _mark_replan_required(
+        self,
+        plan: Dict[str, Any],
+        *,
+        trigger: str,
+        evidence: str,
+        source_id: str,
+        workspace_fingerprint: str = "",
+        append_history: bool = False,
+    ) -> bool:
+        """Record one idempotent, bounded reason to revisit the remaining graph."""
+
+        clean_trigger = self._item_id(trigger, "trigger")
+        clean_source = self._bounded_text(source_id, "source_id", 200)
+        clean_evidence = self._bounded_text(evidence, "evidence", 1000)
+        if workspace_fingerprint and not self._FINGERPRINT.fullmatch(
+            workspace_fingerprint
+        ):
+            raise ValueError("workspace_fingerprint must be a SHA-256 value.")
+        state = self._replanning_state(plan)
+        reason_id = hashlib.sha256(
+            f"{clean_trigger}\0{clean_source}".encode("utf-8")
+        ).hexdigest()[:16]
+        if any(item.get("reason_id") == reason_id for item in state["reasons"]):
+            return False
+        if not state["required"]:
+            state["generation"] = int(state.get("generation", 0)) + 1
+        now = self.workspaces._utc_now()
+        state["required"] = True
+        state["reasons"].append(
+            {
+                "reason_id": reason_id,
+                "trigger": clean_trigger,
+                "source_id": clean_source,
+                "evidence": clean_evidence,
+                "workspace_fingerprint": workspace_fingerprint,
+                "created_at": now,
+                "trace": current_trace(),
+            }
+        )
+        state["reasons"] = state["reasons"][-20:]
+        if append_history:
+            self._append_history(
+                plan,
+                "replan_required",
+                {
+                    "reason_id": reason_id,
+                    "trigger": clean_trigger,
+                    "source_id": clean_source,
+                },
+            )
+        return True
+
+    def mark_verification_replan_required(
+        self, entry: Dict[str, Any], run: Dict[str, Any]
+    ) -> bool:
+        """Attach a failed final verification to an existing plan under its lock."""
+
+        plan = entry.get("task_plan")
+        state = str(run.get("state", "error"))
+        if not plan or state == "passed":
+            return False
+        return self._mark_replan_required(
+            plan,
+            trigger="verification_failure",
+            source_id=f"verification:{run.get('run_id', 'unknown')}",
+            evidence=f"Verification finished in state '{state}'.",
+            workspace_fingerprint=str(run.get("fingerprint_after", "")),
+            append_history=True,
+        )
 
     @classmethod
     def _view_payload(
@@ -178,6 +267,25 @@ class HostOSCodingPlans:
             "created_at": plan["created_at"],
             "updated_at": plan["updated_at"],
             "summary": cls._summary(plan),
+            "replanning": {
+                "required": bool(plan.get("replanning", {}).get("required")),
+                "generation": int(
+                    plan.get("replanning", {}).get("generation", 0)
+                ),
+                "latest_reasons": [
+                    {
+                        "reason_id": item.get("reason_id"),
+                        "trigger": item.get("trigger"),
+                        "source_id": item.get("source_id"),
+                        "evidence": str(item.get("evidence", ""))[:200],
+                        "created_at": item.get("created_at"),
+                    }
+                    for item in plan.get("replanning", {}).get("reasons", [])[-5:]
+                ],
+                "last_applied_at": plan.get("replanning", {}).get(
+                    "last_applied_at"
+                ),
+            },
         }
         if section == "summary":
             payload["requirements"] = [
@@ -308,6 +416,7 @@ class HostOSCodingPlans:
             fingerprint = await self.workspaces.workspace_fingerprint(workspace)
             now = self.workspaces._utc_now()
             target["status"] = "in_progress"
+            target["delegation_status"] = "queued"
             target["updated_at"] = now
             target["completed_at"] = None
             delegations.append(
@@ -419,6 +528,17 @@ class HostOSCodingPlans:
             )
             target["delegation_status"] = reconciled_status
             target["updated_at"] = now
+            if reconciled_status in {"failed", "cancelled", "interrupted"}:
+                target["status"] = "blocked"
+                target["completed_at"] = None
+                self._mark_replan_required(
+                    plan,
+                    trigger="delegation_failure",
+                    source_id=f"delegation:{delegation_id}:{reconciled_status}",
+                    evidence=clean_detail
+                    or f"Delegation finished in state '{reconciled_status}'.",
+                    workspace_fingerprint=fingerprint["fingerprint"],
+                )
             self._append_history(
                 plan,
                 "delegation_result",
@@ -535,6 +655,13 @@ class HostOSCodingPlans:
                     target["status"] = "blocked"
                     target["completed_at"] = None
                     delegation["status"] = "rejected"
+                    self._mark_replan_required(
+                        plan,
+                        trigger="delegation_rejected",
+                        source_id=f"delegation:{delegation_id}:rejected",
+                        evidence=clean_evidence,
+                        workspace_fingerprint=current["fingerprint"],
+                    )
                 now = self.workspaces._utc_now()
                 target["evidence"] = clean_evidence
                 target["delegation_status"] = delegation["status"]
@@ -598,6 +725,12 @@ class HostOSCodingPlans:
                     "steps": normalized_steps,
                     "created_at": now,
                     "updated_at": now,
+                    "replanning": {
+                        "required": False,
+                        "generation": 0,
+                        "reasons": [],
+                        "last_applied_at": None,
+                    },
                     "history": [
                         {
                             "event": "initialized",
@@ -654,6 +787,280 @@ class HostOSCodingPlans:
             return SkillResult.fail(str(exc))
         except Exception as exc:
             return SkillResult.fail(f"Error reading coding task plan: {exc}")
+
+    @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
+    @require_access(HostOSAccessLevel.SANDBOX)
+    async def revise_coding_task_plan(
+        self,
+        task_id: str,
+        reason: str,
+        steps: List[Dict[str, Any]],
+        expected_revision: int,
+        expected_workspace_fingerprint: str,
+        reopen_step_ids: Optional[List[str]] = None,
+    ) -> SkillResult:
+        """Atomically replace only the unfinished plan graph under exact state.
+
+        The objective and requirements are immutable here. Completed steps and
+        steps with active work are retained byte-for-byte at the structural
+        level. Blocked steps must be explicitly reopened or removed.
+        """
+
+        try:
+            task_id = self.workspaces._validate_task_id(task_id)
+            clean_reason = self._bounded_text(reason, "reason", 2000)
+            if not isinstance(expected_revision, int) or isinstance(
+                expected_revision, bool
+            ):
+                raise ValueError("expected_revision must be an integer.")
+            if not isinstance(
+                expected_workspace_fingerprint, str
+            ) or not self._FINGERPRINT.fullmatch(expected_workspace_fingerprint):
+                raise ValueError(
+                    "expected_workspace_fingerprint must be a SHA-256 value."
+                )
+            proposed = self._normalize_steps(steps)
+            raw_reopen = reopen_step_ids or []
+            if not isinstance(raw_reopen, list) or not all(
+                isinstance(item, str) for item in raw_reopen
+            ):
+                raise ValueError("reopen_step_ids must be a string list.")
+            reopen = {
+                self._item_id(item, "reopen_step_ids") for item in raw_reopen
+            }
+            if len(reopen) != len(raw_reopen):
+                raise ValueError("reopen_step_ids cannot contain duplicates.")
+
+            async with self.workspaces._lock:
+                registry = self.workspaces._load_registry()
+                entry = self.workspaces._get_entry(registry, task_id)
+                plan = entry.get("task_plan")
+                if not plan:
+                    return SkillResult.fail("Coding task has no initialized plan.")
+                self._check_revision(plan, expected_revision)
+                _, workspace = self.workspaces._entry_paths(entry)
+                if not workspace.is_dir():
+                    return SkillResult.fail("Coding workspace directory is missing.")
+                current_fingerprint = await self.workspaces.workspace_fingerprint(
+                    workspace
+                )
+                if (
+                    current_fingerprint["fingerprint"]
+                    != expected_workspace_fingerprint
+                ):
+                    return SkillResult.fail(
+                        "Workspace changed after plan inspection: expected "
+                        f"{expected_workspace_fingerprint}, current fingerprint is "
+                        f"{current_fingerprint['fingerprint']}. Inspect it before "
+                        "replanning."
+                    )
+
+                current_by_id = {step["id"]: step for step in plan["steps"]}
+                proposed_by_id = {step["id"]: step for step in proposed}
+                unknown_reopens = reopen - set(current_by_id)
+                if unknown_reopens:
+                    raise ValueError(
+                        "Cannot reopen unknown steps: "
+                        + ", ".join(sorted(unknown_reopens))
+                        + "."
+                    )
+                invalid_reopens = [
+                    step_id
+                    for step_id in sorted(reopen)
+                    if current_by_id[step_id]["status"] != "blocked"
+                ]
+                if invalid_reopens:
+                    raise ValueError(
+                        "Only blocked steps can be reopened: "
+                        + ", ".join(invalid_reopens)
+                        + "."
+                    )
+
+                def active_delegation(step: Dict[str, Any]) -> bool:
+                    return any(
+                        item.get("status") in {"queued", "running", "reported"}
+                        for item in step.get("delegations", [])
+                    )
+
+                protected = {
+                    step_id
+                    for step_id, step in current_by_id.items()
+                    if step.get("status") in {"completed", "in_progress"}
+                    or active_delegation(step)
+                }
+                missing_protected = protected - set(proposed_by_id)
+                if missing_protected:
+                    raise ValueError(
+                        "A revision cannot remove completed, in-progress, or active "
+                        "delegated steps: "
+                        + ", ".join(sorted(missing_protected))
+                        + "."
+                    )
+                for step_id in sorted(protected):
+                    old = current_by_id[step_id]
+                    new = proposed_by_id[step_id]
+                    if old["title"] != new["title"] or old["depends_on"] != new[
+                        "depends_on"
+                    ]:
+                        raise ValueError(
+                            f"Protected step '{step_id}' must retain its title and "
+                            "dependencies."
+                        )
+
+                retained_blocked = [
+                    step_id
+                    for step_id, step in current_by_id.items()
+                    if step.get("status") == "blocked"
+                    and step_id in proposed_by_id
+                    and step_id not in reopen
+                ]
+                if retained_blocked:
+                    raise ValueError(
+                        "Blocked steps retained by a revision must be explicitly "
+                        "reopened: "
+                        + ", ".join(sorted(retained_blocked))
+                        + "."
+                    )
+                blocked_requirements = [
+                    item["id"]
+                    for item in plan["requirements"]
+                    if item.get("status") == "blocked"
+                ]
+                if blocked_requirements:
+                    raise ValueError(
+                        "Blocked requirements must be reviewed before replanning: "
+                        + ", ".join(blocked_requirements)
+                        + "."
+                    )
+
+                rebuilt: List[Dict[str, Any]] = []
+                for proposed_step in proposed:
+                    step_id = proposed_step["id"]
+                    old = current_by_id.get(step_id)
+                    if old is None:
+                        rebuilt.append(proposed_step)
+                        continue
+                    retained = {
+                        **old,
+                        "title": proposed_step["title"],
+                        "depends_on": proposed_step["depends_on"],
+                    }
+                    if step_id in reopen:
+                        prior = retained.setdefault("replan_evidence_history", [])
+                        prior.append(
+                            {
+                                "status": old["status"],
+                                "evidence": old.get("evidence", ""),
+                                "updated_at": old.get("updated_at"),
+                            }
+                        )
+                        retained["replan_evidence_history"] = prior[-10:]
+                        retained["status"] = "pending"
+                        retained["evidence"] = ""
+                        retained.pop("delegation_status", None)
+                        retained["updated_at"] = self.workspaces._utc_now()
+                        retained["completed_at"] = None
+                    rebuilt.append(retained)
+
+                before_shape = [
+                    {
+                        "id": step["id"],
+                        "title": step["title"],
+                        "depends_on": step["depends_on"],
+                        "status": step["status"],
+                    }
+                    for step in plan["steps"]
+                ]
+                after_shape = [
+                    {
+                        "id": step["id"],
+                        "title": step["title"],
+                        "depends_on": step["depends_on"],
+                        "status": step["status"],
+                    }
+                    for step in rebuilt
+                ]
+                if before_shape == after_shape:
+                    return SkillResult.fail(
+                        "The proposed revision does not change the coding plan."
+                    )
+
+                before_ids = set(current_by_id)
+                after_ids = set(proposed_by_id)
+                changed = sorted(
+                    step_id
+                    for step_id in before_ids & after_ids
+                    if next(
+                        item for item in before_shape if item["id"] == step_id
+                    )
+                    != next(item for item in after_shape if item["id"] == step_id)
+                )
+                added = sorted(after_ids - before_ids)
+                removed = sorted(before_ids - after_ids)
+                if not added and not removed and not changed and not reopen:
+                    return SkillResult.fail(
+                        "The proposed revision only reorders steps and does not "
+                        "change remaining work."
+                    )
+                latest_fingerprint = await self.workspaces.workspace_fingerprint(
+                    workspace
+                )
+                if (
+                    latest_fingerprint["fingerprint"]
+                    != expected_workspace_fingerprint
+                ):
+                    return SkillResult.fail(
+                        "Workspace changed while the plan revision was being "
+                        "validated. Inspect it and retry with its new fingerprint."
+                    )
+                state = self._replanning_state(plan)
+                resolved_reason_ids = [
+                    item.get("reason_id") for item in state.get("reasons", [])
+                ]
+                previous_revision = plan["revision"]
+                now = self.workspaces._utc_now()
+                plan["steps"] = rebuilt
+                state["required"] = False
+                state["reasons"] = []
+                state["last_applied_at"] = now
+                state["last_reason"] = clean_reason
+                state["last_workspace_fingerprint"] = expected_workspace_fingerprint
+                changes = {
+                    "added": added,
+                    "removed": removed,
+                    "changed": changed,
+                    "reopened": sorted(reopen),
+                }
+                archive = plan.setdefault("replan_history", [])
+                archive.append(
+                    {
+                        "from_revision": previous_revision,
+                        "reason": clean_reason,
+                        "workspace_fingerprint": expected_workspace_fingerprint,
+                        "resolved_reason_ids": resolved_reason_ids,
+                        "changes": changes,
+                        "applied_at": now,
+                        "trace": current_trace(),
+                    }
+                )
+                plan["replan_history"] = archive[-20:]
+                self._append_history(
+                    plan,
+                    "plan_revised",
+                    {
+                        "reason": clean_reason,
+                        "workspace_fingerprint": expected_workspace_fingerprint,
+                        **changes,
+                    },
+                )
+                self.workspaces._save_registry(registry)
+                payload = self._view_payload(plan)
+                payload["changes"] = changes
+            return SkillResult.ok(json.dumps(payload, ensure_ascii=False))
+        except (PermissionError, FileNotFoundError, ValueError, KeyError) as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Error revising coding task plan: {exc}")
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.SANDBOX)
@@ -729,6 +1136,13 @@ class HostOSCodingPlans:
                 target["evidence"] = clean_evidence
                 target["updated_at"] = now
                 target["completed_at"] = now if status == "completed" else None
+                if status == "blocked":
+                    self._mark_replan_required(
+                        plan,
+                        trigger="step_blocked",
+                        source_id=f"step:{step_id}:revision:{plan['revision']}",
+                        evidence=clean_evidence,
+                    )
                 self._append_history(
                     plan,
                     "step_updated",
@@ -781,6 +1195,15 @@ class HostOSCodingPlans:
                 target["status"] = status
                 target["evidence"] = clean_evidence
                 target["updated_at"] = self.workspaces._utc_now()
+                if status == "blocked":
+                    self._mark_replan_required(
+                        plan,
+                        trigger="requirement_blocked",
+                        source_id=(
+                            f"requirement:{requirement_id}:revision:{plan['revision']}"
+                        ),
+                        evidence=clean_evidence,
+                    )
                 self._append_history(
                     plan,
                     "requirement_updated",

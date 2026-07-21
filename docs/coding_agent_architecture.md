@@ -150,6 +150,14 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   not overwrite newer state.
 - Steps cannot start or complete before their dependencies. Completed or blocked
   states and satisfied or blocked requirements require concrete evidence.
+- Failed verification, blocked work, and failed/cancelled/interrupted or rejected
+  delegations create bounded idempotent `replan_required` evidence. A plan with
+  unresolved replanning evidence cannot pass the normal commit gate.
+- `revise_coding_task_plan` atomically rebuilds only the unfinished graph under
+  an exact plan revision and workspace fingerprint. It cannot change the
+  objective or requirements, remove or rewrite completed/in-progress/actively
+  delegated steps, or silently retain blocked steps. Reopened evidence and a
+  bounded revision audit remain durable.
 - Existing tasks without a plan preserve the legacy commit flow. Once a plan is
   initialized, final commits require every step completed and requirement
   satisfied; explicit bypass remains available for intermediate checkpoints.

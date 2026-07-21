@@ -83,9 +83,11 @@ if errors:
         self,
         host_os_client: HostOSClient,
         workspaces: HostOSCodingWorkspaces,
+        coding_plans: Optional[Any] = None,
     ) -> None:
         self.host_os = host_os_client
         self.workspaces = workspaces
+        self.coding_plans = coding_plans
         self.session_id = uuid.uuid4().hex
 
     @staticmethod
@@ -364,6 +366,8 @@ if errors:
             del runs[:-10]
             if final:
                 entry["last_verification"] = run
+                if self.coding_plans is not None and run.get("state") != "passed":
+                    self.coding_plans.mark_verification_replan_required(entry, run)
             self.workspaces._save_registry(registry)
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])

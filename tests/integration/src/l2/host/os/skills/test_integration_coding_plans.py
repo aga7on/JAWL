@@ -1,6 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -311,3 +312,283 @@ async def test_delegated_step_requires_exact_report_workspace_and_verification(o
     assert accepted_payload["status"] == "completed"
     assert accepted_payload["delegation_status"] == "accepted"
     assert accepted_payload["revision"] == 4
+
+
+@pytest.mark.asyncio
+async def test_plan_revision_rebuilds_only_unfinished_graph_under_exact_state(os_client):
+    create_repository(os_client.sandbox_dir)
+    workspaces = HostOSCodingWorkspaces(os_client)
+    plans = HostOSCodingPlans(os_client, workspaces)
+    created = await workspaces.create_coding_workspace(
+        "sandbox/project", "replan-task"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    initialized = await plans.initialize_coding_task_plan(
+        "replan-task",
+        "Preserve the objective while adapting execution",
+        ["The implementation remains correct"],
+        [
+            {"id": "inspect", "title": "Inspect the implementation"},
+            {
+                "id": "implement",
+                "title": "Implement the change",
+                "depends_on": ["inspect"],
+            },
+        ],
+    )
+    assert initialized.is_success is True
+    inspected = await plans.update_coding_task_step(
+        "replan-task",
+        "inspect",
+        "completed",
+        "Inspected app.py and recorded its current behavior.",
+        expected_revision=1,
+    )
+    assert inspected.is_success is True
+    blocked = await plans.update_coding_task_step(
+        "replan-task",
+        "implement",
+        "blocked",
+        "The first approach cannot satisfy the observed constraint.",
+        expected_revision=2,
+    )
+    assert blocked.is_success is True
+    blocked_payload = json.loads(
+        (await plans.get_coding_task_plan("replan-task")).message
+    )
+    assert blocked_payload["revision"] == 3
+    assert blocked_payload["replanning"]["required"] is True
+    assert blocked_payload["replanning"]["latest_reasons"][-1]["trigger"] == (
+        "step_blocked"
+    )
+
+    proposed = [
+        {"id": "inspect", "title": "Inspect the implementation"},
+        {
+            "id": "diagnose",
+            "title": "Diagnose the observed constraint",
+            "depends_on": ["inspect"],
+        },
+        {
+            "id": "implement",
+            "title": "Implement the change",
+            "depends_on": ["diagnose"],
+        },
+    ]
+    stale_workspace = await plans.revise_coding_task_plan(
+        "replan-task",
+        "Add a diagnosis step before retrying the implementation.",
+        proposed,
+        expected_revision=3,
+        expected_workspace_fingerprint="0" * 64,
+        reopen_step_ids=["implement"],
+    )
+    assert stale_workspace.is_success is False
+    assert "Workspace changed" in stale_workspace.message
+
+    fingerprint = (await workspaces.workspace_fingerprint(workspace))["fingerprint"]
+    changed_completed = [
+        {"id": "inspect", "title": "Rewrite completed inspection"},
+        *proposed[1:],
+    ]
+    protected = await plans.revise_coding_task_plan(
+        "replan-task",
+        "Try to rewrite completed evidence.",
+        changed_completed,
+        expected_revision=3,
+        expected_workspace_fingerprint=fingerprint,
+        reopen_step_ids=["implement"],
+    )
+    assert protected.is_success is False
+    assert "Protected step 'inspect'" in protected.message
+
+    current = await workspaces.workspace_fingerprint(workspace)
+    drifted = {**current, "fingerprint": "f" * 64}
+    with patch.object(
+        workspaces,
+        "workspace_fingerprint",
+        AsyncMock(side_effect=[current, drifted]),
+    ):
+        raced = await plans.revise_coding_task_plan(
+            "replan-task",
+            "Detect a concurrent workspace mutation.",
+            proposed,
+            expected_revision=3,
+            expected_workspace_fingerprint=fingerprint,
+            reopen_step_ids=["implement"],
+        )
+    assert raced.is_success is False
+    assert "while the plan revision was being validated" in raced.message
+
+    revised = await plans.revise_coding_task_plan(
+        "replan-task",
+        "Add a diagnosis step before retrying the implementation.",
+        proposed,
+        expected_revision=3,
+        expected_workspace_fingerprint=fingerprint,
+        reopen_step_ids=["implement"],
+    )
+    assert revised.is_success is True, revised.message
+    revised_payload = json.loads(revised.message)
+    assert revised_payload["revision"] == 4
+    assert revised_payload["objective"] == (
+        "Preserve the objective while adapting execution"
+    )
+    assert revised_payload["changes"] == {
+        "added": ["diagnose"],
+        "removed": [],
+        "changed": ["implement"],
+        "reopened": ["implement"],
+    }
+    assert revised_payload["replanning"]["required"] is False
+    details = json.loads(
+        (await plans.get_coding_task_plan("replan-task", section="steps")).message
+    )
+    assert [item["status"] for item in details["items"]] == [
+        "completed",
+        "pending",
+        "pending",
+    ]
+    assert details["items"][2]["replan_evidence_history"][0]["status"] == (
+        "blocked"
+    )
+    assert (await workspaces.remove_coding_workspace("replan-task")).is_success
+
+
+@pytest.mark.asyncio
+async def test_failed_verification_requires_replan_and_blocks_unverified_commit(os_client):
+    create_repository(os_client.sandbox_dir)
+    workspaces = HostOSCodingWorkspaces(os_client)
+    plans = HostOSCodingPlans(os_client, workspaces)
+    verifier = HostOSCodingVerification(os_client, workspaces, plans)
+    created = await workspaces.create_coding_workspace(
+        "sandbox/project", "verification-replan"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    initialized = await plans.initialize_coding_task_plan(
+        "verification-replan",
+        "Keep Python syntax valid",
+        ["Python compilation passes"],
+        [{"id": "implement", "title": "Implement the requested change"}],
+    )
+    assert initialized.is_success is True
+    completed = await plans.update_coding_task_step(
+        "verification-replan",
+        "implement",
+        "completed",
+        "Implementation finished and diff reviewed.",
+        expected_revision=1,
+    )
+    assert completed.is_success is True
+    requirement = await plans.update_coding_requirement(
+        "verification-replan",
+        "req_1",
+        "satisfied",
+        "The intended behavior is present pending final verification.",
+        expected_revision=2,
+    )
+    assert requirement.is_success is True
+    (workspace / "app.py").write_text("value =\n", encoding="utf-8")
+
+    failed = await verifier.run_coding_verification(
+        "verification-replan", checks=["python_compile"]
+    )
+    assert failed.is_success is False
+    plan = json.loads(
+        (await plans.get_coding_task_plan("verification-replan")).message
+    )
+    assert plan["revision"] == 4
+    assert plan["summary"]["replan_required"] is True
+    assert plan["summary"]["ready_for_commit"] is False
+    assert plan["replanning"]["latest_reasons"][-1]["trigger"] == (
+        "verification_failure"
+    )
+
+    rejected = await workspaces.commit_coding_workspace(
+        "verification-replan",
+        "do not commit a failed plan",
+        require_verified=False,
+    )
+    assert rejected.is_success is False
+    assert "replan_required=True" in rejected.message
+
+    fingerprint = (await workspaces.workspace_fingerprint(workspace))["fingerprint"]
+    revised = await plans.revise_coding_task_plan(
+        "verification-replan",
+        "Add an explicit repair step after failed compilation.",
+        [
+            {"id": "implement", "title": "Implement the requested change"},
+            {
+                "id": "repair_syntax",
+                "title": "Repair syntax and rerun verification",
+                "depends_on": ["implement"],
+            },
+        ],
+        expected_revision=4,
+        expected_workspace_fingerprint=fingerprint,
+    )
+    assert revised.is_success is True, revised.message
+    revised_payload = json.loads(revised.message)
+    assert revised_payload["revision"] == 5
+    assert revised_payload["replanning"]["required"] is False
+    assert revised_payload["changes"]["added"] == ["repair_syntax"]
+    assert (
+        await workspaces.remove_coding_workspace("verification-replan", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
+async def test_failed_delegation_blocks_parent_step_and_requests_replan(os_client):
+    create_repository(os_client.sandbox_dir)
+    workspaces = HostOSCodingWorkspaces(os_client)
+    plans = HostOSCodingPlans(os_client, workspaces)
+    created = await workspaces.create_coding_workspace(
+        "sandbox/project", "delegation-replan"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    initialized = await plans.initialize_coding_task_plan(
+        "delegation-replan",
+        "Recover from failed delegated work",
+        ["The delegated task is eventually completed"],
+        [{"id": "delegate", "title": "Delegate implementation"}],
+    )
+    assert initialized.is_success is True
+    binding = await plans.bind_delegation(
+        task_id="delegation-replan",
+        step_id="delegate",
+        delegation_id="failedworker",
+        role="coder",
+        expected_revision=1,
+    )
+    assert binding["bound_revision"] == 2
+    result = await plans.record_delegation_result(
+        task_id="delegation-replan",
+        step_id="delegate",
+        delegation_id="failedworker",
+        status="failed",
+        detail="Worker stopped before producing a reviewable report.",
+    )
+    assert result["revision"] == 3
+    plan = json.loads(
+        (await plans.get_coding_task_plan("delegation-replan")).message
+    )
+    assert plan["steps"][0]["status"] == "blocked"
+    assert plan["steps"][0]["delegation_status"] == "failed"
+    assert plan["replanning"]["latest_reasons"][-1]["trigger"] == (
+        "delegation_failure"
+    )
+
+    fingerprint = (await workspaces.workspace_fingerprint(workspace))["fingerprint"]
+    revised = await plans.revise_coding_task_plan(
+        "delegation-replan",
+        "Retry the unchanged step after inspecting the failed worker evidence.",
+        [{"id": "delegate", "title": "Delegate implementation"}],
+        expected_revision=3,
+        expected_workspace_fingerprint=fingerprint,
+        reopen_step_ids=["delegate"],
+    )
+    assert revised.is_success is True, revised.message
+    payload = json.loads(revised.message)
+    assert payload["steps"][0]["status"] == "pending"
+    assert "delegation_status" not in payload["steps"][0]
+    assert (await workspaces.remove_coding_workspace("delegation-replan")).is_success

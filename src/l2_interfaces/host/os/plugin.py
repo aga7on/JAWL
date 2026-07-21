@@ -113,7 +113,9 @@ class HostOsPlugin(BaseInterface):
                     container.agent_state,
                 )
             )
-        register_instance(HostOSCodingVerification(client, coding_workspaces))
+        register_instance(
+            HostOSCodingVerification(client, coding_workspaces, coding_plans)
+        )
         coding_context = HostOSCodingContext(client)
         register_instance(coding_context)
         register_instance(HostOSCodingLanguageServer(client, coding_context))

@@ -844,12 +844,20 @@ class HostOSCodingWorkspaces:
                         for item in plan.get("requirements", [])
                         if item.get("status") != "satisfied"
                     ]
-                    plan_ready = not incomplete_steps and not incomplete_requirements
+                    replan_required = bool(
+                        plan.get("replanning", {}).get("required")
+                    )
+                    plan_ready = (
+                        not incomplete_steps
+                        and not incomplete_requirements
+                        and not replan_required
+                    )
                     if require_plan_complete and not plan_ready:
                         return SkillResult.fail(
                             "Commit rejected: coding plan is incomplete. Pending "
                             f"steps={incomplete_steps}; requirements="
-                            f"{incomplete_requirements}. Update plan evidence first, "
+                            f"{incomplete_requirements}; replan_required="
+                            f"{replan_required}. Update plan evidence first, "
                             "or set require_plan_complete=false explicitly for an "
                             "intermediate checkpoint commit."
                         )
