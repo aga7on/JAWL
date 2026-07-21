@@ -82,6 +82,7 @@
         "tests/unit/l3/skills/test_schema.py::test_parser_recovers_last_valid_action_payload_from_qwen_format_deliberation",
         "tests/unit/l3/skills/test_schema.py::test_parser_recovers_openai_execute_skill_wrapper_from_noisy_text",
         "tests/unit/l3/skills/test_schema.py::test_parser_does_not_treat_embedded_empty_example_as_completion",
+        "tests/unit/l3/llm/test_executor.py::test_executor_retries_transient_upstream_500",
         "tests/unit/l3/llm/test_executor.py::test_executor_merges_multiple_execute_skill_tool_calls",
         "tests/unit/l3/react/test_react_loop.py::test_react_protocol_error_is_persisted_before_retry",
         "tests/unit/l3/react/test_react_loop.py::test_react_max_steps_limit"

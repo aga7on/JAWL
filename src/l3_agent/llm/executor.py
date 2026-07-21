@@ -184,6 +184,26 @@ class LLMExecutor:
                 )
                 continue
 
+            except (openai.InternalServerError, openai.APIConnectionError) as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"{log_prefix} Upstream unavailable: {e}")
+                    self._finish_error_metrics(
+                        request_id,
+                        model_name,
+                        attempt + 1,
+                        started,
+                        "upstream_unavailable",
+                        str(e),
+                    )
+                    return None
+                delay = min(2 ** (attempt + 1), 8)
+                logger.warning(
+                    f"{log_prefix} Transient upstream failure. Retrying in "
+                    f"{delay}s ({attempt + 1}/{max_retries})."
+                )
+                await asyncio.sleep(delay)
+                continue
+
             except Exception as e:
                 # Pause briefly before retry on unexpected system/network errors
                 if attempt == max_retries - 1:

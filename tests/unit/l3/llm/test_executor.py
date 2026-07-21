@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import openai
+import httpx
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -188,6 +189,34 @@ async def test_executor_rate_limit(mock_sleep, mock_executor_deps):
 
     assert res == "Finally Success"
     llm.rotator.cooldown_key.assert_called_once_with("key1", 5)
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.llm.executor.asyncio.sleep", new_callable=AsyncMock)
+async def test_executor_retries_transient_upstream_500(mock_sleep, mock_executor_deps):
+    llm, tracker = mock_executor_deps
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    response = httpx.Response(500, request=httpx.Request("POST", "http://qwb/v1"))
+    high_demand = openai.InternalServerError(
+        "Qwen upstream quota_limit: high demand",
+        response=response,
+        body={"code": "quota_limit"},
+    )
+    success = MagicMock()
+    success.choices[0].message.tool_calls = None
+    success.choices[0].message.content = "recovered"
+    session.chat.completions.create.side_effect = [high_demand, success]
+    executor = LLMExecutor(llm, tracker)
+
+    result = await executor.execute(
+        "model", [], 0.0, MagicMock(), "[LLM]", max_retries=3
+    )
+
+    assert result == "recovered"
+    assert session.chat.completions.create.await_count == 2
+    mock_sleep.assert_awaited_once_with(2)
+    assert executor.last_call_metrics["attempts"] == 2
 
 
 @pytest.mark.asyncio

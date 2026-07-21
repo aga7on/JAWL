@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "kind": "live_calibration_summary",
+  "generated_at": "2026-07-21T12:28:34.462979+00:00",
+  "git_revision": "820a949",
+  "endpoint": "local-qwb-openai-compatible",
+  "model": "qwen3.8-max-preview",
+  "transport": "wrapper",
+  "task": "inclusive_range_parser",
+  "limits": {
+    "max_react_steps": 5,
+    "task_timeout_seconds": 600
+  },
+  "result": {
+    "quality_gate_passed": false,
+    "quality_score": 0.1,
+    "lifecycle_gate_passed": false,
+    "timed_out": false,
+    "react_steps_used": 2,
+    "action_tick_count": 1,
+    "protocol_error_count": 0,
+    "input_tokens_estimated": 12644,
+    "output_tokens_estimated": 377,
+    "duration_ms": 113364.5,
+    "first_llm_call_ms": 110042.6,
+    "first_action_count": 3,
+    "patch_committed": false,
+    "plan_complete": false
+  },
+  "diagnosis": "The bounded noisy-output parser eliminated the observed protocol failure: the first response executed workspace creation, plan initialization and task-scoped search in one action tick. The second inference request then received QWB HTTP 500 quota_limit/high demand; at this revision React treated that response as fatal."
+}

@@ -50,6 +50,14 @@ emitting answer-channel format deliberation and trial bare JAWL payloads inside
 the run is recorded in
 `benchmarks/coding_tasks/results/2026-07-21-qwb-qwen3.8-max-preview-taskhandles.json`.
 
+The third run on `820a949` validated the parser fix: zero protocol errors, with
+workspace creation, plan initialization, and task-scoped search all executed in
+the first action tick after a 110-second model call. Step two then failed on a
+QWB `500 quota_limit/high demand`, exposing that ReAct still used one total
+inference attempt. The executor now retries bounded 5xx/connection failures; the
+run is recorded in
+`benchmarks/coding_tasks/results/2026-07-21-qwb-qwen3.8-max-preview-parserfix.json`.
+
 ## Compatibility guardrail
 
 None of these steps should replace Heartbeat, EventBus, vector/graph memory,

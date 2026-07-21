@@ -55,6 +55,8 @@ class ReactLoop:
         event_bus: EventBus,
         tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
         cooldown_sec: int = 30,
+        llm_max_retries: int = 3,
+        llm_max_timeout_retries: int = 2,
         tot_config: Optional[TreeOfThoughtsConfig] = None,
         tot_generator: Optional[ToTGenerator] = None,
     ) -> None:
@@ -88,6 +90,8 @@ class ReactLoop:
         self.tools = tools
         self.tool_transport = tool_transport
         self.cooldown_sec = cooldown_sec
+        self.llm_max_retries = max(1, llm_max_retries)
+        self.llm_max_timeout_retries = max(1, llm_max_timeout_retries)
 
         self.event_bus = event_bus
 
@@ -172,7 +176,8 @@ class ReactLoop:
                     log_prefix="[LLM]",
                     tools=self.tools() if callable(self.tools) else self.tools,
                     tool_transport=self.tool_transport,
-                    max_timeout_retries=1,
+                    max_retries=self.llm_max_retries,
+                    max_timeout_retries=self.llm_max_timeout_retries,
                 )
                 if raw_answer is None:
                     self.agent_state.update_state(AgentStatus.ERROR)

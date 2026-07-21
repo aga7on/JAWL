@@ -139,6 +139,11 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   action payload, and unwraps OpenAI-style `execute_skill.arguments`. Embedded
   empty-action examples cannot terminate a cycle. Protocol ticks retain bounded
   redacted head and tail excerpts for reproducible diagnosis.
+- Main ReAct inference uses three total attempts and two timeout attempts.
+  Provider 5xx and connection errors receive bounded exponential backoff; this
+  retries only the side-effect-free model request, never an already executed
+  local action plan. Final failure metrics distinguish upstream unavailability
+  from protocol, authentication, rate-limit, timeout, and cancellation states.
 
 ## Dual tool transport contract
 
