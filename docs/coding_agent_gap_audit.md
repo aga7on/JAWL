@@ -14,7 +14,7 @@ tasks safely, recoverably, and with measurable evidence.
 | --- | --- | --- | --- |
 | Atomic editing | Strong | SHA-checked exact-match patches, atomic writes, reversible checkpoints | No syntax-aware patch primitive |
 | Task isolation | Strong | Persistent branch/worktree per task, dirty-base guard, recovery stash | No automatic branch publication or merge conflict assistant |
-| Context navigation | Strong | Bounded map/search/range reads, syntax-aware occurrences, and directed local dependency slices for Python plus conservative JS/TS/C/C++ resolution | No project-wide LSP name/type resolution |
+| Context navigation | Strong | Bounded map/search/range reads, syntax-aware occurrences, directed local dependency slices, and optional allowlisted LSP definition/reference resolution with zero-index fallback | LSP uses safe one-shot processes rather than a cached incremental workspace session |
 | Diff review | Strong | Per-file/page unified diff, streaming tracked-output cap, untracked preview bound, secret redaction | No syntax-aware hunk grouping |
 | Verification | Strong | Detected allowlisted profiles, hashed repository policy, process-tree timeout, exact-state fingerprint commit gate | No flaky-test classification |
 | Action scheduling | Strong | Sequential default, explicit dependencies/parallel groups, shared resource locks, durable requirement-level step graph | No learned replanning policy |
@@ -26,10 +26,10 @@ tasks safely, recoverably, and with measurable evidence.
 
 ## Priority order
 
-1. Add an optional LSP adapter for project-resolved definitions and references
-   while retaining the current zero-index occurrence and dependency fallbacks.
-2. Run and version live calibration results through QWB, then execute equivalent
+1. Run and version live calibration results through QWB, then execute equivalent
    declared baseline agents before making comparative performance claims.
+2. If live traces show repeated navigation startup cost, add lifecycle-managed
+   incremental LSP sessions without weakening process and output bounds.
 
 ## Compatibility guardrail
 

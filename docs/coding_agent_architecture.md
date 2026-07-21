@@ -53,9 +53,16 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Result count, source-file size, file count, match count, serialized output,
   and fallback diagnostics are bounded. Shared cached parsers are serialized
   because concurrent tree-sitter parsing is not assumed to be thread-safe.
-- This feature finds syntax-aware occurrences; it does not claim project-wide
-  type resolution. A future LSP adapter may refine ambiguous occurrences while
-  preserving the current zero-index fallback.
+- `resolve_code_symbol` optionally starts an installed allowlisted language
+  server over bounded stdio JSON-RPC for project-resolved definitions or
+  references. It auto-discovers a nearby project manifest, filters locations to
+  that validated root, handles UTF-16 LSP columns, bounds messages/results/time,
+  and terminates the one-shot server after each request.
+- Python/JavaScript/TypeScript/Rust/Go/C/C++ server commands are discovered from
+  a fixed executable allowlist; the model cannot supply a process command. When
+  no server is installed, initialization fails, or no in-project result exists,
+  the same skill returns the existing AST/tree-sitter/lexical occurrence result
+  with the fallback reason explicitly labeled.
 - `constraints.txt` pins the tree-sitter constructor API expected by
   `tree-sitter-languages` for newly bootstrapped environments. Existing
   incompatible environments remain functional through the fallback path.
