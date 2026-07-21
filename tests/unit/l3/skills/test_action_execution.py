@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from src.l3_agent.skills.execution import ActionExecutionEngine
+from src.l3_agent.skills.journal import ActionJournal
+from src.l3_agent.skills.journal_skills import ActionJournalSkills
 from src.l3_agent.skills.schema import ACTION_SCHEMA, ActionCall
 
 
@@ -246,3 +248,89 @@ async def test_cancellation_reaches_running_action():
         await task
 
     assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_durable_journal_records_plan_lifecycle_and_redacts_secrets(tmp_path):
+    journal_path = tmp_path / "action_journal.jsonl"
+    journal = ActionJournal(journal_path)
+    engine = ActionExecutionEngine(journal=journal)
+
+    async def runner(action: ActionCall):
+        return result(message="completed with token=answer-secret")
+
+    outcomes = await engine.execute(
+        [
+            ActionCall(
+                tool_name="safe-tool",
+                parameters={
+                    "api_key": "parameter-secret",
+                    "description": "Bearer inline-secret",
+                },
+            )
+        ],
+        runner,
+    )
+
+    assert outcomes[0].is_success is True
+    plans = await journal.recent_plans(include_events=True)
+    assert plans[0]["state"] == "completed"
+    assert [event["event"] for event in plans[0]["events"]] == [
+        "plan_started",
+        "action_started",
+        "action_finished",
+        "plan_finished",
+    ]
+    raw_journal = journal_path.read_text(encoding="utf-8")
+    assert "parameter-secret" not in raw_journal
+    assert "inline-secret" not in raw_journal
+    assert "answer-secret" not in raw_journal
+    assert "[REDACTED]" in raw_journal
+
+
+@pytest.mark.asyncio
+async def test_durable_journal_marks_cancelled_plan(tmp_path):
+    journal = ActionJournal(tmp_path / "action_journal.jsonl")
+    engine = ActionExecutionEngine(journal=journal)
+    started = asyncio.Event()
+
+    async def runner(action: ActionCall):
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(engine.execute([ActionCall(tool_name="wait")], runner))
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    plans = await journal.recent_plans(include_events=True)
+    assert plans[0]["state"] == "cancelled"
+    assert any(event["event"] == "action_cancelled" for event in plans[0]["events"])
+
+
+@pytest.mark.asyncio
+async def test_new_session_identifies_unfinished_plan_as_interrupted(tmp_path):
+    journal_path = tmp_path / "action_journal.jsonl"
+    old_session = ActionJournal(journal_path)
+    await old_session.record(
+        "plan_started", plan_id="unfinished-plan", actions=[]
+    )
+
+    current_session = ActionJournal(journal_path)
+    interrupted = await current_session.recent_plans(state="interrupted")
+
+    assert interrupted[0]["plan_id"] == "unfinished-plan"
+    assert interrupted[0]["state"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_action_journal_inspection_skill_validates_limit(tmp_path):
+    journal = ActionJournal(tmp_path / "action_journal.jsonl")
+    skills = ActionJournalSkills(journal)
+
+    invalid = await skills.inspect_action_journal(limit=0)
+
+    assert invalid.is_success is False
+    assert "between 1 and 200" in invalid.message

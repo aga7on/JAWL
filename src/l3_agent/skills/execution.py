@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 from src.l3_agent.skills.schema import ActionCall
+from src.l3_agent.skills.journal import ActionJournal, NullActionJournal
+from src.utils.logger import agent_logger
 
 
 ActionRunner = Callable[[ActionCall], Awaitable[Any]]
@@ -73,10 +76,17 @@ class ActionExecutionEngine:
         "workspace",
     }
 
-    def __init__(self, max_parallel_actions: int = 4) -> None:
+    def __init__(
+        self,
+        max_parallel_actions: int = 4,
+        journal: Optional[ActionJournal] = None,
+    ) -> None:
         if max_parallel_actions < 1:
             raise ValueError("max_parallel_actions must be at least 1")
         self.max_parallel_actions = max_parallel_actions
+        self.journal: ActionJournal | NullActionJournal = (
+            journal or NullActionJournal()
+        )
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._semaphore: Optional[asyncio.Semaphore] = None
         self._resource_locks: Dict[str, asyncio.Lock] = {}
@@ -91,6 +101,59 @@ class ActionExecutionEngine:
 
         self._ensure_loop_state()
         plans = self._normalize(actions)
+        plan_id = uuid.uuid4().hex
+        await self._safe_record(
+            "plan_started",
+            plan_id=plan_id,
+            actions=[
+                {
+                    "index": plan.index,
+                    "action_id": plan.action_id,
+                    "tool_name": plan.call.tool_name,
+                    "parameters": plan.call.parameters,
+                    "depends_on": plan.call.depends_on,
+                    "parallel_group": plan.call.parallel_group,
+                    "resources": plan.call.resources,
+                }
+                for plan in plans
+            ],
+        )
+        try:
+            outcomes = await self._execute_plans(plan_id, plans, runner)
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._safe_record(
+                    "plan_finished",
+                    plan_id=plan_id,
+                    state="cancelled",
+                    outcomes=[],
+                )
+            )
+            raise
+        except Exception as exc:
+            await asyncio.shield(
+                self._safe_record(
+                    "plan_finished",
+                    plan_id=plan_id,
+                    state="error",
+                    error=str(exc),
+                    outcomes=[],
+                )
+            )
+            raise
+
+        state = "completed" if all(item.is_success for item in outcomes) else "failed"
+        await self._safe_record(
+            "plan_finished",
+            plan_id=plan_id,
+            state=state,
+            outcomes=[self._outcome_payload(item) for item in outcomes],
+        )
+        return outcomes
+
+    async def _execute_plans(
+        self, plan_id: str, plans: List[PlannedAction], runner: ActionRunner
+    ) -> List[ActionOutcome]:
         outcomes: Dict[int, ActionOutcome] = {}
         pending: Dict[int, PlannedAction] = {plan.index: plan for plan in plans}
 
@@ -168,7 +231,7 @@ class ActionExecutionEngine:
             else:
                 batch = [first]
 
-            batch_outcomes = await self._run_batch(batch, runner)
+            batch_outcomes = await self._run_batch(plan_id, batch, runner)
             for outcome in batch_outcomes:
                 outcomes[outcome.index] = outcome
                 pending.pop(outcome.index, None)
@@ -178,6 +241,31 @@ class ActionExecutionEngine:
                 raise RuntimeError("Action execution engine made no progress")
 
         return [outcomes[index] for index in sorted(outcomes)]
+
+    def set_journal(self, journal: ActionJournal) -> None:
+        """Attach persistent journaling after the system paths are configured."""
+
+        self.journal = journal
+
+    async def _safe_record(self, event: str, **payload: Any) -> None:
+        try:
+            await self.journal.record(event, **payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Observability must never prevent physical actions from completing.
+            agent_logger.warning(f"[Action Journal] Unable to persist event: {exc}")
+            return
+
+    @staticmethod
+    def _outcome_payload(outcome: ActionOutcome) -> Dict[str, Any]:
+        return {
+            "index": outcome.index,
+            "action_id": outcome.action_id,
+            "tool_name": outcome.tool_name,
+            "is_success": outcome.is_success,
+            "message": outcome.message,
+        }
 
     def _ensure_loop_state(self) -> None:
         """Keep asyncio primitives scoped to their running event loop."""
@@ -197,9 +285,11 @@ class ActionExecutionEngine:
         return plans
 
     async def _run_batch(
-        self, batch: List[PlannedAction], runner: ActionRunner
+        self, plan_id: str, batch: List[PlannedAction], runner: ActionRunner
     ) -> List[ActionOutcome]:
-        tasks = [asyncio.create_task(self._run_one(plan, runner)) for plan in batch]
+        tasks = [
+            asyncio.create_task(self._run_one(plan_id, plan, runner)) for plan in batch
+        ]
         try:
             return await asyncio.gather(*tasks)
         except asyncio.CancelledError:
@@ -209,7 +299,7 @@ class ActionExecutionEngine:
             raise
 
     async def _run_one(
-        self, plan: PlannedAction, runner: ActionRunner
+        self, plan_id: str, plan: PlannedAction, runner: ActionRunner
     ) -> ActionOutcome:
         assert self._semaphore is not None
         resource_keys = self._resource_keys(plan.call)
@@ -219,19 +309,51 @@ class ActionExecutionEngine:
             for lock in locks:
                 await lock.acquire()
             try:
+                await self._safe_record(
+                    "action_started",
+                    plan_id=plan_id,
+                    action_id=plan.action_id,
+                    index=plan.index,
+                    tool_name=plan.call.tool_name,
+                    parameters=plan.call.parameters,
+                    resources=resource_keys,
+                )
                 try:
                     result = await runner(plan.call)
-                    return ActionOutcome(
+                    outcome = ActionOutcome(
                         index=plan.index,
                         action_id=plan.action_id,
                         tool_name=plan.call.tool_name,
                         is_success=bool(getattr(result, "is_success", False)),
                         message=str(getattr(result, "message", result)),
                     )
+                    await self._safe_record(
+                        "action_finished",
+                        plan_id=plan_id,
+                        **self._outcome_payload(outcome),
+                    )
+                    return outcome
                 except asyncio.CancelledError:
+                    await asyncio.shield(
+                        self._safe_record(
+                            "action_cancelled",
+                            plan_id=plan_id,
+                            action_id=plan.action_id,
+                            index=plan.index,
+                            tool_name=plan.call.tool_name,
+                        )
+                    )
                     raise
                 except Exception as exc:
-                    return self._failure(plan, f"Internal action execution error: {exc}")
+                    outcome = self._failure(
+                        plan, f"Internal action execution error: {exc}"
+                    )
+                    await self._safe_record(
+                        "action_finished",
+                        plan_id=plan_id,
+                        **self._outcome_payload(outcome),
+                    )
+                    return outcome
             finally:
                 for lock in reversed(locks):
                     lock.release()

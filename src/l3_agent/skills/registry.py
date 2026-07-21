@@ -8,6 +8,7 @@ Role-Based Access Control (RBAC) for subagents.
 
 import inspect
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional, Callable, Dict, Any, TypeVar, List
 import logging
 
@@ -19,6 +20,7 @@ from src.utils.settings import SubconsciousConfig
 
 from src.l3_agent.skills.schema import ActionCall
 from src.l3_agent.skills.execution import ActionExecutionEngine
+from src.l3_agent.skills.journal import ActionJournal, NullActionJournal
 from src.l3_agent.swarm.roles import SubagentRole
 from src.l3_agent.subconscious.schema import Pattern
 
@@ -45,6 +47,14 @@ _REGISTRY: Dict[str, Dict[str, Any]] = {}
 _ACTION_ENGINE = ActionExecutionEngine()
 
 
+def configure_action_journal(path: Path) -> ActionJournal:
+    """Configure durable action journaling once the runtime data path is known."""
+
+    journal = ActionJournal(path)
+    _ACTION_ENGINE.set_journal(journal)
+    return journal
+
+
 async def execute_action_plan(actions: List[ActionCall], runner: Callable) -> list:
     """Execute actions through the shared deterministic engine.
 
@@ -58,6 +68,7 @@ async def execute_action_plan(actions: List[ActionCall], runner: Callable) -> li
 def clear_registry() -> None:
     """Clears the global registry (called during agent reboot)."""
     _REGISTRY.clear()
+    _ACTION_ENGINE.journal = NullActionJournal()
 
 
 def unregister_skill(skill_name: str) -> None:

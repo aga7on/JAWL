@@ -54,3 +54,14 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Cleanup preserves commits and the task branch. Uncommitted work requires an
   explicit `force=true`; tracked and untracked changes are first saved to a
   recovery Git stash rather than being silently destroyed.
+
+## Durable execution contract
+
+- Every configured action plan receives a stable plan ID and append-only JSONL
+  lifecycle records for plan start, action start/finish/cancel, and plan finish.
+- Journal writes are fsynced and rotated; journaling failure cannot prevent an
+  authorized physical action from completing.
+- Sensitive parameter fields and inline credentials are redacted before storage.
+- A plan left unfinished by an older process session is reported as interrupted.
+- Journal inspection never automatically replays uncertain side effects. Recovery
+  begins by comparing journal evidence with the persistent task workspace.

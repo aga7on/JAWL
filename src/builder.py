@@ -30,7 +30,8 @@ from src.l3_agent.context.rag.memories import RAGMemories
 from src.l3_agent.context.rag.skills import MemoryRecallSkill
 from src.l3_agent.react.loop import ReactLoop
 from src.l3_agent.heartbeat import Heartbeat
-from src.l3_agent.skills.registry import register_instance
+from src.l3_agent.skills.registry import configure_action_journal, register_instance
+from src.l3_agent.skills.journal_skills import ActionJournalSkills
 from src.l3_agent.skills.schema import ACTION_SCHEMA
 from src.l3_agent.swarm.skills.report import SubagentReport
 from src.l3_agent.swarm.spawn import SwarmManager
@@ -196,6 +197,11 @@ class SystemBuilder:
     def with_l3_agent(self, env_vars: Dict[str, Optional[str]]) -> "SystemBuilder":
         """Assembles the agent brain."""
         main_logger.info("[System] Initializing L3 Agent.")
+
+        action_journal = configure_action_journal(
+            self.container.local_data_dir / "agent" / "action_journal.jsonl"
+        )
+        register_instance(ActionJournalSkills(action_journal))
 
         llm_api_keys = env_vars.get("LLM_API_KEYS", [])
         llm_api_url = env_vars.get("LLM_API_URL", "")
