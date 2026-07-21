@@ -324,6 +324,16 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   failures, index/selection limits, or when no affected test can be proven. The
   requested/effective mode, reason, bounded paths, graph counts, and decision
   hash are persisted with the exact-state verification run.
+- Optional `pytest_workers` from 1 through 8 activates only when affected
+  selection is proven and contains 2 through 64 test files. Each file runs as a
+  separate shell-free pytest process; deterministic longest-processing-time
+  scheduling balances worker lanes from repository-scoped EMA durations.
+- Duration history is keyed by a SHA-256 repository identity rather than a raw
+  path and is bounded to 50 repositories with 500 targets each. Every completed
+  shard updates history and durable active-run evidence before another boundary;
+  cancellation kills sibling process trees while retaining completed shard
+  timing/outcome hashes. Larger or non-affected selections use the compatible
+  single-process batch command.
 - A successful run records HEAD plus a SHA-256 fingerprint of staged changes,
   unstaged changes, and untracked files. Conventional Python caches are the only
   excluded artifacts.
@@ -332,7 +342,7 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
   bypass remains available for justified non-executable changes and is recorded.
 - Repositories may declare `.jawl/verification.json` with version, built-in
   profile names, timeout, stop-on-failure behavior, bounded stability runs, and
-  `full`/`affected` test selection.
+  `full`/`affected` test selection, and bounded pytest worker count.
   Unknown fields,
   environment overrides, and arbitrary commands are rejected; the policy hash
   is stored with each run.

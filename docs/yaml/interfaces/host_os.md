@@ -116,7 +116,8 @@ Repositories can make this policy durable without adding executable text:
   "timeout_sec": 300,
   "stop_on_failure": true,
   "stability_runs": 2,
-  "test_selection": "affected"
+  "test_selection": "affected",
+  "pytest_workers": 4
 }
 ```
 
@@ -140,6 +141,16 @@ reached, or no affected test is statically proven. Each run persists requested
 and effective mode, fallback reason, bounded changed/selected paths, graph
 counts, and a SHA-256 decision fingerprint. The normal exact-workspace commit
 gate still applies to the resulting run.
+
+`pytest_workers` accepts `1` through `8` and defaults to `1`. Values above one
+activate only for a proven affected selection containing 2 through 64 pytest
+files. JAWL runs one file per process and balances deterministic worker lanes
+with repository-scoped historical EMA durations. The repository identity is
+stored only as SHA-256; history is capped at 50 repositories and 500 targets per
+repository. Every completed shard is persisted before the next safe boundary,
+so cancellation retains completed outcomes and kills remaining process trees.
+Selections outside these bounds keep the compatible single-process pytest
+command.
 
 ## Durable coding diff review
 

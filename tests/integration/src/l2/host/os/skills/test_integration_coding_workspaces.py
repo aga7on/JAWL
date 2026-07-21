@@ -55,6 +55,22 @@ def verification_attempt(check: str, passed: bool, label: str) -> dict:
     }
 
 
+def add_parallel_pytest_graph(repository: Path) -> None:
+    source_dir = repository / "src"
+    tests_dir = repository / "tests"
+    source_dir.mkdir(exist_ok=True)
+    tests_dir.mkdir(exist_ok=True)
+    (source_dir / "core.py").write_text("VALUE = 1\n", encoding="utf-8")
+    for name in ("alpha", "beta"):
+        (tests_dir / f"test_{name}.py").write_text(
+            "from src import core\n\n"
+            f"def test_{name}():\n    assert core.VALUE\n",
+            encoding="utf-8",
+        )
+    run_git(repository, "add", "--all")
+    run_git(repository, "commit", "-m", "add parallel pytest graph")
+
+
 @pytest.mark.asyncio
 async def test_coding_workspace_isolates_commits_and_persists_status(os_client):
     repository = create_repository(os_client.sandbox_dir)
@@ -585,6 +601,194 @@ async def test_affected_pytest_selection_treats_shared_conftest_as_full_suite(
 
 
 @pytest.mark.asyncio
+async def test_duration_aware_pytest_workers_persist_and_reuse_repository_history(
+    os_client, monkeypatch
+):
+    repository = create_repository(os_client.sandbox_dir)
+    add_parallel_pytest_graph(repository)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "parallel-pytest-first"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "src" / "core.py").write_text("VALUE = 2\n", encoding="utf-8")
+    started = []
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def parallel_runner(check, command, worktree, timeout_sec):
+        target = command[-1]
+        started.append(target)
+        if len(started) == 2:
+            both_started.set()
+        await release.wait()
+        result = verification_attempt(check, True, str(len(started)))
+        result["command"] = command
+        result["duration_sec"] = 5.0 if target.endswith("alpha.py") else 1.0
+        return result
+
+    monkeypatch.setattr(verifier, "_run_command", parallel_runner)
+    first_task = asyncio.create_task(
+        verifier.run_coding_verification(
+            "parallel-pytest-first",
+            checks=["pytest"],
+            test_selection="affected",
+            pytest_workers=2,
+        )
+    )
+    await asyncio.wait_for(both_started.wait(), timeout=2)
+    release.set()
+    first = await first_task
+    first_payload = json.loads(first.message)
+
+    assert first.is_success is True, first.message
+    assert sorted(started) == ["tests/test_alpha.py", "tests/test_beta.py"]
+    assert first_payload["pytest_schedule"]["mode"] == "file_shards"
+    assert first_payload["pytest_schedule"]["effective_workers"] == 2
+    assert first_payload["pytest_schedule"]["history_coverage"] == 0
+    assert first_payload["results"][0]["execution_mode"] == "file_shards"
+    assert first_payload["results"][0]["shard_count"] == 2
+    assert first_payload["results"][0]["shard_evidence_count"] == 2
+    history = manager._load_registry()["pytest_duration_history"]
+    assert len(history) == 1
+    target_history = next(iter(history.values()))["targets"]
+    assert target_history["tests/test_alpha.py"]["ema_duration_sec"] == 5.0
+    assert target_history["tests/test_beta.py"]["ema_duration_sec"] == 1.0
+
+    second_created = await manager.create_coding_workspace(
+        "sandbox/project", "parallel-pytest-second"
+    )
+    second_workspace = Path(json.loads(second_created.message)["workspace_path"])
+    (second_workspace / "src" / "core.py").write_text("VALUE = 3\n", encoding="utf-8")
+
+    async def immediate_runner(check, command, worktree, timeout_sec):
+        result = verification_attempt(check, True, "1")
+        result["command"] = command
+        return result
+
+    monkeypatch.setattr(verifier, "_run_command", immediate_runner)
+    second = await verifier.run_coding_verification(
+        "parallel-pytest-second",
+        checks=["pytest"],
+        test_selection="affected",
+        pytest_workers=2,
+    )
+    second_payload = json.loads(second.message)
+    assert second.is_success is True, second.message
+    assert second_payload["pytest_schedule"]["history_coverage"] == 2
+    assert second_payload["pytest_schedule"]["predicted_worker_duration_sec"] == [
+        5.0,
+        1.0,
+    ]
+    assert (
+        await manager.remove_coding_workspace("parallel-pytest-first", force=True)
+    ).is_success
+    assert (
+        await manager.remove_coding_workspace("parallel-pytest-second", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
+async def test_parallel_pytest_workers_execute_real_file_shards(os_client):
+    repository = create_repository(os_client.sandbox_dir)
+    add_parallel_pytest_graph(repository)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "real-parallel-pytest"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "src" / "core.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+    verified = await verifier.run_coding_verification(
+        "real-parallel-pytest",
+        checks=["pytest"],
+        test_selection="affected",
+        pytest_workers=2,
+    )
+    payload = json.loads(verified.message)
+    result = payload["results"][0]
+
+    assert verified.is_success is True, verified.message
+    assert result["execution_mode"] == "file_shards"
+    assert result["worker_count"] == 2
+    assert result["shard_count"] == 2
+    assert {shard["target"] for shard in result["shards"]} == {
+        "tests/test_alpha.py",
+        "tests/test_beta.py",
+    }
+    assert all(shard["passed"] for shard in result["shards"])
+    assert (
+        await manager.remove_coding_workspace("real-parallel-pytest", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
+async def test_cancelled_pytest_workers_keep_completed_shard_evidence(
+    os_client, monkeypatch
+):
+    repository = create_repository(os_client.sandbox_dir)
+    add_parallel_pytest_graph(repository)
+    manager = HostOSCodingWorkspaces(os_client)
+    verifier = HostOSCodingVerification(os_client, manager)
+    created = await manager.create_coding_workspace(
+        "sandbox/project", "cancelled-pytest-workers"
+    )
+    workspace = Path(json.loads(created.message)["workspace_path"])
+    (workspace / "src" / "core.py").write_text("VALUE = 2\n", encoding="utf-8")
+    slow_started = asyncio.Event()
+    evidence_saved = asyncio.Event()
+    real_record = verifier._record_pytest_duration
+
+    async def shard_runner(check, command, worktree, timeout_sec):
+        target = command[-1]
+        if target.endswith("beta.py"):
+            slow_started.set()
+            await asyncio.Event().wait()
+        result = verification_attempt(check, True, "1")
+        result["command"] = command
+        result["duration_sec"] = 0.2
+        return result
+
+    async def observed_record(task_id, target, duration_sec):
+        await real_record(task_id, target, duration_sec)
+        evidence_saved.set()
+
+    monkeypatch.setattr(verifier, "_run_command", shard_runner)
+    monkeypatch.setattr(verifier, "_record_pytest_duration", observed_record)
+    task = asyncio.create_task(
+        verifier.run_coding_verification(
+            "cancelled-pytest-workers",
+            checks=["pytest"],
+            test_selection="affected",
+            pytest_workers=2,
+        )
+    )
+    await asyncio.wait_for(slow_started.wait(), timeout=2)
+    await asyncio.wait_for(evidence_saved.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    status = json.loads(
+        (
+            await verifier.get_coding_verification_status(
+                "cancelled-pytest-workers"
+            )
+        ).message
+    )
+    last = status["last_verification"]
+    assert last["state"] == "cancelled"
+    assert last["active_check"]["check"] == "pytest"
+    assert len(last["active_check"]["shards"]) == 1
+    assert last["active_check"]["shards"][0]["target"] == "tests/test_alpha.py"
+    assert (
+        await manager.remove_coding_workspace("cancelled-pytest-workers", force=True)
+    ).is_success
+
+
+@pytest.mark.asyncio
 async def test_verification_bounds_failure_output(os_client):
     create_repository(os_client.sandbox_dir)
     manager = HostOSCodingWorkspaces(os_client)
@@ -1011,6 +1215,7 @@ async def test_repository_verification_policy_selects_only_allowlisted_profiles(
                 "stop_on_failure": False,
                 "stability_runs": 2,
                 "test_selection": "affected",
+                "pytest_workers": 2,
             }
         ),
         encoding="utf-8",
@@ -1026,6 +1231,7 @@ async def test_repository_verification_policy_selects_only_allowlisted_profiles(
     assert payload["stability_runs"] == 2
     assert payload["policy"]["stability_runs"] == 2
     assert payload["policy"]["test_selection"] == "affected"
+    assert payload["policy"]["pytest_workers"] == 2
     assert payload["test_selection"]["reason"] == "pytest_profile_not_selected"
     assert payload["policy"]["path"] == ".jawl/verification.json"
     assert len(payload["policy"]["sha256"]) == 64
@@ -1081,6 +1287,29 @@ async def test_repository_verification_policy_selects_only_allowlisted_profiles(
     )
     assert rejected_selection.is_success is False
     assert "test_selection" in rejected_selection.message
+
+    policy_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "checks": ["pytest"],
+                "pytest_workers": 9,
+            }
+        ),
+        encoding="utf-8",
+    )
+    rejected_workers = await verifier.run_coding_verification(
+        "verification-policy"
+    )
+    assert rejected_workers.is_success is False
+    assert "pytest_workers" in rejected_workers.message
+    rejected_workers_argument = await verifier.run_coding_verification(
+        "verification-policy",
+        checks=["pytest"],
+        pytest_workers=True,
+    )
+    assert rejected_workers_argument.is_success is False
+    assert "pytest_workers" in rejected_workers_argument.message
     assert (
         await manager.remove_coding_workspace("verification-policy", force=True)
     ).is_success

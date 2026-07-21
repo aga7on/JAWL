@@ -252,6 +252,19 @@
       ]
     },
     {
+      "id": "duration_aware_pytest_sharding",
+      "description": "Opt-in affected pytest files run in bounded duration-balanced worker lanes with repository-scoped history, real subprocess aggregation, durable per-shard evidence, cancellation safety, and batch fallback outside proven bounds.",
+      "tests": [
+        "tests/unit/l2/host/os/test_coding_pytest_sharding.py::test_duration_aware_schedule_uses_deterministic_lpt_lanes",
+        "tests/unit/l2/host/os/test_coding_pytest_sharding.py::test_duration_aware_schedule_falls_back_when_shard_bound_is_exceeded",
+        "tests/unit/l2/host/os/test_coding_pytest_sharding.py::test_file_shard_runner_cancels_sibling_workers_and_keeps_completions",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_duration_aware_pytest_workers_persist_and_reuse_repository_history",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_parallel_pytest_workers_execute_real_file_shards",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_cancelled_pytest_workers_keep_completed_shard_evidence",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_workspaces.py::test_repository_verification_policy_selects_only_allowlisted_profiles"
+      ]
+    },
+    {
       "id": "protocol_failure_observability",
       "description": "Multiple tool calls survive transport and failed or exhausted ReAct steps leave durable evidence.",
       "tests": [

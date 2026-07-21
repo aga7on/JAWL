@@ -6,6 +6,7 @@ import ast
 import asyncio
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -15,7 +16,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple
 
 import psutil
 
@@ -24,6 +25,11 @@ from src.l2_interfaces.host.os.decorators import require_access
 from src.l2_interfaces.host.os.polls.utils import is_ignored
 from src.l2_interfaces.host.os.skills.coding_workspaces import (
     HostOSCodingWorkspaces,
+)
+from src.l2_interfaces.host.os.skills.coding_pytest_sharding import (
+    MAX_PYTEST_WORKERS,
+    build_pytest_shard_schedule,
+    run_pytest_file_shards,
 )
 from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
@@ -76,6 +82,8 @@ class HostOSCodingVerification:
     _AFFECTED_MAX_INDEX_FILES = 3000
     _AFFECTED_MAX_SOURCE_BYTES = 2 * 1024 * 1024
     _AFFECTED_MAX_SELECTED_TESTS = 250
+    _DURATION_HISTORY_MAX_REPOSITORIES = 50
+    _DURATION_HISTORY_MAX_TARGETS = 500
     _AFFECTED_CONFIG_NAMES = {
         ".jawl/verification.json",
         "conftest.py",
@@ -482,6 +490,197 @@ if errors:
             self._build_affected_pytest_selection, workspace, changed
         )
 
+    @staticmethod
+    def _duration_history_key(entry: Mapping[str, Any]) -> str:
+        repository = os.path.normcase(
+            os.path.abspath(str(entry.get("repository_path") or ""))
+        )
+        return hashlib.sha256(repository.encode("utf-8")).hexdigest()
+
+    async def _load_pytest_duration_history(
+        self, task_id: str
+    ) -> Dict[str, float]:
+        async with self.workspaces._lock:
+            registry = self.workspaces._load_registry()
+            entry = self.workspaces._get_entry(registry, task_id)
+            repository_key = self._duration_history_key(entry)
+            repositories = registry.get("pytest_duration_history", {})
+            repository = (
+                repositories.get(repository_key, {})
+                if isinstance(repositories, dict)
+                else {}
+            )
+            targets = repository.get("targets", {}) if isinstance(repository, dict) else {}
+            history: Dict[str, float] = {}
+            if isinstance(targets, dict):
+                for target, record in targets.items():
+                    if not isinstance(record, dict):
+                        continue
+                    duration = record.get("ema_duration_sec")
+                    if (
+                        isinstance(duration, (int, float))
+                        and not isinstance(duration, bool)
+                        and math.isfinite(float(duration))
+                        and duration >= 0
+                    ):
+                        history[str(target)] = float(duration)
+            return history
+
+    async def _record_pytest_duration(
+        self, task_id: str, target: str, duration_sec: Any
+    ) -> None:
+        if (
+            not isinstance(duration_sec, (int, float))
+            or isinstance(duration_sec, bool)
+            or not math.isfinite(float(duration_sec))
+            or duration_sec < 0
+        ):
+            return
+        observed = round(float(duration_sec), 3)
+        async with self.workspaces._lock:
+            registry = self.workspaces._load_registry()
+            entry = self.workspaces._get_entry(registry, task_id)
+            repository_key = self._duration_history_key(entry)
+            repositories = registry.setdefault("pytest_duration_history", {})
+            if not isinstance(repositories, dict):
+                repositories = {}
+                registry["pytest_duration_history"] = repositories
+            now = self._utc_now()
+            repository = repositories.setdefault(
+                repository_key, {"updated_at": now, "targets": {}}
+            )
+            if not isinstance(repository, dict):
+                repository = {"updated_at": now, "targets": {}}
+                repositories[repository_key] = repository
+            targets = repository.setdefault("targets", {})
+            if not isinstance(targets, dict):
+                targets = {}
+                repository["targets"] = targets
+            previous = targets.get(target, {})
+            previous_ema = (
+                previous.get("ema_duration_sec")
+                if isinstance(previous, dict)
+                else None
+            )
+            previous_samples = (
+                previous.get("samples", 0) if isinstance(previous, dict) else 0
+            )
+            if (
+                not isinstance(previous_ema, (int, float))
+                or isinstance(previous_ema, bool)
+                or not math.isfinite(float(previous_ema))
+                or previous_ema < 0
+            ):
+                ema = observed
+            else:
+                ema = round(float(previous_ema) * 0.7 + observed * 0.3, 3)
+            samples = (
+                int(previous_samples) + 1
+                if isinstance(previous_samples, int)
+                and not isinstance(previous_samples, bool)
+                and previous_samples >= 0
+                else 1
+            )
+            targets[target] = {
+                "ema_duration_sec": ema,
+                "last_duration_sec": observed,
+                "samples": min(samples, 1_000_000),
+                "updated_at": now,
+            }
+            repository["updated_at"] = now
+            if len(targets) > self._DURATION_HISTORY_MAX_TARGETS:
+                oldest_targets = sorted(
+                    targets,
+                    key=lambda name: str(
+                        targets[name].get("updated_at", "")
+                        if isinstance(targets[name], dict)
+                        else ""
+                    ),
+                )
+                for name in oldest_targets[
+                    : len(targets) - self._DURATION_HISTORY_MAX_TARGETS
+                ]:
+                    targets.pop(name, None)
+            if len(repositories) > self._DURATION_HISTORY_MAX_REPOSITORIES:
+                oldest_repositories = sorted(
+                    repositories,
+                    key=lambda key: str(
+                        repositories[key].get("updated_at", "")
+                        if isinstance(repositories[key], dict)
+                        else ""
+                    ),
+                )
+                for key in oldest_repositories[
+                    : len(repositories) - self._DURATION_HISTORY_MAX_REPOSITORIES
+                ]:
+                    repositories.pop(key, None)
+            self.workspaces._save_registry(registry)
+
+    @classmethod
+    def _shard_summary(
+        cls, target: str, result: Dict[str, Any], attempt: int
+    ) -> Dict[str, Any]:
+        stdout = str(result.get("stdout", ""))
+        stderr = str(result.get("stderr", ""))
+        return {
+            "target": target,
+            "stability_attempt": attempt,
+            "passed": bool(result.get("passed")),
+            "exit_code": result.get("exit_code"),
+            "timed_out": bool(result.get("timed_out")),
+            "duration_sec": result.get("duration_sec", 0.0),
+            "stdout_sha256": hashlib.sha256(stdout.encode("utf-8")).hexdigest(),
+            "stderr_sha256": hashlib.sha256(stderr.encode("utf-8")).hexdigest(),
+        }
+
+    @staticmethod
+    def _aggregate_sharded_attempt(
+        base_command: Sequence[str],
+        completed: Sequence[Tuple[str, Dict[str, Any]]],
+        wall_duration_sec: float,
+        worker_count: int,
+        stability_attempt: int,
+    ) -> Dict[str, Any]:
+        results = [result for _, result in completed]
+        failed = next((result for result in results if not result.get("passed")), None)
+        diagnostic = failed or (results[-1] if results else {})
+        now = HostOSCodingVerification._utc_now()
+        all_passed = bool(results) and all(result.get("passed") for result in results)
+        return {
+            "check": "pytest",
+            "command": list(base_command),
+            "execution_mode": "file_shards",
+            "worker_count": worker_count,
+            "shard_count": len(results),
+            "shards": [
+                HostOSCodingVerification._shard_summary(
+                    target, result, stability_attempt
+                )
+                for target, result in completed
+            ],
+            "started_at": results[0].get("started_at", now) if results else now,
+            "finished_at": now,
+            "duration_sec": wall_duration_sec,
+            "summed_shard_duration_sec": round(
+                sum(float(result.get("duration_sec", 0.0)) for result in results), 3
+            ),
+            "exit_code": 0 if all_passed else diagnostic.get("exit_code"),
+            "timed_out": any(result.get("timed_out") for result in results),
+            "stdout": (
+                f"{len(results)} affected pytest file shards passed."
+                if all_passed
+                else str(diagnostic.get("stdout", ""))
+            ),
+            "stderr": "" if all_passed else str(diagnostic.get("stderr", "")),
+            "stdout_truncated": bool(diagnostic.get("stdout_truncated"))
+            if not all_passed
+            else False,
+            "stderr_truncated": bool(diagnostic.get("stderr_truncated"))
+            if not all_passed
+            else False,
+            "passed": all_passed,
+        }
+
     async def _load_repository_policy(
         self, workspace: Path
     ) -> Optional[Dict[str, Any]]:
@@ -507,6 +706,7 @@ if errors:
             "stop_on_failure",
             "stability_runs",
             "test_selection",
+            "pytest_workers",
         }
         unknown = set(policy) - allowed_fields
         if unknown:
@@ -548,6 +748,16 @@ if errors:
             raise ValueError(
                 "Verification policy test_selection must be 'full' or 'affected'."
             )
+        pytest_workers = policy.get("pytest_workers", 1)
+        if (
+            not isinstance(pytest_workers, int)
+            or isinstance(pytest_workers, bool)
+            or pytest_workers < 1
+            or pytest_workers > MAX_PYTEST_WORKERS
+        ):
+            raise ValueError(
+                f"Verification policy pytest_workers must be an integer between 1 and {MAX_PYTEST_WORKERS}."
+            )
         return {
             "path": self._POLICY_PATH.as_posix(),
             "sha256": hashlib.sha256(raw).hexdigest(),
@@ -556,6 +766,7 @@ if errors:
             "stop_on_failure": stop_on_failure,
             "stability_runs": stability_runs,
             "test_selection": test_selection,
+            "pytest_workers": pytest_workers,
         }
 
     @staticmethod
@@ -832,6 +1043,7 @@ if errors:
         stop_on_failure: Optional[bool] = None,
         stability_runs: Optional[int] = None,
         test_selection: Optional[TestSelection] = None,
+        pytest_workers: Optional[int] = None,
     ) -> SkillResult:
         """Run standard verification profiles in a task worktree.
 
@@ -842,6 +1054,8 @@ if errors:
         pass/fail outcomes are persisted as fail-closed ``flaky`` evidence.
         ``test_selection='affected'`` may narrow pytest to statically proven
         dependents; uncertainty always falls back to the full suite.
+        ``pytest_workers`` schedules affected test files across up to eight
+        duration-aware worker lanes while preserving per-file evidence.
         """
 
         if timeout_sec is not None and (timeout_sec < 1 or timeout_sec > 1800):
@@ -858,6 +1072,15 @@ if errors:
             or test_selection not in {"full", "affected"}
         ):
             return SkillResult.fail("test_selection must be 'full' or 'affected'.")
+        if pytest_workers is not None and (
+            not isinstance(pytest_workers, int)
+            or isinstance(pytest_workers, bool)
+            or pytest_workers < 1
+            or pytest_workers > MAX_PYTEST_WORKERS
+        ):
+            return SkillResult.fail(
+                f"pytest_workers must be an integer between 1 and {MAX_PYTEST_WORKERS}."
+            )
         run_persisted = False
         try:
             task_id, entry, workspace = await self._resolve_task(task_id)
@@ -882,6 +1105,11 @@ if errors:
                 test_selection
                 if test_selection is not None
                 else (policy["test_selection"] if policy else "full")
+            )
+            effective_pytest_workers = (
+                pytest_workers
+                if pytest_workers is not None
+                else (policy["pytest_workers"] if policy else 1)
             )
             normalized_checks = await self._normalize_checks(
                 workspace, requested_checks
@@ -912,6 +1140,31 @@ if errors:
                     reason="full_suite_requested",
                     changed_files=[],
                 )
+            if pytest_selection["effective"] == "affected":
+                duration_history = await self._load_pytest_duration_history(task_id)
+                pytest_schedule, pytest_lanes = build_pytest_shard_schedule(
+                    pytest_selection["selected_tests"],
+                    duration_history,
+                    effective_pytest_workers,
+                )
+            else:
+                pytest_lanes = []
+                pytest_schedule = {
+                    "requested_workers": effective_pytest_workers,
+                    "effective_workers": 1,
+                    "mode": "batch",
+                    "reason": "affected_selection_not_active",
+                    "target_count": 0,
+                    "history_coverage": 0,
+                    "worker_target_counts": [],
+                    "predicted_worker_duration_sec": [],
+                }
+                schedule_canonical = json.dumps(
+                    pytest_schedule, sort_keys=True, separators=(",", ":")
+                )
+                pytest_schedule["schedule_sha256"] = hashlib.sha256(
+                    schedule_canonical.encode("utf-8")
+                ).hexdigest()
             run = {
                 "run_id": uuid.uuid4().hex,
                 "session_id": self.session_id,
@@ -930,16 +1183,26 @@ if errors:
                 "stability_runs": effective_stability_runs,
                 "test_selection": pytest_selection,
             }
+            if (
+                effective_pytest_workers > 1
+                or pytest_selection["effective"] == "affected"
+            ):
+                run["pytest_schedule"] = pytest_schedule
             await self._persist_run(task_id, run, start=True)
             run_persisted = True
 
             try:
                 for check in normalized_checks:
                     try:
+                        sharded_pytest = (
+                            check == "pytest"
+                            and pytest_schedule["mode"] == "file_shards"
+                        )
                         pytest_targets = (
                             pytest_selection["selected_tests"]
                             if check == "pytest"
                             and pytest_selection["effective"] == "affected"
+                            and not sharded_pytest
                             else None
                         )
                         command = self._command_for(
@@ -965,12 +1228,63 @@ if errors:
                             "requested_stability_runs": requested_runs,
                             "attempts": [],
                         }
+                        if sharded_pytest:
+                            run["active_check"]["shards"] = []
                         await self._persist_run(task_id, run)
                         for attempt_number in range(1, requested_runs + 1):
                             try:
-                                attempt = await self._run_command(
-                                    check, command, workspace, effective_timeout
-                                )
+                                if sharded_pytest:
+                                    async def run_shard(target: str) -> Dict[str, Any]:
+                                        shard_command = self._command_for(
+                                            "pytest", workspace, pytest_targets=[target]
+                                        )
+                                        try:
+                                            return await self._run_command(
+                                                "pytest",
+                                                shard_command,
+                                                workspace,
+                                                effective_timeout,
+                                            )
+                                        except Exception as exc:
+                                            return self._failed_attempt(
+                                                "pytest",
+                                                f"Verification shard error: {exc}",
+                                            )
+
+                                    async def persist_shard(
+                                        target: str, shard_result: Dict[str, Any]
+                                    ) -> None:
+                                        active = run["active_check"]
+                                        active["shards"].append(
+                                            self._shard_summary(
+                                                target, shard_result, attempt_number
+                                            )
+                                        )
+                                        if not shard_result.get("passed"):
+                                            active["last_failure"] = shard_result
+                                        await self._record_pytest_duration(
+                                            task_id,
+                                            target,
+                                            shard_result.get("duration_sec"),
+                                        )
+                                        await self._persist_run(task_id, run)
+
+                                    completed_shards, wall_duration = (
+                                        await run_pytest_file_shards(
+                                            pytest_lanes, run_shard, persist_shard
+                                        )
+                                    )
+                                    attempt = self._aggregate_sharded_attempt(
+                                        command,
+                                        completed_shards,
+                                        wall_duration,
+                                        pytest_schedule["effective_workers"],
+                                        attempt_number,
+                                    )
+                                else:
+                                    attempt = await self._run_command(
+                                        check, command, workspace, effective_timeout
+                                    )
                             except Exception as exc:
                                 attempt = self._failed_attempt(
                                     check, f"Verification process error: {exc}"
@@ -992,6 +1306,9 @@ if errors:
                         requested_runs,
                         include_attempt_metadata=effective_stability_runs > 1,
                     )
+                    if sharded_pytest:
+                        result["shards"] = list(run["active_check"]["shards"])
+                        result["shard_evidence_count"] = len(result["shards"])
                     run.pop("active_check", None)
                     run["results"].append(result)
                     await self._persist_run(task_id, run)
