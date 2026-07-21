@@ -77,6 +77,16 @@
         "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_coding_plan_persists_dependencies_evidence_and_commit_gate",
         "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_coding_plan_rejects_cycles_and_redacts_evidence"
       ]
+    },
+    {
+      "id": "cross_layer_trace_correlation",
+      "description": "Async trace IDs survive child tasks, cancellation, actions, verification, and commits without leaking contexts.",
+      "tests": [
+        "tests/unit/utils/test_tracing.py::test_trace_context_is_inherited_by_child_tasks_and_reset",
+        "tests/unit/l3/skills/test_action_execution.py::test_action_journal_correlates_trace_and_task_id",
+        "tests/unit/l3/react/test_react_loop.py::test_react_cancellation_persists_terminal_tick",
+        "tests/integration/src/l2/host/os/skills/test_integration_coding_plans.py::test_coding_plan_persists_dependencies_evidence_and_commit_gate"
+      ]
     }
   ]
 }

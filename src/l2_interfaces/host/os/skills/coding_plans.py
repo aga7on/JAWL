@@ -15,6 +15,7 @@ from src.l2_interfaces.host.os.skills.coding_workspaces import (
 from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
 from src.utils._tools import redact_sensitive_text
+from src.utils.tracing import current_trace
 
 
 class HostOSCodingPlans:
@@ -231,6 +232,7 @@ class HostOSCodingPlans:
                 "revision": plan["revision"],
                 "time": plan["updated_at"],
                 "details": details,
+                "trace": current_trace(),
             }
         )
         plan["history"] = plan["history"][-200:]
@@ -280,6 +282,7 @@ class HostOSCodingPlans:
                             "revision": 1,
                             "time": now,
                             "details": {"replaced_existing": bool(existing_plan)},
+                            "trace": current_trace(),
                         }
                     ],
                 }

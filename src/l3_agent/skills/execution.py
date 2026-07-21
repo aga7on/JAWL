@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 from src.l3_agent.skills.schema import ActionCall
 from src.l3_agent.skills.journal import ActionJournal, NullActionJournal
 from src.utils.logger import agent_logger
+from src.utils.tracing import current_trace
 
 
 ActionRunner = Callable[[ActionCall], Awaitable[Any]]
@@ -107,6 +108,13 @@ class ActionExecutionEngine:
         await self._safe_record(
             "plan_started",
             plan_id=plan_id,
+            task_ids=sorted(
+                {
+                    str(plan.call.parameters["task_id"])
+                    for plan in plans
+                    if plan.call.parameters.get("task_id") is not None
+                }
+            ),
             actions=[
                 {
                     "index": plan.index,
@@ -251,6 +259,7 @@ class ActionExecutionEngine:
 
     async def _safe_record(self, event: str, **payload: Any) -> None:
         try:
+            payload.setdefault("trace", current_trace())
             await self.journal.record(event, **payload)
         except asyncio.CancelledError:
             raise
@@ -320,6 +329,7 @@ class ActionExecutionEngine:
                     tool_name=plan.call.tool_name,
                     parameters=plan.call.parameters,
                     resources=resource_keys,
+                    task_id=plan.call.parameters.get("task_id"),
                 )
                 started = time.perf_counter()
                 try:

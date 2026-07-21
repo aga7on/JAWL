@@ -97,6 +97,17 @@ journaling, checkpoint/rewind, native patch application, and coding evaluation.
 - Invalid structured output is redacted, bounded, persisted as a protocol-error
   tick, and made visible to the next reasoning step for self-correction.
 
+## Trace correlation contract
+
+- Every main ReAct wakeup starts an async-context trace with a stable ID. Child
+  action tasks inherit it automatically through `ContextVar`, so models do not
+  need to copy correlation parameters between skills.
+- The trace is attached to LLM metrics, ticks, every action-journal event,
+  verification runs, plan transitions, and task commits. Action plans also infer
+  task IDs from skill parameters for direct task-to-trace lookup.
+- Reset tokens restore any parent trace after the cycle and prevent correlation
+  state leaking into later Heartbeats or unrelated background work.
+
 ## Verification contract
 
 - `run_coding_verification` executes bounded standard profiles inside the task

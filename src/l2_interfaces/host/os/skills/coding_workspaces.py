@@ -19,6 +19,7 @@ from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
 from src.utils._tools import redact_sensitive_text, truncate_text
 from src.utils.logger import main_logger
+from src.utils.tracing import current_trace
 
 
 class HostOSCodingWorkspaces:
@@ -769,6 +770,7 @@ class HostOSCodingWorkspaces:
                 entry["last_commit_at"] = self._utc_now()
                 entry["last_commit_verification_bypassed"] = not is_verified
                 entry["last_commit_plan_bypassed"] = bool(plan and not plan_ready)
+                entry["last_commit_trace"] = current_trace()
                 if is_verified:
                     verification["committed_as"] = commit_hash
                     verification["post_commit_fingerprint"] = (
@@ -787,6 +789,7 @@ class HostOSCodingWorkspaces:
                         "commit": commit_hash,
                         "verification_bypassed": not is_verified,
                         "plan_completion_bypassed": bool(plan and not plan_ready),
+                        "trace": current_trace(),
                         "summary": truncate_text(out, max_chars=3000),
                     },
                     ensure_ascii=False,

@@ -24,6 +24,7 @@ from src.l3_agent.llm.client import LLMClient
 from src.l3_agent.llm.exceptions import AllKeysExhaustedError
 from src.utils._tools import redact_sensitive_text
 from src.utils.token_tracker import TokenTracker
+from src.utils.tracing import current_trace
 
 
 class LLMExecutor:
@@ -121,6 +122,17 @@ class LLMExecutor:
                 )
 
                 return raw_answer
+
+            except asyncio.CancelledError:
+                self._finish_error_metrics(
+                    request_id,
+                    model_name,
+                    attempt + 1,
+                    started,
+                    "cancelled",
+                    "LLM request cancelled by downstream cycle",
+                )
+                raise
 
             except AllKeysExhaustedError as e:
                 logger.warning(
@@ -289,6 +301,7 @@ class LLMExecutor:
             "provider_total_tokens": self._plain_metric(
                 getattr(usage, "total_tokens", None)
             ),
+            "trace": current_trace(),
         }
 
     def _finish_error_metrics(
@@ -307,6 +320,7 @@ class LLMExecutor:
             "attempts": attempts,
             "duration_ms": round((time.perf_counter() - started) * 1000, 1),
             "error": redact_sensitive_text(error)[:1000],
+            "trace": current_trace(),
         }
 
     def _calculate_rate_limit_cooldown(self, error: openai.RateLimitError) -> int:

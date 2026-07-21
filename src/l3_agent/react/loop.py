@@ -20,6 +20,7 @@ from src.utils._tools import dump_prompt_to_file, redact_sensitive_text, truncat
 
 from src.utils.event.bus import EventBus
 from src.utils.event.registry import Events
+from src.utils.tracing import begin_trace, current_trace, reset_trace
 
 from src.l0_state.agent.state import AgentState, AgentStatus
 
@@ -106,6 +107,10 @@ class ReactLoop:
         """
 
         self.current_events = missed_events.copy()
+        trace_token, trace = begin_trace(
+            "react_cycle", event_name=event_name, model=self.agent_state.llm_model
+        )
+        self.agent_state.current_trace_id = trace["trace_id"]
 
         try:
             self.agent_state.reset_step()
@@ -210,8 +215,13 @@ class ReactLoop:
             ):
                 await self._handle_step_limit()
 
+        except asyncio.CancelledError:
+            await asyncio.shield(self._handle_cycle_cancelled())
+            raise
         finally:
             self.agent_state.update_state(AgentStatus.IDLE)
+            self.agent_state.current_trace_id = ""
+            reset_trace(trace_token)
 
     # -------------------------------------------------------------------------
     # Private Helpers
@@ -290,6 +300,7 @@ class ReactLoop:
                 "step": self.agent_state.current_step,
                 "max_steps": self.agent_state.max_react_steps,
                 "llm_metrics": self._llm_metrics_snapshot(),
+                "trace": current_trace(),
             },
         )
         await self.event_bus.publish(Events.REACT_TICK_SAVED)
@@ -313,6 +324,7 @@ class ReactLoop:
                 "step": self.agent_state.current_step,
                 "max_steps": self.agent_state.max_react_steps,
                 "llm_metrics": self._llm_metrics_snapshot(),
+                "trace": current_trace(),
             },
         )
         await self.event_bus.publish(Events.REACT_TICK_SAVED)
@@ -343,6 +355,7 @@ class ReactLoop:
                 "step": self.agent_state.current_step,
                 "max_steps": self.agent_state.max_react_steps,
                 "llm_metrics": self._llm_metrics_snapshot(),
+                "trace": current_trace(),
             },
         )
         await self.event_bus.publish(Events.REACT_TICK_SAVED)
@@ -367,6 +380,27 @@ class ReactLoop:
                 "step": self.agent_state.max_react_steps,
                 "max_steps": self.agent_state.max_react_steps,
                 "llm_metrics": self._llm_metrics_snapshot(),
+                "trace": current_trace(),
+            },
+        )
+        await self.event_bus.publish(Events.REACT_TICK_SAVED)
+
+    async def _handle_cycle_cancelled(self) -> None:
+        """Persist a terminal record before Heartbeat replaces this cycle."""
+
+        message = "ReAct cycle cancelled by a higher-priority event."
+        self.agent_state.last_action_error = message
+        self.agent_state.last_actions_result = message
+        await self.sql_ticks.save_tick(
+            thoughts="[Cycle interrupted by higher-priority event]",
+            actions=[],
+            results={
+                "status": "cycle_cancelled",
+                "error": message,
+                "step": self.agent_state.current_step,
+                "max_steps": self.agent_state.max_react_steps,
+                "llm_metrics": self._llm_metrics_snapshot(),
+                "trace": current_trace(),
             },
         )
         await self.event_bus.publish(Events.REACT_TICK_SAVED)

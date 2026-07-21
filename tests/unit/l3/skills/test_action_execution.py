@@ -7,6 +7,7 @@ from src.l3_agent.skills.execution import ActionExecutionEngine
 from src.l3_agent.skills.journal import ActionJournal
 from src.l3_agent.skills.journal_skills import ActionJournalSkills
 from src.l3_agent.skills.schema import ACTION_SCHEMA, ActionCall
+from src.utils.tracing import begin_trace, reset_trace
 
 
 def result(success: bool = True, message: str = "ok") -> SimpleNamespace:
@@ -287,6 +288,29 @@ async def test_durable_journal_records_plan_lifecycle_and_redacts_secrets(tmp_pa
     assert "inline-secret" not in raw_journal
     assert "answer-secret" not in raw_journal
     assert "[REDACTED]" in raw_journal
+
+
+@pytest.mark.asyncio
+async def test_action_journal_correlates_trace_and_task_id(tmp_path):
+    journal = ActionJournal(tmp_path / "action_journal.jsonl")
+    engine = ActionExecutionEngine(journal=journal)
+
+    async def runner(action: ActionCall):
+        return result()
+
+    token, _ = begin_trace("react_cycle", trace_id="trace-actions")
+    try:
+        await engine.execute(
+            [ActionCall(tool_name="verify", parameters={"task_id": "task-7"})],
+            runner,
+        )
+    finally:
+        reset_trace(token)
+
+    plans = await journal.recent_plans(include_events=True)
+    started = plans[0]["events"][0]
+    assert started["trace"]["trace_id"] == "trace-actions"
+    assert started["task_ids"] == ["task-7"]
 
 
 @pytest.mark.asyncio

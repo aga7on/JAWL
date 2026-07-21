@@ -1,10 +1,13 @@
-import pytest
-import openai
+import asyncio
 import json
+
+import openai
+import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from src.l3_agent.llm.executor import LLMExecutor
 from src.l3_agent.llm.exceptions import AllKeysExhaustedError
+from src.utils.tracing import begin_trace, reset_trace
 
 
 @pytest.fixture
@@ -34,6 +37,49 @@ async def test_executor_success(mock_executor_deps):
     assert executor.last_call_metrics["status"] == "completed"
     assert executor.last_call_metrics["output_chars"] == len("Success Content")
     assert executor.last_call_metrics["tool_call_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_executor_metrics_include_current_trace(mock_executor_deps):
+    llm, tracker = mock_executor_deps
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    response = MagicMock()
+    response.choices[0].message.tool_calls = None
+    response.choices[0].message.content = "ok"
+    session.chat.completions.create.return_value = response
+    executor = LLMExecutor(llm, tracker)
+    token, _ = begin_trace("test", trace_id="trace-metrics")
+    try:
+        await executor.execute("model", [], 0.0, MagicMock(), "[Log]")
+    finally:
+        reset_trace(token)
+
+    assert executor.last_call_metrics["trace"]["trace_id"] == "trace-metrics"
+
+
+@pytest.mark.asyncio
+async def test_executor_records_downstream_cancellation(mock_executor_deps):
+    llm, tracker = mock_executor_deps
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    started = asyncio.Event()
+
+    async def wait_forever(**kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    session.chat.completions.create.side_effect = wait_forever
+    executor = LLMExecutor(llm, tracker)
+    task = asyncio.create_task(
+        executor.execute("model", [], 0.0, MagicMock(), "[Log]")
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert executor.last_call_metrics["status"] == "cancelled"
 
 
 @pytest.mark.asyncio

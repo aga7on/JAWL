@@ -25,6 +25,7 @@ from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
 from src.utils._tools import redact_sensitive_text
 from src.utils.logger import main_logger
+from src.utils.tracing import current_trace
 
 
 VerificationCheck = Literal[
@@ -348,6 +349,7 @@ if errors:
                 "finished_at": None,
                 "head_before": fingerprint_before["head"],
                 "fingerprint_before": fingerprint_before["fingerprint"],
+                "trace": current_trace(),
             }
             await self._persist_run(task_id, run, start=True)
             run_persisted = True

@@ -41,6 +41,7 @@ class AgentState(BaseModel):
     current_step: int = 1  # Current reasoning step within a single wakeup
     max_react_steps: int = 15
     heartbeat_interval: int = 180
+    current_trace_id: str = ""
 
     # Current goal to maintain focus during long tasks (skill available at Meta interface level 0)
     current_goal: str = ""
@@ -130,6 +131,7 @@ class AgentState(BaseModel):
 * Temperature: {self.temperature}
 
 * ReAct Step: {self.current_step}/{self.max_react_steps}
+* Current Trace ID: {self.current_trace_id or "none"}
 * Input Tokens (current step): {self.last_input_tokens}
 
 {goal_str}

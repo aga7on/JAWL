@@ -11,6 +11,7 @@ from src.l2_interfaces.host.os.skills.coding_verification import (
 from src.l2_interfaces.host.os.skills.coding_workspaces import (
     HostOSCodingWorkspaces,
 )
+from src.utils.tracing import begin_trace, reset_trace
 
 
 def run_git(cwd: Path, *args: str) -> None:
@@ -71,8 +72,13 @@ async def test_coding_plan_persists_dependencies_evidence_and_commit_gate(os_cli
     assert "dependencies are incomplete" in dependency_rejected.message
 
     (workspace / "app.py").write_text("value = 2\n", encoding="utf-8")
-    verified = await verifier.run_coding_verification("plan-task")
+    verify_token, _ = begin_trace("test", trace_id="trace-verification")
+    try:
+        verified = await verifier.run_coding_verification("plan-task")
+    finally:
+        reset_trace(verify_token)
     assert verified.is_success is True, verified.message
+    assert json.loads(verified.message)["trace"]["trace_id"] == "trace-verification"
     incomplete_commit = await workspaces.commit_coding_workspace(
         "plan-task", "change value"
     )
@@ -126,9 +132,17 @@ async def test_coding_plan_persists_dependencies_evidence_and_commit_gate(os_cli
     assert len(history["items"]) == 4
     assert history["has_more"] is False
 
-    committed = await workspaces.commit_coding_workspace("plan-task", "change value")
+    commit_token, _ = begin_trace("test", trace_id="trace-commit")
+    try:
+        committed = await workspaces.commit_coding_workspace(
+            "plan-task", "change value"
+        )
+    finally:
+        reset_trace(commit_token)
     assert committed.is_success is True, committed.message
-    assert json.loads(committed.message)["plan_completion_bypassed"] is False
+    commit_payload = json.loads(committed.message)
+    assert commit_payload["plan_completion_bypassed"] is False
+    assert commit_payload["trace"]["trace_id"] == "trace-commit"
     assert (await workspaces.remove_coding_workspace("plan-task")).is_success
 
 

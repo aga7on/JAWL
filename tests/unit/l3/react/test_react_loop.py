@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.l0_state.agent.state import AgentStatus
 from src.l3_agent.react.loop import ReactLoop
@@ -34,7 +35,11 @@ async def test_react_empty_actions_exit(mock_execute_skill, mock_dependencies):
     assert deps["agent_state"].state == AgentStatus.IDLE
     mock_execute_skill.assert_not_called()
     deps["sql_ticks"].save_tick.assert_awaited_once()
+    saved = deps["sql_ticks"].save_tick.await_args.kwargs
+    assert saved["results"]["trace"]["kind"] == "react_cycle"
+    assert saved["results"]["trace"]["trace_id"]
     assert deps["agent_state"].current_step == 1
+    assert deps["agent_state"].current_trace_id == ""
 
 
 @pytest.mark.asyncio
@@ -75,6 +80,30 @@ async def test_react_protocol_error_is_persisted_before_retry(mock_dependencies)
     assert protocol["results"]["status"] == "protocol_error"
     assert "not valid tool json" in protocol["results"]["response_excerpt"]
     assert deps["agent_state"].last_action_error
+
+
+@pytest.mark.asyncio
+async def test_react_cancellation_persists_terminal_tick(mock_dependencies):
+    deps = mock_dependencies
+    started = asyncio.Event()
+
+    async def wait_for_cancel(**kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    deps["executor"].execute.side_effect = wait_for_cancel
+    loop = ReactLoop(**deps)
+    task = asyncio.create_task(loop.run("TEST", {}, missed_events=[]))
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    saved = deps["sql_ticks"].save_tick.await_args.kwargs
+    assert saved["results"]["status"] == "cycle_cancelled"
+    assert saved["results"]["trace"]["trace_id"]
+    assert deps["agent_state"].state == AgentStatus.IDLE
+    assert deps["agent_state"].current_trace_id == ""
 
 
 @pytest.mark.asyncio
