@@ -29,6 +29,20 @@ event-driven identity, local memory, interfaces, heartbeat, or personality model
 This contract is the foundation for later worktree isolation, durable action
 journaling, checkpoint/rewind, native patch application, and coding evaluation.
 
+## Finite script-session contract
+
+- A Python script may be started as a finite background session and returns a
+  stable session ID immediately instead of holding one ReAct action open.
+- Status, exit code, timestamps, bounded log location, and terminal reason are
+  persisted atomically below `sandbox/_system/process_sessions`.
+- Poll and join operations are bounded; one wait call cannot exceed 60 seconds.
+  Hard job timeouts may be longer and terminate the exact owned process tree.
+- Cancellation is permitted only for the exact live handle owned by the current
+  JAWL process. A restart marks prior running records `interrupted` and never
+  guesses that a reused PID still belongs to JAWL.
+- Finite sessions are intentionally distinct from long-lived daemon management.
+  They fit downloads, builds, tests, and scripts whose eventual exit matters.
+
 ## Delegated-work control contract
 
 - Swarm work is persisted before its `asyncio.Task` is created. The registry

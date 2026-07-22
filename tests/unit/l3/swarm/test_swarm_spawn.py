@@ -282,6 +282,55 @@ async def test_cancel_skill_and_shutdown_await_workers(mock_loop_class, swarm_ma
     assert not swarm_manager.active_tasks
 
 
+@pytest.mark.asyncio
+@patch("src.l3_agent.swarm.spawn.SubagentLoop")
+async def test_active_worker_accepts_bounded_control_message(
+    mock_loop_class, swarm_manager
+):
+    started = asyncio.Event()
+
+    async def wait_forever():
+        started.set()
+        await asyncio.Event().wait()
+
+    mock_loop_class.return_value = MagicMock(run=wait_forever)
+    spawned = await swarm_manager.spawn_subagent("coder", "long task")
+    delegation_id = spawned.message.split("coder_", 1)[1].split(" ", 1)[0]
+    await started.wait()
+
+    sent = await swarm_manager.send_delegation_message(
+        delegation_id, "Inspect the exact state before retrying."
+    )
+    provider = mock_loop_class.call_args.kwargs["control_message_provider"]
+
+    assert sent.is_success is True
+    assert provider() == ["Inspect the exact state before retrying."]
+    assert provider() == []
+    await swarm_manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_wait_and_read_exact_delegation_report(swarm_manager):
+    delegation_id = "report123"
+    relative = "sandbox/_system/subagents/coder_report123.md"
+    report_path = swarm_manager.root_dir / relative
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("verified worker report", encoding="utf-8")
+    swarm_manager.registry.create(delegation_id, "coder", "task")
+    swarm_manager.registry.transition(delegation_id, "running")
+    swarm_manager.registry.transition(
+        delegation_id, "completed", report_path=relative
+    )
+
+    waited = await swarm_manager.wait_for_delegation(delegation_id, 0)
+    report = await swarm_manager.get_delegation_report(delegation_id)
+
+    assert waited.is_success is True
+    assert '"status": "completed"' in waited.message
+    assert report.is_success is True
+    assert "verified worker report" in report.message
+
+
 def test_swarm_manager_dynamic_docstring(mock_registry, tmp_path):
     config = SwarmConfig(enabled=True, subagent_model="model")
 

@@ -99,6 +99,23 @@ returns before/after workspace fingerprints. Legacy `execute_shell_command`
 remains a separate ROOT-only compatibility path and is not used by the coding
 workflow.
 
+### Finite script sessions
+
+For a script whose duration is longer than one tool call, use
+`HostOSProcessSessions.start_script_session` instead of a daemon or a shell
+background operator. It starts one finite Python process and returns a
+12-character session ID. `get_script_session` is non-blocking, while
+`wait_for_script_session` performs a bounded wait of at most 60 seconds and
+returns the current status, exact exit code when known, and a bounded log tail.
+
+Every session has its own hard runtime limit (1–3600 seconds). Timeout,
+cancellation, and JAWL shutdown terminate the exact current-process tree.
+Session metadata is retained in protected storage; a running record found after
+a JAWL restart is marked `interrupted` and is never mistaken for a live owned
+handle. Only finite Python scripts are supported. At SANDBOX/OBSERVER access
+they must be inside `sandbox/` and run through the existing sandbox guard. Use
+`start_daemon` only for intentionally persistent services.
+
 ### One-shot approvals and command profiles
 
 Set `coding_approval_mode: required` to require an operator decision for every

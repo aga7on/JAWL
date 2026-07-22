@@ -35,12 +35,13 @@ def test_host_os_plugin_setup(tmp_path):
     assert "os" in container.l0_states
 
     # 2. Компоненты жизненного цикла (Events) должны быть возвращены
-    assert len(lifecycle_components) == 2
+    assert len(lifecycle_components) == 3
     assert lifecycle_components[0].__class__.__name__ == "HostOSEvents"
     assert lifecycle_components[1].__class__.__name__ == (
         "HostOSCodingLanguageServer"
     )
     assert container.coding_lsp is lifecycle_components[1]
+    assert lifecycle_components[2].__class__.__name__ == "HostOSProcessSessions"
 
     # 3. Контекст должен быть зарегистрирован в реестре ядра
     container.context_registry.register_provider.assert_called_once()
@@ -63,5 +64,6 @@ def test_host_os_plugin_adds_approval_notifier_only_for_desktop_opt_in(tmp_path)
     assert [item.__class__.__name__ for item in lifecycle] == [
         "HostOSEvents",
         "HostOSCodingLanguageServer",
+        "HostOSProcessSessions",
         "HostOSCodingApprovalNotifications",
     ]

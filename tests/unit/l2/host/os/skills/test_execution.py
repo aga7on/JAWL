@@ -32,6 +32,27 @@ async def test_execute_shell_command_safe(os_client):
     assert "Command exited with code 0" in res.message
 
 
+def test_process_guard_allows_unrelated_target_with_jawl_path_later():
+    command = (
+        "taskkill /F /IM Sotis.exe 2>nul & "
+        "copy /Y G:\\AI\\JAWL-Coding\\sandbox\\build.dll G:\\App\\build.dll"
+    )
+
+    assert HostOSExecution._targets_protected_process(command) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "taskkill /F /IM python.exe",
+        "pkill python",
+        "Stop-Process -Name JAWL",
+    ],
+)
+def test_process_guard_blocks_protected_process_names(command):
+    assert HostOSExecution._targets_protected_process(command) is True
+
+
 @pytest.mark.asyncio
 @patch("src.l2_interfaces.host.os.skills.execution.psutil.Process")
 async def test_execution_kill_process_not_found(mock_process, os_client):

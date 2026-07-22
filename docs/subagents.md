@@ -17,6 +17,18 @@ current-process task handle; it never guesses or signals an unrelated process.
 Graceful system shutdown cancels and awaits every active worker before closing
 the shared LLM clients and EventBus.
 
+`SwarmManager.wait_for_delegation(delegation_id, timeout_seconds)` provides a
+bounded join operation (maximum 60 seconds) without blocking the framework
+indefinitely. `get_delegation_report` resolves the report only through the exact
+durable record and refuses paths outside protected report storage.
+
+An operator can steer a still-running local worker with
+`send_delegation_message`. Messages are bounded to 4000 characters, the
+in-memory inbox is capped at 20, and delivery occurs only at the next ReAct step
+boundary. It cannot inject into an unrelated or prior-process worker. This gives
+the parent a controlled course-correction channel while preserving the worker's
+isolated context and final-report contract.
+
 Final report calls are identity-bound inside the worker loop: the supplied role
 and subagent ID must match the worker that is executing the action. This prevents
 one worker (or a hallucinated tool payload) from completing another worker's

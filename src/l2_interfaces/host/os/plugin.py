@@ -15,6 +15,7 @@ from src.l2_interfaces.host.os.coding_approval_notifications import (
 )
 
 from src.l2_interfaces.host.os.skills.execution import HostOSExecution
+from src.l2_interfaces.host.os.skills.process_sessions import HostOSProcessSessions
 from src.l2_interfaces.host.os.skills.monitoring import HostOSMonitoring
 from src.l2_interfaces.host.os.skills.network import HostOSNetwork
 from src.l2_interfaces.host.os.skills.desktop import HostOSDesktop
@@ -74,7 +75,12 @@ class HostOsPlugin(BaseInterface):
             host_os_client=client, state=state, event_bus=container.event_bus
         )
 
-        register_instance(HostOSExecution(client))
+        execution = HostOSExecution(client)
+        register_instance(execution)
+        process_sessions = HostOSProcessSessions(
+            client, execution, event_bus=container.event_bus
+        )
+        register_instance(process_sessions)
         register_instance(HostOSNetwork(client))
         register_instance(HostOSMonitoring(client, events))
         register_instance(HostOSDeploy(client))
@@ -152,7 +158,7 @@ class HostOsPlugin(BaseInterface):
         )
 
         main_logger.info("[Host OS] Interface loaded.")
-        lifecycle = [events, coding_lsp]
+        lifecycle = [events, coding_lsp, process_sessions]
         if approval_notifications is not None:
             lifecycle.append(approval_notifications)
         return lifecycle

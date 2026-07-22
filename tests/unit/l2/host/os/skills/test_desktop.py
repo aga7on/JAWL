@@ -56,6 +56,20 @@ async def test_desktop_take_screenshot(mock_grab, os_client):
 
 @pytest.mark.asyncio
 @patch("src.l2_interfaces.host.os.skills.desktop.ImageGrab.grab")
+async def test_desktop_take_screenshot_accepts_save_path_alias(mock_grab, os_client):
+    desktop = HostOSDesktop(os_client)
+    mock_image = MagicMock()
+    mock_grab.return_value = mock_image
+    mock_image.save.side_effect = lambda path: path.write_bytes(b"image")
+
+    res = await desktop.take_screenshot(save_path="sandbox/alias-screen.png")
+
+    assert res.is_success is True
+    assert mock_image.save.call_args[0][0].name == "alias-screen.png"
+
+
+@pytest.mark.asyncio
+@patch("src.l2_interfaces.host.os.skills.desktop.ImageGrab.grab")
 async def test_desktop_take_screenshot_headless_fallback(mock_grab, os_client):
     """Тест: обработка ошибки, если монитор not found (VPS/Server)."""
     desktop = HostOSDesktop(os_client)

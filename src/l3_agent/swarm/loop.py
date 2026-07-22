@@ -7,7 +7,7 @@ Enforces reporting constraints (Anti-Laziness Guard) on execution completion.
 """
 
 import json
-from typing import Dict, List, Tuple, Optional
+from typing import Callable, Dict, List, Tuple, Optional
 
 from src.utils.logger import swarm_logger
 
@@ -35,6 +35,7 @@ class SubagentLoop:
         context_builder: SwarmContextBuilder,
         allowed_skills: List[str],
         max_steps: int = 15,
+        control_message_provider: Optional[Callable[[], List[str]]] = None,
     ) -> None:
         """
         Initializes the subagent loop.
@@ -62,6 +63,7 @@ class SubagentLoop:
         self.allowed_skills = allowed_skills + ["SubagentReport.submit_final_report"]
 
         self.max_steps = max_steps
+        self.control_message_provider = control_message_provider
 
         self.history: List[Dict[str, str]] = []
         self.is_done = False
@@ -190,6 +192,19 @@ class SubagentLoop:
         context = self.context_builder.build(
             self.subagent_id, self.task_description, self.history
         )
+        if self.control_message_provider is not None:
+            control_messages = self.control_message_provider()
+            if control_messages:
+                rendered = "\n\n".join(
+                    f"[{index}] {message}"
+                    for index, message in enumerate(control_messages, start=1)
+                )
+                context += (
+                    "\n\n## ORCHESTRATOR CONTROL MESSAGES\n"
+                    "These messages are new steering from the parent agent. "
+                    "Acknowledge them through your next concrete actions or final report.\n"
+                    + rendered
+                )
         messages = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": context},

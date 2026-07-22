@@ -13,6 +13,7 @@ import time
 import subprocess
 import uuid
 import traceback
+import re
 
 from src.utils.logger import main_logger
 from src.utils._tools import truncate_text
@@ -32,6 +33,42 @@ class HostOSExecution:
 
     def __init__(self, host_os_client: HostOSClient):
         self.host_os = host_os_client
+
+    @staticmethod
+    def _targets_protected_process(command: str) -> bool:
+        """Return True only when a termination clause targets JAWL/Python itself.
+
+        Paths used by later clauses may legitimately contain ``JAWL-Coding``.
+        Inspecting the whole command therefore produces false positives for safe
+        commands such as ``taskkill /IM Sotis.exe & copy ... JAWL-Coding ...``.
+        """
+
+        termination = re.compile(
+            r"(?:^|[\s\"'(])(?:taskkill|pkill|kill|stop-process)\b",
+            re.IGNORECASE,
+        )
+        protected_name = re.compile(
+            r"\b(?:python(?:w)?(?:\.exe)?|jawl(?:\.exe)?)\b",
+            re.IGNORECASE,
+        )
+        protected_pids = {os.getpid(), os.getppid()}
+        try:
+            process = psutil.Process(os.getpid())
+            protected_pids.update(parent.pid for parent in process.parents())
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+        for clause in re.split(r"&&|\|\||[;&]", command):
+            if not termination.search(clause):
+                continue
+            if protected_name.search(clause):
+                return True
+            if any(
+                re.search(rf"(?<!\d){pid}(?!\d)", clause)
+                for pid in protected_pids
+            ):
+                return True
+        return False
 
     def _kill_process_tree(self, pid: int) -> None:
         """
@@ -218,12 +255,10 @@ class HostOSExecution:
         Executes raw bash/cmd command in host OS terminal.
         """
 
-        cmd_lower = command.lower()
-        if "taskkill" in cmd_lower or "kill" in cmd_lower or "pkill" in cmd_lower:
-            if "python" in cmd_lower or "jawl" in cmd_lower:
-                return SkillResult.fail(
-                    "SYSTEM DENIED: Attempt to terminate the system python process. This command may stop the main framework system. This action is blocked for security reasons."
-                )
+        if self._targets_protected_process(command):
+            return SkillResult.fail(
+                "SYSTEM DENIED: Attempt to terminate the system python process. This command may stop the main framework system. This action is blocked for security reasons."
+            )
 
         timeout = self.host_os.config.execution_timeout_sec
 

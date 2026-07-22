@@ -9,6 +9,7 @@ import asyncio
 import json
 import uuid
 import traceback
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -68,6 +69,7 @@ class SwarmManager:
         self.semaphore = asyncio.Semaphore(self.config.max_concurrent_workers)
         self.active_tasks: set[asyncio.Task] = set()
         self.tasks_by_id: dict[str, asyncio.Task] = {}
+        self.control_messages: dict[str, list[str]] = {}
 
         self.role_skills: dict[str, list[str]] = {}
         self.active_roles: dict[str, SubagentRole] = {}
@@ -246,11 +248,13 @@ class SwarmManager:
             return SkillResult.fail(f"Could not start delegated worker: {exc}")
         self.active_tasks.add(task)
         self.tasks_by_id[subagent_id] = task
+        self.control_messages[subagent_id] = []
 
         def forget(completed: asyncio.Task) -> None:
             self.active_tasks.discard(completed)
             if self.tasks_by_id.get(subagent_id) is completed:
                 self.tasks_by_id.pop(subagent_id, None)
+            self.control_messages.pop(subagent_id, None)
 
         task.add_done_callback(forget)
 
@@ -269,6 +273,110 @@ class SwarmManager:
         except (OSError, ValueError) as exc:
             return SkillResult.fail(f"Could not inspect delegations: {exc}")
         return SkillResult.ok(json.dumps(records, ensure_ascii=False, indent=2))
+
+    @skill()
+    async def wait_for_delegation(
+        self, delegation_id: str, timeout_seconds: int = 30
+    ) -> SkillResult:
+        """Waits at most 60 seconds for one exact delegation to become terminal."""
+
+        if self.registry is None:
+            return SkillResult.fail("Durable delegation registry is unavailable.")
+        if not isinstance(timeout_seconds, int) or isinstance(timeout_seconds, bool):
+            return SkillResult.fail("timeout_seconds must be an integer between 0 and 60.")
+        if timeout_seconds < 0 or timeout_seconds > 60:
+            return SkillResult.fail("timeout_seconds must be between 0 and 60.")
+
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                record = await asyncio.to_thread(self.registry.get, delegation_id)
+            except (OSError, ValueError) as exc:
+                return SkillResult.fail(f"Could not resolve delegation: {exc}")
+            if record.get("status") in {"completed", "failed", "cancelled", "interrupted"}:
+                return SkillResult.ok(json.dumps(record, ensure_ascii=False, indent=2))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return SkillResult.ok(
+                    json.dumps(
+                        {**record, "wait_timed_out": True},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            await asyncio.sleep(min(0.25, remaining))
+
+    @skill()
+    async def send_delegation_message(
+        self, delegation_id: str, message: str
+    ) -> SkillResult:
+        """Queues bounded steering for an active worker's next safe step boundary."""
+
+        if self.registry is None:
+            return SkillResult.fail("Durable delegation registry is unavailable.")
+        normalized = str(message).strip()
+        if not normalized:
+            return SkillResult.fail("Control message cannot be empty.")
+        if len(normalized) > 4000:
+            return SkillResult.fail("Control message exceeds 4000 characters.")
+        try:
+            record = await asyncio.to_thread(self.registry.get, delegation_id)
+        except (OSError, ValueError) as exc:
+            return SkillResult.fail(f"Could not resolve delegation: {exc}")
+        if record.get("status") not in {"queued", "running"}:
+            return SkillResult.fail(
+                f"Delegation {delegation_id} is already {record.get('status')}."
+            )
+        task = self.tasks_by_id.get(record["id"])
+        inbox = self.control_messages.get(record["id"])
+        if task is None or task.done() or inbox is None:
+            return SkillResult.fail(
+                f"Delegation {delegation_id} has no active local worker handle."
+            )
+        if len(inbox) >= 20:
+            return SkillResult.fail("Worker control inbox is full (20 messages).")
+        inbox.append(normalized)
+        return SkillResult.ok(
+            f"Control message queued for delegation {record['id']} at its next step boundary."
+        )
+
+    @skill()
+    async def get_delegation_report(
+        self, delegation_id: str, max_chars: int = 20000
+    ) -> SkillResult:
+        """Reads a completed worker report through its exact durable registry record."""
+
+        if self.registry is None:
+            return SkillResult.fail("Durable delegation registry is unavailable.")
+        if not isinstance(max_chars, int) or isinstance(max_chars, bool):
+            return SkillResult.fail("max_chars must be an integer between 1 and 50000.")
+        if max_chars < 1 or max_chars > 50000:
+            return SkillResult.fail("max_chars must be between 1 and 50000.")
+        try:
+            record = await asyncio.to_thread(self.registry.get, delegation_id)
+        except (OSError, ValueError) as exc:
+            return SkillResult.fail(f"Could not resolve delegation: {exc}")
+        relative = str(record.get("report_path") or "").strip()
+        if record.get("status") != "completed" or not relative:
+            return SkillResult.fail(
+                f"Delegation {delegation_id} has no completed report (status={record.get('status')})."
+            )
+        reports_root = (
+            self.root_dir / "sandbox" / "_system" / "subagents"
+        ).resolve()
+        report_path = (self.root_dir / relative).resolve()
+        if not report_path.is_relative_to(reports_root) or not report_path.is_file():
+            return SkillResult.fail("Delegation report path is missing or outside protected storage.")
+        content = await asyncio.to_thread(report_path.read_text, encoding="utf-8", errors="replace")
+        truncated = len(content) > max_chars
+        payload = {
+            "delegation_id": record["id"],
+            "status": record["status"],
+            "report_path": relative,
+            "report": content[:max_chars],
+            "truncated": truncated,
+        }
+        return SkillResult.ok(json.dumps(payload, ensure_ascii=False, indent=2))
 
     @skill()
     async def cancel_delegation(self, delegation_id: str) -> SkillResult:
@@ -392,6 +500,9 @@ class SwarmManager:
                     context_builder=context_builder,
                     allowed_skills=actual_skills,
                     max_steps=self.config.context_depth.max_steps,
+                    control_message_provider=lambda: self._drain_control_messages(
+                        subagent_id
+                    ),
                 )
 
                 result = await loop.run()
@@ -637,3 +748,13 @@ class SwarmManager:
             swarm_logger.error(
                 f"[Swarm] Could not publish terminal worker event: {exc}"
             )
+
+    def _drain_control_messages(self, subagent_id: str) -> list[str]:
+        """Return and clear steering queued for one current-process worker."""
+
+        inbox = self.control_messages.get(subagent_id)
+        if not inbox:
+            return []
+        messages = list(inbox)
+        inbox.clear()
+        return messages

@@ -246,18 +246,28 @@ class HostOSDesktop:
     @require_access(HostOSAccessLevel.SANDBOX)
     async def take_screenshot(
         self,
-        filename: str,
+        filename: str = "",
         with_grid: bool = False,
         grid_step: int = 100,
         all_screens: bool = False,
+        save_path: str = "",
     ) -> SkillResult:
         """
         [GUI] Captures main screen screenshot and saves to sandbox.
 
+        filename: Destination path. ``save_path`` is a compatibility alias.
         with_grid: Overlays coordinate grid.
         grid_step: Grid step in pixels.
         """
         try:
+            if filename and save_path and filename != save_path:
+                return SkillResult.fail(
+                    "Specify either filename or save_path, not two different paths."
+                )
+            filename = filename or save_path
+            if not filename:
+                return SkillResult.fail("filename or save_path is required.")
+
             if "/" not in filename and "\\" not in filename:
                 filename = f"sandbox/_system/download/{filename}"
 

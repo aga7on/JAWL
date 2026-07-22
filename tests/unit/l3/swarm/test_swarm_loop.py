@@ -87,3 +87,21 @@ async def test_subagent_report_cannot_spoof_worker_identity(
     mock_call_skill.assert_not_awaited()
     assert loop.report_submitted is False
     assert "identity mismatch" in loop.history[-1]["results"]
+
+
+def test_subagent_injects_control_messages_once(mock_loop_deps):
+    pending = ["Stop guessing and inspect the exact export table."]
+
+    def drain():
+        messages = list(pending)
+        pending.clear()
+        return messages
+
+    loop = SubagentLoop(**mock_loop_deps, control_message_provider=drain)
+
+    first = loop._prepare_messages("System")
+    second = loop._prepare_messages("System")
+
+    assert "ORCHESTRATOR CONTROL MESSAGES" in first[1]["content"]
+    assert "inspect the exact export table" in first[1]["content"]
+    assert "ORCHESTRATOR CONTROL MESSAGES" not in second[1]["content"]

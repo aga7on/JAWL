@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 from pathlib import Path
 
 # Read root paths from the PARENT environment.
 FW_DIR_STR = os.environ.get("JAWL_FRAMEWORK_DIR")
 SB_DIR_STR = os.environ.get("JAWL_SANDBOX_DIR")
 TARGET_SCRIPT = os.environ.get("JAWL_TARGET_SCRIPT")
+SCRIPT_ARGS_RAW = os.environ.get("JAWL_SCRIPT_ARGS", "[]")
 
 if not FW_DIR_STR or not SB_DIR_STR or not TARGET_SCRIPT:
     print("FATAL ERROR: JAWL Sandbox paths not set.")
@@ -71,4 +73,12 @@ globals_dict = {
     "__file__": TARGET_SCRIPT,
     "__builtins__": builtins,
 }
+try:
+    script_args = json.loads(SCRIPT_ARGS_RAW)
+except (TypeError, json.JSONDecodeError):
+    script_args = []
+if not isinstance(script_args, list) or any(not isinstance(item, str) for item in script_args):
+    print("FATAL ERROR: JAWL script arguments are invalid.")
+    sys.exit(1)
+sys.argv = [TARGET_SCRIPT, *script_args]
 exec(code, globals_dict)  # noqa: S102 - intentional, this is a sandbox-runner
