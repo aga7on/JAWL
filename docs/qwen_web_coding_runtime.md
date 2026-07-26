@@ -90,3 +90,17 @@ Sticky account chats, repaired tool envelopes, deterministic sampling, bounded
 background sessions, and controlled workers address reliability. The largest
 remaining latency win is the micro/full prompt router plus better batching and
 catalogue-name feedback, not adding more memory to every request.
+
+# Qwen 3.8 preview context and Thinking
+
+The coding fork uses `qwen3.8-max-preview` for both coding and vision.
+
+Each ReAct cycle now has a stable `X-Session-Id`. Step 1 sends the full
+SOUL/instructions/context bootstrap. QWB keeps that Qwen branch and sends
+changed snapshot lines on later steps. A new cycle starts with a fresh
+bootstrap; this prevents hidden stale context from becoming authoritative.
+
+For this preview model, `enable_thinking: false` is a downstream presentation
+preference only. Qwen Web rejects literal `thinking_enabled:false`, so QWB
+keeps upstream Thinking enabled and strips its private phases before returning
+the OpenAI-compatible answer.

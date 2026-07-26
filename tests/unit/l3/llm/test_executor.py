@@ -82,6 +82,9 @@ async def test_executor_metrics_include_current_trace(mock_executor_deps):
         reset_trace(token)
 
     assert executor.last_call_metrics["trace"]["trace_id"] == "trace-metrics"
+    assert session.chat.completions.create.await_args.kwargs["extra_headers"] == {
+        "X-Session-Id": "jawl-trace-metrics"
+    }
 
 
 @pytest.mark.asyncio

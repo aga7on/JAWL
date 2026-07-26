@@ -3,7 +3,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.l0_state.agent.state import AgentStatus
-from src.l3_agent.react.loop import ReactLoop
+from src.l3_agent.react.loop import ReactLoop, _normalize_tool_output
 
 
 def test_react_dump_context_to_file(mock_dependencies):
@@ -298,3 +298,50 @@ async def test_react_inject_images_success(mock_dependencies, tmp_path):
     assert isinstance(last_msg_content, list)
     assert last_msg_content[0]["type"] == "text"
     assert last_msg_content[1]["type"] == "image_url"
+
+
+@pytest.mark.asyncio
+async def test_react_injects_pending_image_on_first_step(mock_dependencies, tmp_path):
+    loop = ReactLoop(**mock_dependencies)
+    loop.agent_state.last_actions_result = ""
+    fake_img = tmp_path / "telegram.png"
+    fake_img.write_bytes(b"image")
+    messages = [
+        {"role": "system", "content": "System"},
+        {"role": "user", "content": "Inspect"},
+    ]
+
+    result = await loop._inject_images_to_payload(
+        messages, pending_media=[str(fake_img)]
+    )
+
+    assert result[1]["content"][1]["type"] == "image_url"
+    assert result[1]["content"][1]["image_url"]["url"].startswith(
+        "data:image/png;base64,"
+    )
+
+
+def test_collect_pending_media_includes_buffered_and_coalesced_events():
+    primary = {"media_paths": ["primary.jpg"]}
+    events = [
+        {
+            "payload": {"media_paths": ["buffered.png", "primary.jpg"]},
+            "payload_samples": [{"media_paths": ["album.webp"]}],
+        }
+    ]
+
+    assert ReactLoop._collect_pending_media(primary, events) == [
+        "primary.jpg",
+        "buffered.png",
+        "album.webp",
+    ]
+
+
+def test_tool_output_normalization_preserves_valid_unicode():
+    source = "Привет 😀 漢字 العربية ∑→\nnext\x00"
+    normalized = _normalize_tool_output(source)
+
+    assert normalized == "Привет 😀 漢字 العربية ∑→\nnext"
+    repaired = _normalize_tool_output("bad\ud800text")
+    assert repaired == "bad?text"
+    repaired.encode("utf-8", errors="strict")

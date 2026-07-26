@@ -126,3 +126,54 @@ async def test_outgoing_approval_command_is_consumed_before_state_update(
         message_id=43,
     )
     telethon_events._update_state.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_download_visual_media_accepts_image_document(
+    telethon_events, mock_tg_client, tmp_path
+):
+    message = MagicMock()
+    message.id = 77
+    message.media = object()
+    message.photo = None
+    message.document = object()
+    message.file = MagicMock(mime_type="image/png", size=128)
+    client = mock_tg_client.client()
+
+    async def download_media(_message, file):
+        target = tmp_path / "downloaded.png"
+        target.write_bytes(b"png")
+        return str(target)
+
+    client.download_media = AsyncMock(side_effect=download_media)
+    with patch(
+        "src.l2_interfaces.telegram.telethon.events.get_project_root",
+        return_value=tmp_path.parent,
+    ):
+        expected_dir = tmp_path.parent / "sandbox" / "telegram_media"
+
+        async def sandbox_download(_message, file):
+            expected_dir.mkdir(parents=True, exist_ok=True)
+            target = expected_dir / "downloaded.png"
+            target.write_bytes(b"png")
+            return str(target)
+
+        client.download_media.side_effect = sandbox_download
+        paths = await telethon_events._download_visual_media(message)
+
+    assert len(paths) == 1
+    assert paths[0].endswith("downloaded.png")
+
+
+@pytest.mark.asyncio
+async def test_download_visual_media_ignores_non_image_document(
+    telethon_events, mock_tg_client
+):
+    message = MagicMock()
+    message.media = object()
+    message.photo = None
+    message.document = object()
+    message.file = MagicMock(mime_type="application/pdf", size=128)
+
+    assert await telethon_events._download_visual_media(message) == []
+    mock_tg_client.client().download_media.assert_not_awaited()

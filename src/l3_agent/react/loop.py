@@ -38,6 +38,19 @@ from src.l3_agent.skills.schema import AgentResponse, ActionCall, parse_llm_json
 from src.l3_agent.event_buffer import BoundedEventBuffer
 
 
+def _normalize_tool_output(text: str) -> str:
+    """Make tool output safe for JSON/UTF-8 without destroying valid Unicode."""
+    if not text:
+        return text
+    # Replace only invalid, unpaired UTF-16 surrogates. Emoji, CJK, Arabic,
+    # mathematical symbols and other valid scripts must remain intact.
+    normalized = text.encode("utf-8", errors="replace").decode("utf-8")
+    # Tool output is textual. Drop C0 controls that commonly break upstream
+    # JSON/web transports while retaining normal whitespace.
+    return "".join(
+        ch for ch in normalized if ord(ch) >= 0x20 or ch in "\t\n\r"
+    )
+
 class ReactLoop:
     """
     Autonomous agent core.
@@ -324,7 +337,12 @@ class ReactLoop:
 
         messages = copy.deepcopy(messages)
 
-        messages = await self._inject_images_to_payload(messages)
+        pending_media = self._collect_pending_media(
+            payload, self._realtime_events.view()
+        )
+        messages = await self._inject_images_to_payload(
+            messages, pending_media=pending_media
+        )
 
         self.agent_state.last_input_tokens = self.executor.tracker.count_messages_tokens(
             messages
@@ -351,6 +369,7 @@ class ReactLoop:
 
         self.agent_state.update_state(AgentStatus.ACTING)
         results_str = await execute_skill(actions=actions)
+        results_str = _normalize_tool_output(results_str)
 
         self.agent_state.last_thoughts = thoughts
         self.agent_state.last_actions_result = results_str
@@ -575,8 +594,39 @@ class ReactLoop:
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode("utf-8")
 
+    @staticmethod
+    def _collect_pending_media(
+        primary_payload: Optional[Dict[str, Any]],
+        realtime_events: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Collect image paths from the wake event and buffered events in order."""
+
+        ordered: List[str] = []
+        seen = set()
+
+        def add_payload(candidate: Any) -> None:
+            if not isinstance(candidate, dict):
+                return
+            paths = candidate.get("media_paths", [])
+            if not isinstance(paths, list):
+                return
+            for image_path in paths:
+                if not isinstance(image_path, str) or not image_path or image_path in seen:
+                    continue
+                seen.add(image_path)
+                ordered.append(image_path)
+
+        add_payload(primary_payload)
+        for event in realtime_events:
+            if not isinstance(event, dict):
+                continue
+            add_payload(event.get("payload"))
+            for sample in event.get("payload_samples", []):
+                add_payload(sample)
+        return ordered
+
     async def _inject_images_to_payload(
-        self, messages: List[Dict[str, Any]]
+        self, messages: List[Dict[str, Any]], pending_media: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
         Injects Base64 images into the User prompt if a system marker is found.
@@ -588,11 +638,14 @@ class ReactLoop:
             List[Dict[str, Any]]: Messages list with Base64 payloads injected.
         """
 
-        last_result = self.agent_state.last_actions_result
-        if not last_result:
-            return messages
+        last_result = self.agent_state.last_actions_result or ""
+        image_paths = re.findall(
+            r"\[SYSTEM_MARKER_IMAGE_ATTACHED:\s*(.+?)\]", last_result
+        )
 
-        image_paths = re.findall(r"\[SYSTEM_MARKER_IMAGE_ATTACHED:\s*(.+?)\]", last_result)
+        # Also include pending Telegram media
+        if pending_media:
+            image_paths.extend(pending_media)
 
         if not image_paths:
             return messages
@@ -603,7 +656,11 @@ class ReactLoop:
             original_text = user_msg["content"]
             new_content = [{"type": "text", "text": original_text}]
 
-            for img_path in set(image_paths):
+            seen_paths = set()
+            for img_path in image_paths:
+                if img_path in seen_paths:
+                    continue
+                seen_paths.add(img_path)
                 try:
                     path_obj = Path(img_path)
                     if path_obj.exists():

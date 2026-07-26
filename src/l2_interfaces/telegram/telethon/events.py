@@ -8,6 +8,7 @@ chat history (up to 50 messages) to create deep context in EventBus.
 """
 
 import time
+from pathlib import Path
 from typing import Any, TYPE_CHECKING, Dict, Tuple, List, Optional
 
 from telethon import events, utils
@@ -16,7 +17,8 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest, GetPeerDialogsRequest
 from telethon.errors import FloodWaitError
 
-from src.utils._tools import truncate_text
+import uuid
+from src.utils._tools import get_project_root, truncate_text
 from src.utils.logger import main_logger, agent_logger
 from src.utils.event.bus import EventBus
 from src.utils.event.registry import Events
@@ -288,6 +290,73 @@ class TelethonEvents:
             sender_id = getattr(message, "sender_id", None)
         return sender_id
 
+    async def _download_visual_media(self, message: Any) -> List[str]:
+        """Download a supported Telegram image into the sandbox for Qwen vision."""
+
+        media = getattr(message, "media", None)
+        if media is None:
+            return []
+
+        mime_type = ""
+        suffix = ""
+        if getattr(message, "photo", None) is not None:
+            mime_type, suffix = "image/jpeg", ".jpg"
+        elif getattr(message, "document", None) is not None:
+            file_meta = getattr(message, "file", None)
+            raw_mime = getattr(file_meta, "mime_type", "") if file_meta else ""
+            mime_type = raw_mime if isinstance(raw_mime, str) else ""
+            suffix_by_mime = {
+                "image/jpeg": ".jpg",
+                "image/png": ".png",
+                "image/webp": ".webp",
+                "image/gif": ".gif",
+            }
+            suffix = suffix_by_mime.get(mime_type.lower(), "")
+
+        if not suffix:
+            return []
+
+        file_meta = getattr(message, "file", None)
+        raw_size = getattr(file_meta, "size", 0) if file_meta else 0
+        size = raw_size if isinstance(raw_size, int) else 0
+        if size > 20 * 1024 * 1024:
+            main_logger.warning(
+                f"[Telethon] Skipped oversized vision media ({size} bytes)."
+            )
+            return []
+
+        media_dir = get_project_root() / "sandbox" / "telegram_media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        file_name = (
+            f"tg_{getattr(message, 'id', 'unknown')}_"
+            f"{uuid.uuid4().hex[:8]}{suffix}"
+        )
+        requested_path = media_dir / file_name
+        try:
+            downloaded = await self.tg_client.client().download_media(
+                message, file=str(requested_path)
+            )
+            if not downloaded:
+                return []
+            actual_path = Path(str(downloaded)).resolve()
+            sandbox_root = media_dir.resolve()
+            if sandbox_root not in actual_path.parents or not actual_path.is_file():
+                main_logger.warning(
+                    "[Telethon] Ignored vision media downloaded outside its sandbox."
+                )
+                return []
+            if actual_path.stat().st_size > 20 * 1024 * 1024:
+                actual_path.unlink(missing_ok=True)
+                main_logger.warning("[Telethon] Removed oversized downloaded vision media.")
+                return []
+            main_logger.info(
+                f"[Telethon] Vision media downloaded: {actual_path.name} ({mime_type})"
+            )
+            return [str(actual_path)]
+        except Exception as exc:
+            main_logger.warning(f"[Telethon] Failed to download vision media: {exc}")
+            return []
+
     async def _consume_approval_control(self, event: Any) -> bool:
         if self.approval_control is None:
             return False
@@ -328,6 +397,8 @@ class TelethonEvents:
 
         enriched_message = f"{base_text}{fwd_info}{reply_info}".strip()
 
+        media_paths = await self._download_visual_media(msg_obj)
+
         # Dynamic calculation of messages history
         unread_count = await self._get_unread_count(chat)
         limit = min(50, max(self.config.incoming_history_limit, unread_count))
@@ -342,6 +413,8 @@ class TelethonEvents:
             "sender_id": self._message_sender_id(event, msg_obj),
             "msg_id": msg_obj.id,
         }
+        if media_paths:
+            payload["media_paths"] = media_paths
         if history:
             payload["recent_history"] = history
 
@@ -403,6 +476,9 @@ class TelethonEvents:
             "sender_id": self._message_sender_id(event, msg_obj),
             "msg_id": msg_obj.id,
         }
+        media_paths = await self._download_visual_media(msg_obj)
+        if media_paths:
+            payload["media_paths"] = media_paths
 
         if topic_id:
             payload["topic_id"] = topic_id
@@ -475,6 +551,9 @@ class TelethonEvents:
             "chat_id": event.chat_id,
             "msg_id": msg_obj.id,
         }
+        media_paths = await self._download_visual_media(msg_obj)
+        if media_paths:
+            payload["media_paths"] = media_paths
 
         await self.bus.publish(Events.TELETHON_CHANNEL_MESSAGE, **payload)
 

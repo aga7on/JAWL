@@ -112,6 +112,13 @@ class LLMExecutor:
                     kwargs["tool_choice"] = tool_choice
                 if enable_thinking is not None:
                     kwargs["extra_body"] = {"enable_thinking": enable_thinking}
+                trace_id = str(current_trace().get("trace_id") or "").strip()
+                if trace_id:
+                    # QWB uses this stable per-cycle lane to keep one Qwen
+                    # parent_id chain without mixing main/sub-agent contexts.
+                    kwargs["extra_headers"] = {
+                        "X-Session-Id": f"jawl-{trace_id}"
+                    }
 
                 response = await session.chat.completions.create(**kwargs)
 
