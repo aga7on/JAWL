@@ -342,6 +342,54 @@ Invoke-RestMethod http://127.0.0.1:8000/health | ConvertTo-Json -Depth 6
 59. `e737531` — real L1 bootstrap compatibility.
 60. `363bc38` — IPC UTF-8 BOM compatibility.
 
+## Дополнение: Goal Mode и эксплуатационный аудит (27 июля 2026)
+
+После первоначальных 60 инженерных коммитов форк получил отдельный контур
+длительного исполнения уровня современных coding-агентов:
+
+- один durable Goal с атомарным JSON-store, восстановлением после рестарта,
+  состояниями `active/waiting/blocked/complete/cancelled`, явными причинами
+  остановки и планируемым wakeup;
+- компактную Goal-проекцию вместо повторной отправки всей volatile-памяти;
+- стабильный QWB lane на срок Goal с новым epoch после рестарта;
+- provider-accounted token budget и раздельную телеметрию полного локального
+  snapshot против фактически отправленного QWB delta;
+- Goal Protocol v2 с компактным JSON, при этом legacy-ответы продолжают
+  приниматься;
+- verification gate для coding Goal: узкий зелёный тест считается evidence,
+  а завершение требует актуального полного repository gate;
+- детерминированное ожидание без пустых LLM-вызовов.
+
+На основе корреляции `logs/agent.log` и `QWB-JAWL/qwb-debug.log` исправлены
+несколько наблюдавшихся в реальной работе дефектов:
+
+1. Qwen `invalid_input` больше не маскируется мостом под HTTP 500. QWB возвращает
+   400, а JAWL не повторяет тот же многотысячный prompt.
+2. Исчерпание quota возвращает 429 с `Retry-After`, рассчитанным по ближайшему
+   известному cooldown аккаунта; сеть остаётся 503, прочая ошибка upstream —
+   502.
+3. Повторные пустые Heartbeat-циклы получают экспоненциальный backoff. Любое
+   внешнее событие сбрасывает его, а максимум 55 минут сохраняет Qwen-чат в
+   пределах часового TTL.
+4. `pytest` ограничен каталогом `tests`, поэтому executable-примеры в
+   `sandbox/` больше не исполняются при обычном repository gate.
+5. Telethon pre-flight ограничен по времени и не объявляет существующую
+   session сломанной только из-за временного сетевого timeout.
+
+Основное меню дополнено экранами `Runtime & Modes` и `Durable Goals`.
+Dashboard показывает состояние JAWL, QWB и аккаунтов, MCP, Thinking,
+tool transport, очередь Heartbeat/backoff и verification Goal. Runtime control
+идёт по отдельному bounded localhost IPC и не создаёт пользовательское
+сообщение/Heartbeat. Завершение orphan bridge теперь возможно только для
+идентифицированного процесса QWB и требует подтверждения.
+
+Документация:
+
+- `docs/yaml/settings/goal_mode.md`;
+- `docs/yaml/settings/heartbeat.md`;
+- `docs/qwen_web_coding_runtime.md`;
+- `G:\AI\QWB-JAWL\CHAT_CONTINUITY.md`.
+
 ## Известные ограничения и дальнейшие улучшения
 
 - Нужна органическая проверка качества `first_step` Thinking после прекращения

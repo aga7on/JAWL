@@ -143,15 +143,23 @@ def _telethon_auth_flow() -> bool:
                 kwargs["connection"] = connection_cls
 
             client = TelegramClient(
-                str(session_path), clean_api_id, api_hash, **kwargs
+                str(session_path),
+                clean_api_id,
+                api_hash,
+                connection_retries=2,
+                retry_delay=1,
+                timeout=10,
+                **kwargs,
             )
 
-            await client.connect()
-            if not await client.is_user_authorized():
+            await asyncio.wait_for(client.connect(), timeout=25)
+            if not await asyncio.wait_for(
+                client.is_user_authorized(), timeout=10
+            ):
                 print_info(" Telegram session not found. Authorization required.")
                 await client.start()
 
-            me = await client.get_me()
+            me = await asyncio.wait_for(client.get_me(), timeout=15)
             name = me.first_name or "Unknown"
             if getattr(me, "last_name", None):
                 name += f" {me.last_name}"
@@ -159,12 +167,27 @@ def _telethon_auth_flow() -> bool:
             print_success(f"Telegram session active (User: {name}).")
             return True
 
+        except asyncio.TimeoutError:
+            if session_path.with_suffix(".session").exists():
+                print_info(
+                    " Telegram pre-flight timed out, but an authorized session "
+                    "file exists. Startup will continue and the runtime "
+                    "Telethon client will reconnect independently."
+                )
+                return True
+            print_error(
+                "Telegram pre-flight timed out and no saved session exists."
+            )
+            return False
         except Exception as e:
             print_error(f"Error authorizing Telethon: {e}")
             return False
         finally:
             if client and client.is_connected():
-                await client.disconnect()
+                try:
+                    await asyncio.wait_for(client.disconnect(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
 
     print_info(" Verifying Telegram (Telethon) session...")
     return asyncio.run(_auth())

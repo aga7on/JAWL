@@ -608,6 +608,26 @@ class ContextDepthConfig(BaseModel):
     rag: RAGConfig = Field(default_factory=RAGConfig)
 
 
+class GoalModeConfig(BaseModel):
+    """Durable long-running execution policy."""
+
+    enabled: bool = True
+    compact_context: bool = True
+    compact_max_chars: int = Field(default=24000, ge=8000, le=100000)
+    suppress_waiting_heartbeats: bool = True
+
+
+class IdleHeartbeatBackoffConfig(BaseModel):
+    """Reduce repeated autonomous no-op calls without delaying real events."""
+
+    enabled: bool = True
+    no_op_threshold: int = Field(default=2, ge=1, le=20)
+    max_multiplier: int = Field(default=8, ge=1, le=144)
+    # QWB expires an inactive server-side Qwen chat after one hour by default.
+    # Stay below that boundary so token saving does not destroy continuity.
+    max_interval_sec: int = Field(default=3300, ge=60, le=86400)
+
+
 class EventAccelerationConfig(BaseModel):
     active_cycle_policy: Literal["interrupt", "defer", "append"] = "interrupt"
     queue_max_events: int = Field(default=100, ge=10, le=1000)
@@ -812,6 +832,10 @@ class SystemConfig(BaseModel):
     )
     lifecycle_hooks: LifecycleHooksConfig = Field(default_factory=LifecycleHooksConfig)
     context_depth: ContextDepthConfig = Field(default_factory=ContextDepthConfig)
+    goal_mode: GoalModeConfig = Field(default_factory=GoalModeConfig)
+    idle_heartbeat_backoff: IdleHeartbeatBackoffConfig = Field(
+        default_factory=IdleHeartbeatBackoffConfig
+    )
     swarm: SwarmConfig = Field(default_factory=SwarmConfig)
     tree_of_thoughts: TreeOfThoughtsConfig = Field(default_factory=TreeOfThoughtsConfig)
     subconscious: SubconsciousConfig = Field(default_factory=SubconsciousConfig)

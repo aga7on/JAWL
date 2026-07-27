@@ -14,6 +14,7 @@ from src.l2_interfaces.host.terminal.skills.messages import HostTerminalMessages
 from src.l3_agent.skills.registry import register_instance
 from src.l3_agent.context.registry import ContextSection
 from src.system.container import SystemContainer
+from src.system.operator_control import OperatorControl
 from src.utils.settings import InterfacesConfig
 
 
@@ -43,6 +44,7 @@ class HostTerminalPlugin(BaseInterface):
             data_dir=container.local_data_dir,
             agent_name=container.settings.identity.agent_name,
             timezone=container.settings.system.timezone,
+            control_handler=OperatorControl(container).handle,
         )
 
         events = HostTerminalEvents(client=client, event_bus=container.event_bus)

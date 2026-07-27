@@ -5,11 +5,10 @@ Provides an interactive console selection for agent controls, chat terminal,
 log viewers, configuration wizards, and database managers.
 """
 
-import re
-import subprocess
 import sys
 import time
 
+import psutil
 import questionary
 
 from src.cli.widgets.ui import (
@@ -24,12 +23,39 @@ from src.cli.screens.agent_control import start_agent_screen, stop_agent_screen
 from src.cli.screens.setup_wizard import setup_wizard_screen
 from src.cli.screens.database_manager import database_manager_screen
 from src.cli.screens.terminal_chat import terminal_chat_screen
+from src.cli.screens.goals import goals_screen
+from src.cli.screens.runtime import runtime_screen
+
+
+def _bridge_processes() -> list[psutil.Process]:
+    """Return only identifiable QWB Node processes, never arbitrary port owners."""
+
+    matches = []
+    for process in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            command = " ".join(process.info.get("cmdline") or []).lower()
+            executable = str(process.info.get("name") or "").lower()
+            if executable not in {"node", "node.exe"}:
+                continue
+            if "qwb-jawl" not in command:
+                continue
+            if not any(
+                name in command
+                for name in ("qwen-bridge-server.cjs", "qwb-cli.cjs")
+            ):
+                continue
+            matches.append(process)
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            continue
+    return matches
 
 
 def main_menu() -> None:
     choices = [
         questionary.Choice("[>] Start Agent", "start"),
         questionary.Choice("[■] Stop Agent", "stop"),
+        questionary.Choice("[=] Runtime & Modes", "runtime"),
+        questionary.Choice("[G] Durable Goals", "goals"),
         questionary.Choice("[@] Chat", "terminal"),
         questionary.Choice("[i] Logs", "logs"),
         questionary.Choice("[*] Setup Wizard", "setup"),
@@ -68,6 +94,12 @@ def main_menu() -> None:
         elif result == "terminal":
             terminal_chat_screen()
 
+        elif result == "runtime":
+            runtime_screen()
+
+        elif result == "goals":
+            goals_screen()
+
         elif result == "logs":
             log_choice = questionary.select(
                 "Select a log stream to view:",
@@ -92,15 +124,22 @@ def main_menu() -> None:
             if log_choice == "clear":
                 from src.cli.screens.logs import LOG_DIR
 
+                if not questionary.confirm(
+                    "Clear current top-level log streams?", default=False
+                ).ask():
+                    continue
+                cleared = 0
+                failed = 0
                 if LOG_DIR.exists():
                     for log_file in LOG_DIR.glob("*.log*"):
                         try:
-                            # Safely clear the file without deleting to preserve active file descriptors
+                            # Preserve active descriptors while clearing.
                             with open(log_file, "w", encoding="utf-8") as f:
                                 f.truncate(0)
-                        except Exception:
-                            pass
-                print_info(" All log files cleared successfully.")
+                            cleared += 1
+                        except OSError:
+                            failed += 1
+                print_info(f" Cleared {cleared} log file(s); failed: {failed}.")
                 time.sleep(1.5)
             elif log_choice and log_choice != "back":
                 launch_in_new_window(f"--logs-{log_choice}")
@@ -110,30 +149,28 @@ def main_menu() -> None:
 
         elif result == "kill_bridges":
             draw_header()
+            bridges = _bridge_processes()
+            if bridges and not questionary.confirm(
+                "Terminate the identified QWB bridge process(es)?",
+                default=False,
+            ).ask():
+                continue
             killed = 0
-            try:
-                out = subprocess.check_output(
-                    ["netstat", "-ano"], shell=True, text=True, encoding="oem"
-                )
-                for line in out.splitlines():
-                    if ":8000" in line and "LISTENING" in line:
-                        m = re.search(r"(\d+)\s*$", line)
-                        if m:
-                            pid = m.group(1)
-                            try:
-                                subprocess.run(
-                                    ["taskkill", "/F", "/PID", pid],
-                                    capture_output=True, shell=True
-                                )
-                                killed += 1
-                            except Exception:
-                                pass
-            except Exception:
-                pass
+            for process in bridges:
+                try:
+                    process.terminate()
+                    process.wait(timeout=5)
+                    killed += 1
+                except psutil.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=3)
+                    killed += 1
+                except (psutil.AccessDenied, psutil.NoSuchProcess):
+                    continue
             if killed:
-                print_info(f" Killed {killed} bridge process(es) on port 8000.")
+                print_info(f" Terminated {killed} identified QWB process(es).")
             else:
-                print_info(" No bridge processes found on port 8000.")
+                print_info(" No identifiable QWB bridge processes found.")
             time.sleep(1.5)
 
         elif result == "db_manager":

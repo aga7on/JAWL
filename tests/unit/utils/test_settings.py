@@ -281,3 +281,26 @@ def test_load_config_auto_recover(tmp_path):
 
         assert settings.identity.agent_name == "RecoveredAgent"
         assert interfaces.host.os.enabled is True
+
+
+def test_goal_mode_config_parsing_and_validation():
+    config = SystemConfig.model_validate(
+        {
+            "goal_mode": {
+                "enabled": False,
+                "compact_context": False,
+                "compact_max_chars": 12000,
+                "suppress_waiting_heartbeats": False,
+            }
+        }
+    )
+
+    assert config.goal_mode.enabled is False
+    assert config.goal_mode.compact_context is False
+    assert config.goal_mode.compact_max_chars == 12000
+    assert config.goal_mode.suppress_waiting_heartbeats is False
+
+    with pytest.raises(ValueError):
+        SystemConfig.model_validate(
+            {"goal_mode": {"compact_max_chars": 7999}}
+        )

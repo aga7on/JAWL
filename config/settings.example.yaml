@@ -40,7 +40,31 @@ system:
   continuous_cycle: false
   proactive_guidance: false
 
+  # Durable long-running execution. JAWL stores one active goal locally,
+  # continues it across Heartbeat cycles/restarts, and gives QWB a stable lane.
+  goal_mode:
+    enabled: true
+    compact_context: true
+    compact_max_chars: 24000
+    suppress_waiting_heartbeats: true
+
   # Подробнее: docs/yaml/settings/event_acceleration.md
+  # Repeated timer heartbeats which complete without any action back off
+  # exponentially. Incoming events are never delayed by this policy.
+  idle_heartbeat_backoff:
+    enabled: true
+    no_op_threshold: 2
+    max_multiplier: 8
+    # Keep below QWB's default one-hour active-chat expiry.
+    max_interval_sec: 3300
+
+  # Repeated timer heartbeats which complete without any action back off
+  # exponentially. Incoming events are never delayed by this policy.
+  idle_heartbeat_backoff:
+    enabled: true
+    no_op_threshold: 2
+    max_multiplier: 8
+
   event_acceleration:
     # Keep long provider requests alive; yield before stale actions and run the
     # urgent event as the next primary ReAct trigger.

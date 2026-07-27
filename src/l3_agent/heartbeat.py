@@ -17,7 +17,11 @@ from src.l3_agent.event_buffer import BoundedEventBuffer, EventBufferOutcome
 
 if TYPE_CHECKING:
     from src.l3_agent.react.loop import ReactLoop
-    from src.utils.settings import EventAccelerationConfig
+    from src.l3_agent.goals.manager import GoalManager
+    from src.utils.settings import (
+        EventAccelerationConfig,
+        IdleHeartbeatBackoffConfig,
+    )
 
 
 class Heartbeat:
@@ -33,6 +37,8 @@ class Heartbeat:
         continuous_cycle: bool,
         accel_config: "EventAccelerationConfig",
         timezone: int,
+        goal_manager: Optional["GoalManager"] = None,
+        idle_backoff_config: Optional["IdleHeartbeatBackoffConfig"] = None,
     ) -> None:
         """
         Initializes the heartbeat orchestrator.
@@ -50,6 +56,11 @@ class Heartbeat:
         self.continuous_cycle = continuous_cycle
         self.accel_config = accel_config
         self.timezone = timezone
+        self.goal_manager = goal_manager
+        self._suppressed_goal_heartbeats = 0
+        self.idle_backoff_config = idle_backoff_config
+        self._consecutive_idle_heartbeats = 0
+        self._idle_interval_multiplier = 1
 
         self._wake_event = asyncio.Event()
         self._is_running: bool = False
@@ -116,7 +127,70 @@ class Heartbeat:
                 self._active_react_task and not self._active_react_task.done()
             ),
             "deferred_wakeup": self._deferred_wakeup,
+            "suppressed_goal_heartbeats": self._suppressed_goal_heartbeats,
+            "idle_heartbeat_backoff": {
+                "consecutive_no_ops": self._consecutive_idle_heartbeats,
+                "interval_multiplier": self._idle_interval_multiplier,
+            },
         }
+
+    def _reset_idle_backoff(self) -> None:
+        self._consecutive_idle_heartbeats = 0
+        self._idle_interval_multiplier = 1
+
+    def _record_cycle_outcome(
+        self, event_name: str, missed_events: list[Dict[str, Any]]
+    ) -> None:
+        """Back off only proven empty timer cycles; events always reset it."""
+
+        config = self.idle_backoff_config
+        enabled = bool(getattr(config, "enabled", False))
+        outcome = getattr(self.react_loop, "last_cycle_outcome", None)
+        eligible = (
+            enabled
+            and not self.continuous_cycle
+            and event_name == "HEARTBEAT"
+            and not missed_events
+            and isinstance(outcome, dict)
+            and outcome.get("status") == "completed"
+            and not outcome.get("had_actions")
+        )
+        if not eligible:
+            self._reset_idle_backoff()
+            return
+
+        self._consecutive_idle_heartbeats += 1
+        threshold = max(1, int(getattr(config, "no_op_threshold", 2)))
+        max_multiplier = max(1, int(getattr(config, "max_multiplier", 8)))
+        max_interval = max(
+            60, int(getattr(config, "max_interval_sec", 3300))
+        )
+        if self.heartbeat_interval > 0:
+            max_multiplier = min(
+                max_multiplier,
+                max(1, max_interval // self.heartbeat_interval),
+            )
+        if self._consecutive_idle_heartbeats < threshold:
+            multiplier = 1
+        else:
+            multiplier = min(
+                max_multiplier,
+                2 ** (self._consecutive_idle_heartbeats - threshold + 1),
+            )
+        changed = multiplier != self._idle_interval_multiplier
+        self._idle_interval_multiplier = multiplier
+        if multiplier > 1 and self.heartbeat_interval > 0:
+            self._next_tick_time = max(
+                self._next_tick_time,
+                time.time() + self.heartbeat_interval * multiplier,
+            )
+        if changed:
+            agent_logger.info(
+                "[Heartbeat] Repeated empty autonomous cycles detected; "
+                f"next timer interval is {multiplier}x "
+                f"(no_ops={self._consecutive_idle_heartbeats}). "
+                "External events remain immediate."
+            )
 
     def answer_to_event(
         self, level: EventLevel, event_name: str, payload: Optional[Dict[str, Any]] = None
@@ -132,6 +206,7 @@ class Heartbeat:
 
         now = time.time()
         payload = payload or {}
+        self._reset_idle_backoff()
         time_str = get_now_formatted(self.timezone, fmt="%H:%M:%S")
 
         event_data = {
@@ -305,6 +380,21 @@ class Heartbeat:
                 self._next_tick_time = time.time() + self.heartbeat_interval
                 self._deferred_wakeup = False
 
+                if (
+                    self._wake_reason == "HEARTBEAT"
+                    and not missed_events
+                    and self.goal_manager is not None
+                    and not self.goal_manager.should_run_heartbeat()
+                ):
+                    self._suppressed_goal_heartbeats += 1
+                    count = self._suppressed_goal_heartbeats
+                    if count == 1 or count & (count - 1) == 0:
+                        agent_logger.info(
+                            "[Heartbeat] Suppressed deterministic no-op Goal "
+                            f"heartbeat (total={count})."
+                        )
+                    continue
+
                 try:
                     self._active_react_task = asyncio.create_task(
                         self.react_loop.run(
@@ -314,6 +404,14 @@ class Heartbeat:
                         )
                     )
                     await self._active_react_task
+                    self._record_cycle_outcome(self._wake_reason, missed_events)
+                    if self.goal_manager is not None:
+                        goal_delay = self.goal_manager.seconds_until_wakeup()
+                        if goal_delay is not None:
+                            self._next_tick_time = min(
+                                self._next_tick_time,
+                                time.time() + max(0.1, goal_delay),
+                            )
                     if not self._deferred_wakeup:
                         self._wake_reason = "HEARTBEAT"
                         self._wake_payload = {}

@@ -3,6 +3,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from src.l0_state.agent.state import AgentStatus
+from src.l3_agent.goals.manager import GoalManager
 from src.l3_agent.react.loop import ReactLoop, _normalize_tool_output
 
 
@@ -345,3 +346,82 @@ def test_tool_output_normalization_preserves_valid_unicode():
     repaired = _normalize_tool_output("bad\ud800text")
     assert repaired == "bad?text"
     repaired.encode("utf-8", errors="strict")
+
+
+@pytest.mark.asyncio
+async def test_goal_v2_done_completes_durable_goal(mock_dependencies, tmp_path):
+    deps = dict(mock_dependencies)
+    manager = GoalManager(tmp_path / "goals.json", deps["agent_state"])
+    created = await manager.create("Finish the exact task", token_budget=100)
+    deps["goal_manager"] = manager
+    deps["executor"].last_call_metrics = {
+        "provider_total_tokens": 12,
+        "estimated_input_tokens": 500,
+    }
+    deps["executor"].execute.return_value = (
+        '{"v":2,"state":"done","summary":"Diff reviewed and tests passed."}'
+    )
+    loop = ReactLoop(**deps)
+
+    await loop.run("HEARTBEAT", {}, [])
+
+    finished = manager.get(created.goal_id)
+    assert finished.status == "complete"
+    assert finished.accounted_tokens == 12
+    assert "tests passed" in finished.completion_summary
+    assert deps["executor"].execute.await_args.kwargs["session_id"].startswith(
+        f"goal-{created.goal_id}-e"
+    )
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.react.loop.execute_skill", new_callable=AsyncMock)
+async def test_goal_action_result_is_durable_before_done(
+    mock_execute_skill, mock_dependencies, tmp_path
+):
+    deps = dict(mock_dependencies)
+    manager = GoalManager(tmp_path / "goals.json", deps["agent_state"])
+    created = await manager.create("Read then conclude")
+    deps["goal_manager"] = manager
+    deps["executor"].last_call_metrics = {"provider_total_tokens": 5}
+    deps["executor"].execute.side_effect = [
+        (
+            '{"v":2,"state":"act","calls":['
+            '{"tool":"HostOSReader.read_file","args":{"filepath":"README.md"}}]}'
+        ),
+        '{"v":2,"state":"done","summary":"Required file was inspected."}',
+    ]
+    mock_execute_skill.return_value = "bounded read result"
+    loop = ReactLoop(**deps)
+
+    await loop.run("HEARTBEAT", {}, [])
+
+    finished = manager.get(created.goal_id)
+    assert finished.status == "complete"
+    assert finished.last_result == "bounded read result"
+    assert any(item["kind"] == "tool_result" for item in finished.evidence)
+    assert finished.accounted_tokens == 10
+
+
+@pytest.mark.asyncio
+async def test_goal_wait_schedules_without_marking_complete(
+    mock_dependencies, tmp_path
+):
+    deps = dict(mock_dependencies)
+    manager = GoalManager(tmp_path / "goals.json", deps["agent_state"])
+    created = await manager.create("Wait for a process")
+    deps["goal_manager"] = manager
+    deps["executor"].last_call_metrics = {}
+    deps["executor"].execute.return_value = (
+        '{"v":2,"state":"wait","summary":"Process still running",'
+        '"wake_after_seconds":30}'
+    )
+    loop = ReactLoop(**deps)
+
+    await loop.run("HEARTBEAT", {}, [])
+
+    waiting = manager.get(created.goal_id)
+    assert waiting.status == "active"
+    assert waiting.pending_work is False
+    assert waiting.next_wakeup_at is not None
+    assert manager.should_run_heartbeat(now=waiting.next_wakeup_at - 1) is False

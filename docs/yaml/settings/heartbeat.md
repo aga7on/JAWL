@@ -9,3 +9,24 @@ Manages the agent's operating rhythm (Heartbeat) and its proactivity.
 Active-cycle interruption behavior is configured by
 `system.event_acceleration.active_cycle_policy`; see
 [`event_acceleration.md`](event_acceleration.md).
+
+## Empty-cycle backoff
+
+Production logs may show a periodic Heartbeat repeatedly returning no actions
+while paying for the same large context. JAWL backs off only after a ReAct
+cycle is proven to have completed without executing any action:
+
+```yaml
+system:
+  idle_heartbeat_backoff:
+    enabled: true
+    no_op_threshold: 2
+    max_multiplier: 8
+    max_interval_sec: 3300
+```
+
+The interval grows exponentially after `no_op_threshold` consecutive empty
+timer cycles and resets on an action, failure, cancellation, or external
+event. `max_interval_sec` defaults to 55 minutes, below QWB's one-hour chat
+expiry, so the same Qwen branch stays warm. Telegram, user, file, and other
+events are never delayed by this backoff. `continuous_cycle: true` disables it.

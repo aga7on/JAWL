@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 from src.utils.event.registry import EventLevel
 from src.l3_agent.heartbeat import Heartbeat
-from src.utils.settings import EventAccelerationConfig
+from src.utils.settings import (
+    EventAccelerationConfig,
+    IdleHeartbeatBackoffConfig,
+)
+from src.l0_state.agent.state import AgentState
+from src.l3_agent.goals.manager import GoalManager
 
 
 @pytest.fixture
@@ -136,6 +141,89 @@ def test_heartbeat_update_config(mock_react_loop, mock_accel_config):
     assert hb.continuous_cycle is True
 
 
+def test_empty_timer_cycles_back_off_but_real_event_resets(
+    mock_react_loop, mock_accel_config
+):
+    mock_react_loop.last_cycle_outcome = {
+        "status": "completed",
+        "event_name": "HEARTBEAT",
+        "had_actions": False,
+    }
+    hb = Heartbeat(
+        mock_react_loop,
+        heartbeat_interval=60,
+        continuous_cycle=False,
+        accel_config=mock_accel_config,
+        timezone=3,
+        idle_backoff_config=IdleHeartbeatBackoffConfig(
+            no_op_threshold=2,
+            max_multiplier=8,
+        ),
+    )
+    hb._next_tick_time = time.time() + 60
+
+    hb._record_cycle_outcome("HEARTBEAT", [])
+    assert hb._idle_interval_multiplier == 1
+    hb._record_cycle_outcome("HEARTBEAT", [])
+    assert hb._idle_interval_multiplier == 2
+    hb._record_cycle_outcome("HEARTBEAT", [])
+    assert hb._idle_interval_multiplier == 4
+    hb._record_cycle_outcome("HEARTBEAT", [])
+    assert hb._idle_interval_multiplier == 8
+    hb._record_cycle_outcome("HEARTBEAT", [])
+    assert hb._idle_interval_multiplier == 8
+
+    hb.answer_to_event(EventLevel.CRITICAL, "USER_MESSAGE", {"text": "wake"})
+    assert hb._consecutive_idle_heartbeats == 0
+    assert hb._idle_interval_multiplier == 1
+
+
+def test_failed_or_active_timer_cycle_never_enters_idle_backoff(
+    mock_react_loop, mock_accel_config
+):
+    hb = Heartbeat(
+        mock_react_loop,
+        heartbeat_interval=60,
+        continuous_cycle=False,
+        accel_config=mock_accel_config,
+        timezone=3,
+        idle_backoff_config=IdleHeartbeatBackoffConfig(),
+    )
+    for outcome in (
+        {"status": "invalid_request", "had_actions": False},
+        {"status": "completed", "had_actions": True},
+    ):
+        mock_react_loop.last_cycle_outcome = outcome
+        hb._record_cycle_outcome("HEARTBEAT", [])
+        assert hb._consecutive_idle_heartbeats == 0
+        assert hb._idle_interval_multiplier == 1
+
+
+def test_idle_backoff_stays_below_qwb_chat_expiry(
+    mock_react_loop, mock_accel_config
+):
+    mock_react_loop.last_cycle_outcome = {
+        "status": "completed",
+        "had_actions": False,
+    }
+    hb = Heartbeat(
+        mock_react_loop,
+        heartbeat_interval=600,
+        continuous_cycle=False,
+        accel_config=mock_accel_config,
+        timezone=3,
+        idle_backoff_config=IdleHeartbeatBackoffConfig(
+            no_op_threshold=1,
+            max_multiplier=8,
+            max_interval_sec=3300,
+        ),
+    )
+    for _ in range(10):
+        hb._record_cycle_outcome("HEARTBEAT", [])
+    assert hb._idle_interval_multiplier == 5
+    assert hb.heartbeat_interval * hb._idle_interval_multiplier == 3000
+
+
 def test_heartbeat_priority_overwriting(mock_react_loop, mock_accel_config):
     """Тест: Heartbeat корректно обновляет причину пробуждения в зависимости от приоритета события."""
     hb = Heartbeat(
@@ -243,3 +331,41 @@ async def test_deferred_event_runs_as_next_primary_cycle(fail_first_cycle):
     assert react.calls[1]["payload"] == {"message": "queued"}
     assert react.calls[1]["missed_events"] == []
     assert react.steer_events[0]["name"] == "TELETHON_MESSAGE_INCOMING"
+
+
+@pytest.mark.asyncio
+async def test_waiting_goal_suppresses_noop_heartbeat_but_not_event(
+    mock_react_loop, mock_accel_config, tmp_path
+):
+    manager = GoalManager(tmp_path / "goals.json", AgentState())
+    await manager.create("Wait without spending tokens")
+    await manager.begin_cycle("HEARTBEAT")
+    await manager.finish_cycle(state="waiting", summary="Awaiting input")
+    hb = Heartbeat(
+        mock_react_loop,
+        heartbeat_interval=0.01,
+        continuous_cycle=False,
+        accel_config=mock_accel_config,
+        timezone=3,
+        goal_manager=manager,
+    )
+    hb._next_tick_time = time.time()
+    task = asyncio.create_task(hb.start())
+    for _ in range(50):
+        if hb._suppressed_goal_heartbeats:
+            break
+        await asyncio.sleep(0.002)
+    hb.stop()
+    await asyncio.wait_for(task, timeout=0.5)
+
+    assert hb._suppressed_goal_heartbeats >= 1
+    mock_react_loop.run.assert_not_awaited()
+
+    async def stop_after_event(**kwargs):
+        hb.stop()
+
+    mock_react_loop.run.side_effect = stop_after_event
+    hb.answer_to_event(EventLevel.CRITICAL, "USER_MESSAGE", {"message": "go"})
+    await hb.start()
+    mock_react_loop.run.assert_awaited_once()
+    assert mock_react_loop.run.await_args.kwargs["event_name"] == "USER_MESSAGE"

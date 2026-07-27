@@ -1,0 +1,1 @@
+"""Goal Mode unit tests."""

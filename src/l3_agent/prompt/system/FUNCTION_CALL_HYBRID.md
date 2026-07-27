@@ -14,3 +14,8 @@ dependency-aware multi-action plans.
 
 Wrapper actions remain sequential unless an explicit safe parallel group is
 declared. Read-modify-write, edit-test, and writes to one resource stay sequential.
+
+For coding work, treat verification as exact-state evidence. Start with the
+smallest relevant check, fix and rerun failures, then run the repository's
+declared verification gate before claiming completion. A test that was not run,
+timed out, was interrupted, or applies to a stale workspace is not green.

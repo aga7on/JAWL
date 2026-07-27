@@ -4,6 +4,7 @@ import json
 import openai
 import httpx
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from src.l3_agent.llm.executor import LLMExecutor
@@ -42,6 +43,47 @@ async def test_executor_success(mock_executor_deps):
     assert executor.last_call_metrics["tool_call_count"] == 0
     assert executor.last_call_metrics["estimated_input_tokens"] == 123
     assert executor.last_call_metrics["estimated_output_tokens"] == 45
+
+
+@pytest.mark.asyncio
+async def test_executor_reports_provider_delta_usage_and_reasoning(
+    mock_executor_deps,
+):
+    llm, tracker = mock_executor_deps
+    tracker.add_input_record.return_value = 1000
+    tracker.add_output_record.return_value = 50
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    response = MagicMock()
+    response.choices[0].message.tool_calls = None
+    response.choices[0].message.content = "ok"
+    response.usage = SimpleNamespace(
+        prompt_tokens=120,
+        completion_tokens=80,
+        total_tokens=200,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=10),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=60),
+    )
+    session.chat.completions.create.return_value = response
+    logger = MagicMock()
+
+    executor = LLMExecutor(llm, tracker)
+    await executor.execute(
+        "model",
+        [],
+        0.0,
+        logger,
+        "[LLM]",
+        session_id="goal-telemetry-e1",
+    )
+
+    metrics = executor.last_call_metrics
+    assert metrics["provider_prompt_tokens"] == 120
+    assert metrics["provider_reasoning_tokens"] == 60
+    assert metrics["provider_cached_tokens"] == 10
+    assert metrics["provider_prompt_savings_tokens"] == 880
+    assert metrics["provider_prompt_ratio"] == 0.12
+    assert "provider_prompt=120" in logger.info.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -88,6 +130,35 @@ async def test_executor_metrics_include_current_trace(mock_executor_deps):
 
 
 @pytest.mark.asyncio
+async def test_executor_prefers_durable_goal_session_lane(mock_executor_deps):
+    llm, tracker = mock_executor_deps
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    response = MagicMock()
+    response.choices[0].message.tool_calls = None
+    response.choices[0].message.content = "ok"
+    session.chat.completions.create.return_value = response
+    executor = LLMExecutor(llm, tracker)
+    token, _ = begin_trace("test", trace_id="trace-metrics")
+    try:
+        await executor.execute(
+            "model",
+            [],
+            0.0,
+            MagicMock(),
+            "[Log]",
+            session_id="goal-abcd-e2",
+        )
+    finally:
+        reset_trace(token)
+
+    assert session.chat.completions.create.await_args.kwargs["extra_headers"] == {
+        "X-Session-Id": "goal-abcd-e2"
+    }
+    assert executor.last_call_metrics["session_mode"] == "goal"
+
+
+@pytest.mark.asyncio
 async def test_executor_records_downstream_cancellation(mock_executor_deps):
     llm, tracker = mock_executor_deps
     tracker.add_input_record.return_value = 77
@@ -113,6 +184,40 @@ async def test_executor_records_downstream_cancellation(mock_executor_deps):
     assert executor.last_call_metrics["thinking_enabled"] is None
     assert executor.last_call_metrics["estimated_input_tokens"] == 77
     assert executor.last_call_metrics["estimated_output_tokens"] is None
+
+
+@pytest.mark.asyncio
+async def test_executor_does_not_retry_deterministic_bad_request(
+    mock_executor_deps,
+):
+    llm, tracker = mock_executor_deps
+    tracker.add_input_record.return_value = 100
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    request = httpx.Request("POST", "http://bridge.test/v1/chat/completions")
+    response = httpx.Response(400, request=request)
+    session.chat.completions.create.side_effect = openai.BadRequestError(
+        "invalid_input",
+        response=response,
+        body={"error": {"code": "invalid_input"}},
+    )
+    logger = MagicMock()
+    executor = LLMExecutor(llm, tracker)
+
+    result = await executor.execute(
+        "qwen3.8-max-preview",
+        [{"role": "user", "content": "same deterministic request"}],
+        0.0,
+        logger,
+        "[LLM]",
+        max_retries=3,
+    )
+
+    assert result is None
+    assert session.chat.completions.create.await_count == 1
+    assert executor.last_call_metrics["status"] == "invalid_request"
+    assert executor.last_call_metrics["attempts"] == 1
+    assert "Invalid upstream request" in logger.error.call_args.args[0]
 
 
 @pytest.mark.asyncio

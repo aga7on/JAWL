@@ -107,6 +107,25 @@ class MetaSafe:
         """
 
         clean_goal = goal.strip()
+        manager = getattr(self.client, "goal_manager", None)
+        if manager is not None:
+            active = manager.active_goal
+            if not clean_goal:
+                if active is not None:
+                    return SkillResult.fail(
+                        "A durable goal cannot be cleared implicitly. Use "
+                        "GoalSkills.update_goal with complete, blocked, or cancelled."
+                    )
+                self.client.agent_state.current_goal = ""
+                return SkillResult.ok("True")
+            if active is not None:
+                if active.objective == clean_goal:
+                    return SkillResult.ok("True")
+                return SkillResult.fail(
+                    f"Active durable goal '{active.goal_id}' already owns focus."
+                )
+            await manager.create(clean_goal)
+            return SkillResult.ok("True")
         self.client.agent_state.current_goal = clean_goal
 
         if clean_goal:

@@ -45,6 +45,8 @@ class AgentState(BaseModel):
 
     # Current goal to maintain focus during long tasks (skill available at Meta interface level 0)
     current_goal: str = ""
+    active_goal_id: str = ""
+    goal_status: str = ""
 
     # System limits and modes
     continuous_cycle: bool = False
@@ -118,7 +120,13 @@ class AgentState(BaseModel):
         Returns:
             str: Agent statistics, limits, system version, uptime, and subconscious state.
         """
-        goal_str = f"\n* Current Goal: {self.current_goal}" if self.current_goal else ""
+        goal_str = ""
+        if self.current_goal:
+            goal_str = (
+                f"\n* Current Goal: {self.current_goal}"
+                f"\n* Active Goal ID: {self.active_goal_id or 'legacy'}"
+                f"\n* Goal Status: {self.goal_status or 'focus-only'}"
+            )
 
         base_info = f"""
 ### AGENT STATE

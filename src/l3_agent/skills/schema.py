@@ -8,7 +8,7 @@ if the LLM violates formatting or escaping.
 
 import re
 import json
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Literal, Tuple, Optional
 from pydantic import BaseModel, Field
 
 
@@ -31,6 +31,10 @@ class AgentResponse(BaseModel):
     reasoning: str = ""
     reflection: str = ""
     actions: List[ActionCall] = Field(default_factory=list)
+    protocol_version: int = 1
+    goal_state: Literal["", "act", "continue", "wait", "done", "blocked"] = ""
+    goal_summary: str = ""
+    wake_after_seconds: Optional[int] = None
 
     @property
     def thoughts(self) -> str:
@@ -107,8 +111,57 @@ ACTION_SCHEMA = [
                             "additionalProperties": False,
                         },
                     },
+                    "v": {
+                        "type": "integer",
+                        "enum": [2],
+                        "description": "Goal Protocol version. Use only with state/calls.",
+                    },
+                    "state": {
+                        "type": "string",
+                        "enum": ["act", "continue", "wait", "done", "blocked"],
+                        "description": "Explicit Goal Mode lifecycle decision.",
+                    },
+                    "calls": {
+                        "type": "array",
+                        "description": "Compact Goal Mode actions.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool": {"type": "string"},
+                                "args": {
+                                    "type": "object",
+                                    "additionalProperties": True,
+                                },
+                                "action_id": {"type": "string"},
+                                "depends_on": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "parallel_group": {"type": "string"},
+                                "resources": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                            "required": ["tool", "args"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Optional short operational note, not chain of thought.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Concrete completion, wait, or blocker summary.",
+                    },
+                    "wake_after_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 86400,
+                    },
                 },
-                "required": ["observation", "reasoning", "reflection", "actions"],
+                "required": [],
                 "additionalProperties": False,
             },
         },
@@ -148,6 +201,11 @@ def _agent_payload(data: Any, allow_empty: bool = False) -> Optional[AgentRespon
             except (TypeError, json.JSONDecodeError):
                 return None
         data = arguments
+    compact = _goal_v2_payload(data)
+    if compact is not None:
+        if not allow_empty and compact.goal_state in {"act", "continue"} and not compact.actions:
+            return None
+        return compact
     required = {"observation", "reasoning", "reflection", "actions"}
     if not isinstance(data, dict) or not required.issubset(data):
         return None
@@ -158,6 +216,70 @@ def _agent_payload(data: Any, allow_empty: bool = False) -> Optional[AgentRespon
     if not allow_empty and not parsed.actions:
         return None
     return parsed
+
+
+def _goal_v2_payload(data: Any) -> Optional[AgentResponse]:
+    """Normalize the compact discriminated Goal protocol into AgentResponse."""
+
+    if not isinstance(data, dict) or data.get("v") != 2:
+        return None
+    state = data.get("state")
+    if state not in {"act", "continue", "wait", "done", "blocked"}:
+        return None
+    calls = data.get("calls", [])
+    if not isinstance(calls, list):
+        return None
+    actions = []
+    for item in calls:
+        if not isinstance(item, dict):
+            return None
+        tool_name = item.get("tool")
+        parameters = item.get("args")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return None
+        if not isinstance(parameters, dict):
+            return None
+        try:
+            actions.append(
+                ActionCall(
+                    tool_name=tool_name.strip(),
+                    parameters=parameters,
+                    action_id=item.get("action_id"),
+                    depends_on=item.get("depends_on", []),
+                    parallel_group=item.get("parallel_group"),
+                    resources=item.get("resources", []),
+                )
+            )
+        except Exception:
+            return None
+    if state == "act" and not actions:
+        return None
+    if state in {"done", "wait", "blocked"} and actions:
+        return None
+    wake_after = data.get("wake_after_seconds")
+    if wake_after is not None and (
+        isinstance(wake_after, bool)
+        or not isinstance(wake_after, int)
+        or wake_after < 1
+        or wake_after > 86400
+    ):
+        return None
+    note = data.get("note", "")
+    summary = data.get("summary", "")
+    if not isinstance(note, str) or not isinstance(summary, str):
+        return None
+    if state in {"done", "wait", "blocked"} and not summary.strip():
+        return None
+    return AgentResponse(
+        observation="",
+        reasoning="",
+        reflection=note.strip(),
+        actions=actions,
+        protocol_version=2,
+        goal_state=state,
+        goal_summary=summary.strip(),
+        wake_after_seconds=wake_after,
+    )
 
 
 def _extract_json_array(text: str) -> Optional[str]:
@@ -227,7 +349,12 @@ def parse_llm_json(
     if json_str:
         try:
             data = json.loads(json_str, strict=False)
-            parsed_response = AgentResponse(**data)
+            if isinstance(data, dict) and data.get("v") == 2:
+                parsed_response = _goal_v2_payload(data)
+                if parsed_response is None:
+                    raise ValueError("Invalid Goal Protocol v2 payload.")
+            else:
+                parsed_response = AgentResponse(**data)
         except Exception as e:
             error_msg = str(e)
     if parsed_response is not None and not parsed_response.actions:

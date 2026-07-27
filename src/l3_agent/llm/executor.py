@@ -57,6 +57,7 @@ class LLMExecutor:
         enable_thinking: Optional[bool] = None,
         max_retries: int = 1,
         max_timeout_retries: int = 1,
+        session_id: str = "",
     ) -> Optional[str]:
         """
         Executes a request to the LLM with a robust retry system.
@@ -73,6 +74,7 @@ class LLMExecutor:
                 top-level ``enable_thinking`` field through ``extra_body``.
             max_retries: Total retry attempts limit for any exceptions.
             max_timeout_retries: Specific retry attempts limit for timeouts.
+            session_id: Optional durable provider lane, used by Goal Mode.
 
         Returns:
             Optional[str]: Raw assistant response text or tool call JSON arguments.
@@ -91,6 +93,7 @@ class LLMExecutor:
             "attempts": 0,
             "thinking_enabled": enable_thinking,
             "estimated_input_tokens": self._plain_metric(estimated_input_tokens),
+            "session_mode": "goal" if session_id else "trace",
         }
         timeout_count = 0
 
@@ -113,11 +116,18 @@ class LLMExecutor:
                 if enable_thinking is not None:
                     kwargs["extra_body"] = {"enable_thinking": enable_thinking}
                 trace_id = str(current_trace().get("trace_id") or "").strip()
-                if trace_id:
+                lane = str(session_id or "").strip()
+                if lane and (
+                    len(lane) > 200
+                    or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._" for ch in lane)
+                ):
+                    raise ValueError("session_id contains unsupported characters")
+                effective_lane = lane or (f"jawl-{trace_id}" if trace_id else "")
+                if effective_lane:
                     # QWB uses this stable per-cycle lane to keep one Qwen
                     # parent_id chain without mixing main/sub-agent contexts.
                     kwargs["extra_headers"] = {
-                        "X-Session-Id": f"jawl-{trace_id}"
+                        "X-Session-Id": effective_lane
                     }
 
                 response = await session.chat.completions.create(**kwargs)
@@ -140,6 +150,10 @@ class LLMExecutor:
                     estimated_output_tokens=estimated_output_tokens,
                 )
                 self.last_call_metrics["thinking_enabled"] = enable_thinking
+                self.last_call_metrics["session_mode"] = (
+                    "goal" if lane else "trace"
+                )
+                self._log_usage_summary(logger, log_prefix)
 
                 return raw_answer
 
@@ -181,6 +195,21 @@ class LLMExecutor:
                 )
                 self.llm.rotator.ban_key(session.api_key)
                 continue
+
+            except openai.BadRequestError as e:
+                # A 400 is deterministic for this exact request. Retrying the
+                # same large prompt only wastes provider quota and cannot heal
+                # malformed input, an unsupported model, or an invalid field.
+                logger.error(f"{log_prefix} Invalid upstream request (400): {e}")
+                self._finish_error_metrics(
+                    request_id,
+                    model_name,
+                    attempt + 1,
+                    started,
+                    "invalid_request",
+                    str(e),
+                )
+                return None
 
             except (openai.APITimeoutError, asyncio.TimeoutError):
                 timeout_count += 1
@@ -361,6 +390,23 @@ class LLMExecutor:
         choice = response.choices[0]
         message = choice.message
         usage = getattr(response, "usage", None)
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        completion_details = getattr(usage, "completion_tokens_details", None)
+        provider_prompt = self._plain_metric(
+            getattr(usage, "prompt_tokens", None)
+        )
+        provider_completion = self._plain_metric(
+            getattr(usage, "completion_tokens", None)
+        )
+        estimated_input = self._plain_metric(estimated_input_tokens)
+        prompt_savings = None
+        prompt_ratio = None
+        if isinstance(estimated_input, (int, float)) and isinstance(
+            provider_prompt, (int, float)
+        ):
+            prompt_savings = max(0, int(estimated_input - provider_prompt))
+            if estimated_input > 0:
+                prompt_ratio = round(provider_prompt / estimated_input, 4)
         return {
             "request_id": request_id,
             "response_id": self._plain_metric(getattr(response, "id", None)),
@@ -373,19 +419,38 @@ class LLMExecutor:
             ),
             "tool_call_count": len(getattr(message, "tool_calls", None) or []),
             "output_chars": output_chars,
-            "estimated_input_tokens": self._plain_metric(estimated_input_tokens),
+            "estimated_input_tokens": estimated_input,
             "estimated_output_tokens": self._plain_metric(estimated_output_tokens),
-            "provider_prompt_tokens": self._plain_metric(
-                getattr(usage, "prompt_tokens", None)
-            ),
-            "provider_completion_tokens": self._plain_metric(
-                getattr(usage, "completion_tokens", None)
-            ),
+            "provider_prompt_tokens": provider_prompt,
+            "provider_completion_tokens": provider_completion,
             "provider_total_tokens": self._plain_metric(
                 getattr(usage, "total_tokens", None)
             ),
+            "provider_reasoning_tokens": self._plain_metric(
+                getattr(completion_details, "reasoning_tokens", None)
+            ),
+            "provider_cached_tokens": self._plain_metric(
+                getattr(prompt_details, "cached_tokens", None)
+            ),
+            "provider_prompt_savings_tokens": prompt_savings,
+            "provider_prompt_ratio": prompt_ratio,
             "trace": current_trace(),
         }
+
+    def _log_usage_summary(
+        self, logger: logging.Logger, log_prefix: str
+    ) -> None:
+        """Expose provider-accounted context separately from local snapshots."""
+
+        metrics = self.last_call_metrics
+        logger.info(
+            f"{log_prefix} Usage: lane={metrics.get('session_mode')}, "
+            f"local_input≈{metrics.get('estimated_input_tokens')}, "
+            f"provider_prompt={metrics.get('provider_prompt_tokens')}, "
+            f"provider_completion={metrics.get('provider_completion_tokens')}, "
+            f"reasoning={metrics.get('provider_reasoning_tokens')}, "
+            f"prompt_reuse≈{metrics.get('provider_prompt_savings_tokens')}."
+        )
 
     def _finish_error_metrics(
         self,
@@ -397,6 +462,7 @@ class LLMExecutor:
         error: str,
     ) -> None:
         thinking_enabled = self.last_call_metrics.get("thinking_enabled")
+        session_mode = self.last_call_metrics.get("session_mode")
         estimated_input_tokens = self.last_call_metrics.get(
             "estimated_input_tokens"
         )
@@ -406,6 +472,7 @@ class LLMExecutor:
             "status": status,
             "attempts": attempts,
             "thinking_enabled": thinking_enabled,
+            "session_mode": session_mode,
             "estimated_input_tokens": estimated_input_tokens,
             "estimated_output_tokens": None,
             "duration_ms": round((time.perf_counter() - started) * 1000, 1),

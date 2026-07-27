@@ -10,17 +10,16 @@ JAWL remains the source of truth for conversation state: SQL ticks, Vector RAG,
 tasks, notes, action journals, coding plans, and the current prompt snapshot.
 Qwen Web is a reasoning provider, not the durable session database.
 
-The bridge keeps one web chat ID per account, model, and transport for one hour
-of inactivity. It deliberately sends `parent_id: null` with the complete JAWL
-snapshot. Reusing the chat removes repeated chat creation and keeps operator UI
-continuity, but does not rely on hidden upstream history. Chaining every full
-16k-23k-token JAWL snapshot to the previous Qwen message would duplicate context
-and make rotation or recovery ambiguous.
+Ordinary ReAct cycles use isolated trace lanes. An active Goal instead supplies
+one stable `X-Session-Id` lane across bounded cycles. Its first request sends a
+complete authoritative bootstrap; subsequent requests remain on the accepted
+Qwen `parent_id` chain and send only the snapshot delta. JAWL still persists the
+objective, evidence, tool results, and continuation state locally.
 
-A future delta-thread mode is possible, but it needs an explicit snapshot hash,
-serialized requests per account, periodic full resynchronization, and full
-snapshot replay after rotation. It should be enabled only after an evaluation
-shows a material quality or latency gain.
+QWB starts a fresh full chain when the model/static prompt/tool schema changes,
+the checkpoint is incomplete, the delta is too large, the pinned account fails,
+or downstream cancellation makes the outcome ambiguous. A JAWL restart also
+increments the durable goal lane epoch and forces a clean bootstrap.
 
 ## Web tool transport
 
@@ -41,25 +40,15 @@ parallel groups and dependencies. That is efficient for a batch of reads,
 searches, or checks. It is less efficient when every tiny action causes another
 large general-purpose prompt and provider round trip.
 
-Current low-risk defaults:
+Current low-risk mechanisms:
 
-- provider thinking on the first ReAct step only;
-- temperature 0.3 for more deterministic JSON and tool selection;
+- configurable provider Thinking policy;
 - adaptive skill catalogue with on-demand exact schemas;
 - batch independent operations in one action plan;
 - finite script sessions for work that must be polled without blocking a step.
-
-Recommended next optimization is a deterministic task router with two prompt
-profiles:
-
-1. `micro`: no provider thinking by default, 3-5 ReAct steps, compact recent
-   state and only the relevant skill namespaces;
-2. `full`: existing memory, planning, coding gates, and first-step thinking for
-   ambiguous or multi-file work.
-
-The router must be reversible: escalation from `micro` to `full` should carry a
-bounded evidence summary, while high-risk file, process, desktop, Git, and MCP
-operations keep the same guards in both profiles.
+- active Goal projection capped independently from general dynamic context;
+- compact Goal Protocol v2, which omits repeated chain-of-thought fields;
+- provider-vs-local token telemetry to measure QWB delta reuse.
 
 ## Long-running delegated work
 
@@ -95,10 +84,10 @@ catalogue-name feedback, not adding more memory to every request.
 
 The coding fork uses `qwen3.8-max-preview` for both coding and vision.
 
-Each ReAct cycle now has a stable `X-Session-Id`. Step 1 sends the full
-SOUL/instructions/context bootstrap. QWB keeps that Qwen branch and sends
-changed snapshot lines on later steps. A new cycle starts with a fresh
-bootstrap; this prevents hidden stale context from becoming authoritative.
+Each ordinary ReAct cycle has an isolated `X-Session-Id`. An active durable Goal
+keeps the same lane across cycles and reconstructs every step from bounded JAWL
+state. QWB keeps that Qwen branch and sends changed snapshot lines; JAWL never
+depends on the hidden branch as its sole memory.
 
 For this preview model, `enable_thinking: false` is a downstream presentation
 preference only. Qwen Web rejects literal `thinking_enabled:false`, so QWB

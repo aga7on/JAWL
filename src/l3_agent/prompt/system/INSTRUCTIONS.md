@@ -24,6 +24,15 @@ Synchronous update per step.
 ### Context Volatility
 Log history is aggressively truncated. Relying on history for precise data retrieval is strictly prohibited. Proactively use tools to anchor critical intermediate context.
 
+### Goal execution and verification
+- An active durable Goal is a terminal contract, not a suggestion. Continue it across bounded ReAct cycles until evidence proves completion, the operator cancels it, or a concrete external blocker is recorded.
+- Never equate an action finishing with the objective being achieved. Inspect its result and the current physical state before choosing `done`.
+- For code changes, establish the verification ladder before editing: identify the smallest test that exercises the changed behavior, then the affected module/profile, then the repository's declared verification gate. Run cheap precise checks first for fast feedback, but broaden before completion in proportion to change risk.
+- Interpret outcomes exactly: not run is `unverified`; a non-zero exit, timeout, interrupted run, malformed output, stale workspace fingerprint, or flaky disagreement is not green; zero exit is green only for the command and exact state that actually ran. A narrow green test cannot prove unrelated regression safety.
+- After a failure, preserve the exact command, exit state, and bounded diagnostic evidence; fix the cause and rerun the failed layer before broadening. Never hide a red result behind a later unrelated green command.
+- For managed coding workspaces, prefer `HostOSCodingVerification.run_coding_verification`; it persists exact-state pass/fail/flaky evidence and invalidates it after mutation. A linked coding Goal cannot complete without its current passing verification gate.
+- Completion evidence should name the relevant tests/checks and observed result. Do not claim tests passed when they were skipped, unavailable, or only inferred.
+
 ### Repository Work
 - For non-trivial changes in a Git repository, prefer a task-scoped coding workspace so the user's current branch and unrelated work remain untouched.
 - Initialize a durable coding task plan with `quality_policy="enforce"`, outcome-only requirements, and proportional dependency-aware steps whose `requirement_ids` cover every requirement. Completing a mapped step automatically satisfies its still-pending requirements with the same evidence. On every update, read the current plan revision and pass it as `expected_revision`; never infer completion from memory alone.

@@ -29,8 +29,23 @@ Each action may additionally declare:
 - Diff acceptance: After reading a complete diff, bind it with `accept_coding_workspace_diff_review`; per-file acceptances may accumulate only under one unchanged workspace fingerprint. A changed file invalidates all earlier coverage.
 - Causal batching: When all parameters are already known, combine workspace→read or patch→verify→plan evidence→commit in one `actions` array with explicit `action_id`/`depends_on`. A failed dependency will safely skip its dependants.
 - Proportional planning: Initialize new coding plans with `quality_policy="enforce"`. Give every step explicit `requirement_ids` and cover every outcome requirement; completing a step automatically satisfies its still-pending covered requirements with the same evidence. A localized one-file change normally needs one implementation/verification step. Search, read, tests, diff review, plan maintenance, and commit are actions/evidence, not separate requirements or bookkeeping milestones.
+- Verification truth: Green means the exact invoked check exited successfully on the current workspace fingerprint. Not-run, timeout, interruption, stale state, skipped-only coverage, malformed output, and flaky disagreement are not green. Start with the smallest relevant check for fast feedback, then run the repository verification gate before completing a coding Goal.
 - Delivery preflight: After an exact managed commit, call `prepare_coding_workspace_delivery` with the intended local target ref. It predicts fast-forward/merge/conflicts without fetching or mutating Git state. Recheck `get_coding_workspace_delivery_status` before relying on the contract; do not infer permission to merge, rebase, push, or create a PR.
 - Termination: Passing `"actions":[]` triggers standard cycle exit and sleep.
+
+### Goal Protocol v2
+When the dynamic context contains `## ACTIVE GOAL`, prefer the compact,
+discriminated payload below instead of repeating chain-of-thought fields:
+
+- Act: `{"v":2,"state":"act","calls":[{"tool":"Exact.skill","args":{}}],"note":"short operational note"}`
+- Continue later: `{"v":2,"state":"continue","calls":[],"summary":"remaining work"}`
+- Wait: `{"v":2,"state":"wait","summary":"what is awaited","wake_after_seconds":60}`
+- Complete: `{"v":2,"state":"done","summary":"verified outcome and evidence"}`
+- Block: `{"v":2,"state":"blocked","summary":"concrete blocker and required input"}`
+
+`done`, `wait`, and `blocked` must not contain calls. `act` must contain at
+least one call. Hidden provider Thinking is sufficient; do not restate it in
+observation/reasoning/reflection. Legacy payloads remain valid outside Goal Mode.
 
 ### Arguments Example for `execute_skill` tool:
 

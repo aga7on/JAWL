@@ -7,7 +7,7 @@ commits results (Ticks) to the database.
 """
 
 import asyncio
-from typing import Callable, Dict, Any, List, Literal, Optional, Tuple, Union
+from typing import Callable, Dict, Any, List, Literal, Optional, Tuple, Union, TYPE_CHECKING
 
 import base64
 import re
@@ -36,6 +36,9 @@ from src.l3_agent.tot.generator import ToTGenerator
 from src.l3_agent.skills.registry import execute_skill, resolve_native_tool_name
 from src.l3_agent.skills.schema import AgentResponse, ActionCall, parse_llm_json
 from src.l3_agent.event_buffer import BoundedEventBuffer
+
+if TYPE_CHECKING:
+    from src.l3_agent.goals.manager import GoalManager
 
 
 def _normalize_tool_output(text: str) -> str:
@@ -80,6 +83,7 @@ class ReactLoop:
         event_payload_sample_limit: int = 3,
         tot_config: Optional[TreeOfThoughtsConfig] = None,
         tot_generator: Optional[ToTGenerator] = None,
+        goal_manager: Optional["GoalManager"] = None,
     ) -> None:
         """
         Initializes the ReAct loop.
@@ -119,6 +123,7 @@ class ReactLoop:
 
         self.tot_config = tot_config
         self.tot_generator = tot_generator
+        self.goal_manager = goal_manager
 
         self._realtime_events = BoundedEventBuffer(
             capacity=event_queue_max,
@@ -134,6 +139,11 @@ class ReactLoop:
         )
         self.current_events: List[Dict[str, Any]] = self._realtime_events.items
         self._steer_requested: bool = False
+        self.last_cycle_outcome: Dict[str, Any] = {
+            "status": "never_run",
+            "event_name": "",
+            "had_actions": False,
+        }
 
     def _thinking_enabled_for_step(self) -> Optional[bool]:
         """Resolve the optional provider thinking flag for this ReAct step."""
@@ -160,13 +170,23 @@ class ReactLoop:
         self._realtime_events.clear()
         self._realtime_events.extend(missed_events)
         self.current_events = self._realtime_events.items
+        self.last_cycle_outcome = {
+            "status": "running",
+            "event_name": event_name,
+            "had_actions": False,
+        }
         trace_token, trace = begin_trace(
             "react_cycle", event_name=event_name, model=self.agent_state.llm_model
         )
         self.agent_state.current_trace_id = trace["trace_id"]
+        cycle_goal_id = ""
 
         try:
             self.agent_state.reset_step()
+            if self.goal_manager is not None:
+                goal = await self.goal_manager.begin_cycle(event_name)
+                if goal is not None:
+                    cycle_goal_id = goal.goal_id
 
             log = f"[ReAct] Reasoning cycle initialized. Reason: {event_name} (LLM Model: {self.agent_state.llm_model})."
             agent_logger.info(log)
@@ -240,13 +260,45 @@ class ReactLoop:
                     enable_thinking=self._thinking_enabled_for_step(),
                     max_retries=self.llm_max_retries,
                     max_timeout_retries=self.llm_max_timeout_retries,
+                    session_id=(
+                        self.goal_manager.lane_id
+                        if self.goal_manager is not None
+                        else ""
+                    ),
                 )
+                budget_blocked = False
+                if self.goal_manager is not None:
+                    usage_goal = await self.goal_manager.record_usage(
+                        self._llm_metrics_snapshot()
+                    )
+                    budget_blocked = bool(
+                        usage_goal is not None and usage_goal.status == "blocked"
+                    )
                 if self._steer_requested:
                     await self._handle_cycle_steered()
                     cycle_concluded = True
                     break
                 if raw_answer is None:
                     self.agent_state.update_state(AgentStatus.ERROR)
+                    failure_status = str(
+                        self._llm_metrics_snapshot().get("status") or "failed"
+                    )
+                    self.last_cycle_outcome["status"] = failure_status
+                    if self.goal_manager is not None:
+                        if failure_status == "invalid_request":
+                            await self.goal_manager.finish_cycle(
+                                state="blocked",
+                                summary=(
+                                    "Provider rejected the request as invalid; "
+                                    "automatic replay was stopped."
+                                ),
+                            )
+                        else:
+                            await self.goal_manager.finish_cycle(
+                                state="failed",
+                                summary="LLM request failed before a valid response.",
+                                wake_after_seconds=30,
+                            )
                     break
 
                 # --------------------------------------------------------------
@@ -256,6 +308,9 @@ class ReactLoop:
                 parsed_response, error_msg = self._parse_response(raw_answer)
                 if error_msg:
                     await self._handle_protocol_error(raw_answer, error_msg)
+                    if budget_blocked:
+                        cycle_concluded = True
+                        break
                     self.agent_state.next_step()
                     continue
 
@@ -271,7 +326,53 @@ class ReactLoop:
                 # --------------------------------------------------------------
 
                 if not actions:
-                    await self._handle_completion(thoughts)
+                    completion_text = thoughts or parsed_response.goal_summary
+                    completion_status = "completed"
+                    if self.goal_manager is not None:
+                        goal_state = parsed_response.goal_state
+                        if goal_state == "done":
+                            transitioned_goal = await self.goal_manager.finish_cycle(
+                                state="completed",
+                                summary=parsed_response.goal_summary,
+                            )
+                            if (
+                                transitioned_goal is not None
+                                and transitioned_goal.status == "active"
+                            ):
+                                completion_status = "goal_continues"
+                                completion_text = transitioned_goal.last_summary
+                        elif goal_state == "blocked":
+                            await self.goal_manager.finish_cycle(
+                                state="blocked",
+                                summary=parsed_response.goal_summary,
+                            )
+                        elif goal_state == "continue":
+                            await self.goal_manager.finish_cycle(
+                                state="continue",
+                                summary=parsed_response.goal_summary
+                                or "Goal requested another bounded continuation.",
+                                wake_after_seconds=(
+                                    parsed_response.wake_after_seconds or 1
+                                ),
+                            )
+                        elif goal_state == "wait":
+                            await self.goal_manager.finish_cycle(
+                                state="waiting",
+                                summary=parsed_response.goal_summary,
+                                wake_after_seconds=parsed_response.wake_after_seconds,
+                            )
+                        elif self.goal_manager.active_goal is not None:
+                            await self.goal_manager.finish_cycle(
+                                state="waiting",
+                                summary=(
+                                    completion_text
+                                    or "Legacy empty-actions response; waiting for "
+                                    "new evidence or an explicit wakeup."
+                                ),
+                            )
+                    await self._handle_completion(
+                        completion_text, status=completion_status
+                    )
                     cycle_concluded = True
                     break
 
@@ -280,6 +381,23 @@ class ReactLoop:
                 # --------------------------------------------------------------
 
                 await self._execute_actions(thoughts, actions)
+
+                if cycle_goal_id and self.goal_manager is not None:
+                    cycle_goal = self.goal_manager.get(cycle_goal_id)
+                    if cycle_goal is not None and cycle_goal.status != "active":
+                        await self._handle_completion(
+                            cycle_goal.completion_summary
+                            or cycle_goal.blocked_reason
+                            or cycle_goal.last_summary
+                        )
+                        cycle_concluded = True
+                        break
+                if budget_blocked:
+                    await self._handle_completion(
+                        "Goal token budget reached after the last valid action batch."
+                    )
+                    cycle_concluded = True
+                    break
 
                 if self._steer_requested:
                     await self._handle_cycle_steered()
@@ -295,6 +413,7 @@ class ReactLoop:
                 await self._handle_step_limit()
 
         except asyncio.CancelledError:
+            self.last_cycle_outcome["status"] = "cancelled"
             await asyncio.shield(self._handle_cycle_cancelled())
             raise
         finally:
@@ -368,12 +487,19 @@ class ReactLoop:
         """
 
         self.agent_state.update_state(AgentStatus.ACTING)
+        self.last_cycle_outcome["had_actions"] = True
+        self.last_cycle_outcome["status"] = "acted"
         results_str = await execute_skill(actions=actions)
         results_str = _normalize_tool_output(results_str)
 
         self.agent_state.last_thoughts = thoughts
         self.agent_state.last_actions_result = results_str
         self.agent_state.last_action_tools = [action.tool_name for action in actions]
+        if self.goal_manager is not None:
+            await self.goal_manager.record_action_result(
+                results_str,
+                actions=[action.model_dump() for action in actions],
+            )
 
         args_to_rag = []
         for act in actions:
@@ -395,7 +521,9 @@ class ReactLoop:
         )
         await self.event_bus.publish(Events.REACT_TICK_SAVED)
 
-    async def _handle_completion(self, thoughts: str) -> None:
+    async def _handle_completion(
+        self, thoughts: str, status: str = "completed"
+    ) -> None:
         """
         Logic for graceful completion (absence of actions).
 
@@ -403,14 +531,19 @@ class ReactLoop:
             thoughts: Final thoughts of the agent prior to sleep.
         """
 
-        log = "[ReAct] Empty actions list received. Concluding cycle."
+        self.last_cycle_outcome["status"] = status
+        log = (
+            "[ReAct] Empty actions list received. Concluding cycle."
+            if status == "completed"
+            else "[ReAct] Terminal response rejected by Goal gate; scheduling continuation."
+        )
         agent_logger.info(log)
 
         await self.sql_ticks.save_tick(
             thoughts=thoughts,
             actions=[],
             results={
-                "status": "completed",
+                "status": status,
                 "step": self.agent_state.current_step,
                 "max_steps": self.agent_state.max_react_steps,
                 "llm_metrics": self._llm_metrics_snapshot(),
@@ -462,6 +595,12 @@ class ReactLoop:
         )
         self.agent_state.last_action_error = message
         self.agent_state.last_actions_result = message
+        if self.goal_manager is not None:
+            await self.goal_manager.finish_cycle(
+                state="exhausted",
+                summary=message,
+                wake_after_seconds=5,
+            )
         agent_logger.warning(f"[ReAct] {message}")
         await self.sql_ticks.save_tick(
             thoughts="[Cycle stopped: step budget exhausted]",
@@ -483,6 +622,12 @@ class ReactLoop:
         message = "ReAct cycle cancelled by a higher-priority event."
         self.agent_state.last_action_error = message
         self.agent_state.last_actions_result = message
+        if self.goal_manager is not None:
+            await self.goal_manager.finish_cycle(
+                state="continue",
+                summary=message,
+                wake_after_seconds=1,
+            )
         await self.sql_ticks.save_tick(
             thoughts="[Cycle interrupted by higher-priority event]",
             actions=[],
@@ -518,6 +663,12 @@ class ReactLoop:
         )
         self.agent_state.last_action_error = ""
         self.agent_state.last_actions_result = message
+        if self.goal_manager is not None:
+            await self.goal_manager.finish_cycle(
+                state="continue",
+                summary=message,
+                wake_after_seconds=1,
+            )
         await self.sql_ticks.save_tick(
             thoughts="[Cycle steered to queued higher-priority event]",
             actions=[],

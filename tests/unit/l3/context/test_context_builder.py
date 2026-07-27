@@ -4,6 +4,7 @@ from src.l0_state.agent.state import AgentState
 from src.l3_agent.context.registry import ContextRegistry, ContextSection
 from src.utils.settings import ContextBudgetConfig
 from src.l3_agent.hooks.lifecycle import HookPhase, LifecycleHooks
+from src.l3_agent.goals.manager import GoalManager
 
 
 @pytest.mark.asyncio
@@ -252,3 +253,54 @@ async def test_context_without_trimming_does_not_emit_compaction_hooks():
     await builder.build("TEST_EVENT", {}, [])
 
     assert observed == []
+
+
+@pytest.mark.asyncio
+async def test_active_goal_uses_compact_context_projection(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "src.l3_agent.context.builder.get_skills_library",
+        lambda *args, **kwargs: "GoalSkills.get_goal(goal_id='')\n"
+        + ("skill\n" * 2000),
+    )
+    state = AgentState()
+    manager = GoalManager(
+        tmp_path / "goals.json",
+        state,
+        compact_context=True,
+        compact_max_chars=8000,
+    )
+    await manager.create("Finish a bounded repository task")
+    registry = ContextRegistry()
+
+    async def hypotheses(**kwargs):
+        return "HYPOTHESIS_NOISE\n" + ("noise\n" * 3000)
+
+    async def ticks(**kwargs):
+        return "OLD_TICKS\n" + ("old\n" * 3000) + "NEWEST_GOAL_EVIDENCE"
+
+    registry.register_provider(
+        "active_goal", manager.get_context_block, ContextSection.AGENT_STATE
+    )
+    registry.register_provider(
+        "sql_hypotheses", hypotheses, ContextSection.HYPOTHESES
+    )
+    registry.register_provider("sql_ticks", ticks, ContextSection.RECENT_TICKS)
+    builder = ContextBuilder(
+        state,
+        registry,
+        goal_manager=manager,
+        budget_config=ContextBudgetConfig(enabled=False),
+    )
+
+    context = await builder.build(
+        "TELETHON_MESSAGE_INCOMING",
+        {"message": "Continue exact goal"},
+        [],
+    )
+
+    assert len(context) <= 8000
+    assert "## ACTIVE GOAL" in context
+    assert "Continue exact goal" in context
+    assert "NEWEST_GOAL_EVIDENCE" in context
+    assert "HYPOTHESIS_NOISE" not in context
+    assert builder.last_build_metrics["policy"] == "goal_compact"

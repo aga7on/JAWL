@@ -50,6 +50,8 @@ from src.l3_agent.swarm.spawn import SwarmManager
 from src.l3_agent.tot.generator import ToTGenerator
 from src.l3_agent.tot.skills import DeepThinkSkill
 from src.l3_agent.subconscious.orchestrator import SubconsciousOrchestrator
+from src.l3_agent.goals.manager import GoalManager
+from src.l3_agent.goals.skills import GoalSkills
 
 
 class SystemBuilder:
@@ -82,6 +84,20 @@ class SystemBuilder:
         )
 
         self.container.context_registry = ContextRegistry()
+        goal_config = self.system_config.goal_mode
+        self.container.goal_manager = GoalManager(
+            self.container.local_data_dir / "agent" / "goals.json",
+            self.container.agent_state,
+            enabled=goal_config.enabled,
+            compact_context=goal_config.compact_context,
+            compact_max_chars=goal_config.compact_max_chars,
+            suppress_waiting_heartbeats=goal_config.suppress_waiting_heartbeats,
+        )
+        self.container.context_registry.register_provider(
+            "active_goal",
+            self.container.goal_manager.get_context_block,
+            section=ContextSection.AGENT_STATE,
+        )
         return self
 
     async def with_l1_databases(self) -> "SystemBuilder":
@@ -303,6 +319,7 @@ class SystemBuilder:
             )
         register_instance(MemoryRecallSkill(rag_memories.orchestrator))
         register_instance(SkillCatalog())
+        register_instance(GoalSkills(self.container.goal_manager))
 
         context_builder = ContextBuilder(
             agent_state=self.container.agent_state,
@@ -311,6 +328,7 @@ class SystemBuilder:
             tool_transport=self.container.settings.llm.tool_transport,
             budget_config=self.system_config.context_depth.budget,
             hooks=self.container.lifecycle_hooks,
+            goal_manager=self.container.goal_manager,
         )
 
         token_tracker = TokenTracker()
@@ -377,6 +395,7 @@ class SystemBuilder:
             event_bus=self.container.event_bus,
             tot_config=self.system_config.tree_of_thoughts,
             tot_generator=tot_generator,
+            goal_manager=self.container.goal_manager,
         )
 
         self.container.heartbeat = Heartbeat(
@@ -385,6 +404,10 @@ class SystemBuilder:
             continuous_cycle=self.container.settings.system.continuous_cycle,
             accel_config=self.container.settings.system.event_acceleration,
             timezone=self.container.settings.system.timezone,
+            goal_manager=self.container.goal_manager,
+            idle_backoff_config=(
+                self.container.settings.system.idle_heartbeat_backoff
+            ),
         )
         register_instance(EventQueueSkills(self.container.heartbeat))
 

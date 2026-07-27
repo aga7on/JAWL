@@ -12,3 +12,8 @@ terminates the ReAct cycle.
 
 Never invent a `jawl_*` function name. Read-modify-write, edit-test, and multiple
 writes to one resource must remain sequential.
+
+For coding work, treat verification as exact-state evidence. Start with the
+smallest relevant check, fix and rerun failures, then run the repository's
+declared verification gate before claiming completion. A test that was not run,
+timed out, was interrupted, or applies to a stale workspace is not green.

@@ -55,6 +55,7 @@ class MetaPlugin(BaseInterface):
             access_level=meta_config.access_level,
             available_models=container.settings.llm.available_models,
             custom_skills_enabled=meta_config.custom_skills_enabled,
+            goal_manager=container.goal_manager,
         )
 
         custom_registry = CustomSkillsRegistry(container.local_data_dir)

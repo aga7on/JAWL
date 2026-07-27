@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from src.l3_agent.skills.schema import parse_llm_json
 
@@ -62,6 +63,70 @@ def test_parser_does_not_treat_embedded_empty_example_as_completion():
     )
 
     parsed, error = parse_llm_json("Perhaps I should return this: " + example)
+
+    assert parsed is None
+    assert "Invalid JSON format" in error
+
+
+def test_parser_accepts_compact_goal_v2_action():
+    compact = {
+        "v": 2,
+        "state": "act",
+        "calls": [
+            {
+                "tool": "HostOSCodingFiles.read_coding_file",
+                "args": {"task_id": "t", "relative_path": "src/app.py"},
+                "action_id": "read",
+            }
+        ],
+        "note": "Inspect the target.",
+    }
+
+    parsed, error = parse_llm_json(json.dumps(compact))
+
+    assert error is None
+    assert parsed.protocol_version == 2
+    assert parsed.goal_state == "act"
+    assert parsed.actions[0].tool_name == "HostOSCodingFiles.read_coding_file"
+    assert parsed.actions[0].action_id == "read"
+    assert "Inspect" in parsed.thoughts
+
+
+@pytest.mark.parametrize("state", ["done", "wait", "blocked"])
+def test_parser_accepts_explicit_goal_terminal_states(state):
+    payload = {"v": 2, "state": state, "summary": f"{state} evidence"}
+    if state == "wait":
+        payload["wake_after_seconds"] = 30
+
+    parsed, error = parse_llm_json(json.dumps(payload))
+
+    assert error is None
+    assert parsed.goal_state == state
+    assert parsed.actions == []
+    assert parsed.goal_summary == f"{state} evidence"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"v": 2, "state": "act", "calls": []},
+        {"v": 2, "state": "done", "summary": "", "calls": []},
+        {
+            "v": 2,
+            "state": "wait",
+            "summary": "later",
+            "wake_after_seconds": 0,
+        },
+        {
+            "v": 2,
+            "state": "done",
+            "summary": "done",
+            "calls": [{"tool": "unsafe", "args": {}}],
+        },
+    ],
+)
+def test_parser_rejects_invalid_goal_v2(payload):
+    parsed, error = parse_llm_json(json.dumps(payload))
 
     assert parsed is None
     assert "Invalid JSON format" in error

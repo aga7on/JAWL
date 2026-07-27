@@ -9,7 +9,7 @@ ignores OS and IDE port scanners (which like to knock on all open sockets).
 import asyncio
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from src.utils.logger import main_logger
 from src.utils.dtime import get_now_formatted
@@ -30,6 +30,9 @@ class HostTerminalClient:
         data_dir: Path,
         agent_name: str,
         timezone: int,
+        control_handler: Optional[
+            Callable[[str, Dict[str, Any]], Awaitable[Dict[str, Any]]]
+        ] = None,
     ) -> None:
         """
         Initializes the terminal TCP server.
@@ -45,6 +48,7 @@ class HostTerminalClient:
         self.config = config
         self.agent_name = agent_name
         self.timezone = timezone
+        self.control_handler = control_handler
 
         self.host = "127.0.0.1"
         self.port = 0  # 0 means the OS will issue any free port automatically
@@ -113,7 +117,11 @@ class HostTerminalClient:
         try:
             # Wait for the handshake password for a maximum of 2 seconds
             handshake = await asyncio.wait_for(reader.readline(), timeout=2.0)
-            if handshake.decode("utf-8").strip() != "JAWL_HANDSHAKE":
+            handshake_text = handshake.decode("utf-8").strip()
+            if handshake_text == "JAWL_CONTROL":
+                await self._handle_control_client(reader, writer)
+                return
+            if handshake_text != "JAWL_HANDSHAKE":
                 writer.close()
                 await writer.wait_closed()
                 return
@@ -171,6 +179,52 @@ class HostTerminalClient:
 
             except Exception as e:
                 main_logger.debug(f"[Host Terminal] Error closing client session: {e}")
+
+    async def _handle_control_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """Serve one bounded operator command without creating a chat event."""
+
+        request_id = ""
+        try:
+            raw = await asyncio.wait_for(reader.readline(), timeout=3.0)
+            if len(raw) > 65536:
+                raise ValueError("Control request exceeds 64 KiB.")
+            request = json.loads(raw.decode("utf-8"))
+            if not isinstance(request, dict):
+                raise ValueError("Control request must be an object.")
+            request_id = str(request.get("id", ""))[:100]
+            if request.get("type") != "control":
+                raise ValueError("Unsupported control envelope.")
+            if self.control_handler is None:
+                raise ValueError("Operator controls are unavailable.")
+            result = await self.control_handler(
+                str(request.get("action", "")),
+                request.get("params", {}),
+            )
+            response = {
+                "type": "control_result",
+                "id": request_id,
+                "ok": True,
+                "result": result,
+            }
+        except Exception as exc:
+            response = {
+                "type": "control_result",
+                "id": request_id,
+                "ok": False,
+                "error": str(exc)[:2000],
+            }
+        try:
+            writer.write(
+                (json.dumps(response, ensure_ascii=False) + "\n").encode(
+                    "utf-8"
+                )
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     async def broadcast_message(self, text: str) -> None:
         """

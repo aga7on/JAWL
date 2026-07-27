@@ -10,7 +10,7 @@ import asyncio
 import json
 import re
 import uuid
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
 from src.l0_state.agent.state import AgentState
 from src.utils.logger import agent_logger
@@ -19,6 +19,9 @@ from src.utils.settings import ContextBudgetConfig, SubconsciousConfig
 from src.l3_agent.context.registry import ContextRegistry, ContextSection
 from src.l3_agent.hooks.lifecycle import HookContext, HookPhase, LifecycleHooks
 from src.l3_agent.skills.registry import get_skills_library
+
+if TYPE_CHECKING:
+    from src.l3_agent.goals.manager import GoalManager
 
 
 class ContextBuilder:
@@ -35,6 +38,7 @@ class ContextBuilder:
         tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
         budget_config: ContextBudgetConfig = None,
         hooks: LifecycleHooks = None,
+        goal_manager: Optional["GoalManager"] = None,
     ) -> None:
         """
         Initializes the builder and automatically registers mandatory system providers.
@@ -49,6 +53,7 @@ class ContextBuilder:
         self.tool_transport = tool_transport
         self.budget = budget_config or ContextBudgetConfig()
         self.hooks = hooks or LifecycleHooks()
+        self.goal_manager = goal_manager
         self.last_build_metrics: Dict[str, Any] = {}
 
         self.registry.register_provider(
@@ -127,9 +132,31 @@ class ContextBuilder:
                 )
             else:
                 blocks = compacted_blocks
+        goal_compacted = {}
+        goal_profile_active = bool(
+            self.goal_manager is not None
+            and self.goal_manager.active_goal is not None
+            and self.goal_manager.compact_context
+        )
+        if (
+            goal_profile_active
+        ):
+            blocks, goal_compacted = self._apply_goal_context_profile(blocks)
+            for name, values in goal_compacted.items():
+                existing = trimmed.get(name)
+                if existing:
+                    values = {
+                        "before": max(existing["before"], values["before"]),
+                        "after": values["after"],
+                    }
+                trimmed[name] = values
         context = self._join_blocks(blocks)
         self.last_build_metrics = {
-            "policy": self.budget.skill_policy if self.budget.enabled else "full",
+            "policy": (
+                "goal_compact"
+                if goal_profile_active
+                else self.budget.skill_policy if self.budget.enabled else "full"
+            ),
             "original_chars": original_chars,
             "final_chars": len(context),
             "trimmed_providers": trimmed,
@@ -142,6 +169,80 @@ class ContextBuilder:
                 f"trimmed={','.join(trimmed)}"
             )
         return context
+
+    def _apply_goal_context_profile(
+        self, blocks: Dict[str, str]
+    ) -> tuple[Dict[str, str], Dict[str, Dict[str, int]]]:
+        """Project durable goal state instead of replaying unrelated cognition."""
+
+        bounded = dict(blocks)
+        trimmed: Dict[str, Dict[str, int]] = {}
+        # SOUL and system safety rules live in the static system message. These
+        # volatile providers are useful for autonomous reflection but are not
+        # authoritative execution state for an explicit active goal.
+        omitted = {
+            "sql_drives",
+            "sql_traits",
+            "sql_hypotheses",
+            "sql_mental_states",
+            "custom_dashboard",
+        }
+        for name in list(bounded):
+            if name in omitted:
+                before = len(bounded.pop(name))
+                trimmed[name] = {"before": before, "after": 0}
+
+        limits = {
+            "skills": 9000,
+            "active_goal": 9000,
+            "heartbeat": 7000,
+            "sql_ticks": 5000,
+            "rag memories": 4000,
+            "sql_tasks": 4000,
+            "sql_notes": 3000,
+            "agent_state": 3000,
+            "tree_of_thoughts": 3000,
+        }
+        for name, block in list(bounded.items()):
+            limit = limits.get(name, 3000)
+            reduced = self._trim_block(
+                block,
+                limit,
+                preserve_tail=name in {"heartbeat", "sql_ticks"},
+            )
+            if len(reduced) != len(block):
+                trimmed[name] = {"before": len(block), "after": len(reduced)}
+                bounded[name] = reduced
+
+        target = self.goal_manager.compact_max_chars
+        total = len(self._join_blocks(bounded))
+        minimums = {
+            "skills": 1000,
+            "active_goal": 5000,
+            "heartbeat": 1000,
+            "agent_state": 500,
+        }
+        while total > target:
+            candidates = [
+                (len(block) - minimums.get(name, 0), name)
+                for name, block in bounded.items()
+                if len(block) > minimums.get(name, 0)
+            ]
+            if not candidates:
+                break
+            available, name = max(candidates)
+            before = len(bounded[name])
+            reduction = min(available, total - target)
+            bounded[name] = self._trim_block(
+                bounded[name],
+                before - reduction,
+                preserve_tail=name in {"heartbeat", "sql_ticks"},
+            )
+            entry = trimmed.setdefault(name, {"before": before, "after": before})
+            entry["before"] = max(entry["before"], before)
+            entry["after"] = len(bounded[name])
+            total = len(self._join_blocks(bounded))
+        return bounded, trimmed
 
     async def _run_observational_hook(self, context: HookContext) -> List[str]:
         """Run a non-blocking lifecycle observer without risking context assembly."""

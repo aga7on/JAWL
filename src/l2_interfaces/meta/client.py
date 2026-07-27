@@ -7,7 +7,7 @@ YAML configuration at runtime (without direct editing of host system files by th
 
 import os
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
 from ruamel.yaml import YAML
 
 from src.l0_state.agent.state import AgentState
@@ -27,6 +27,7 @@ class MetaClient:
         access_level: int,
         available_models: List[str],
         custom_skills_enabled: bool,
+        goal_manager: Optional[Any] = None,
     ) -> None:
         """
         Initializes the meta client.
@@ -47,6 +48,7 @@ class MetaClient:
         self.access_level = access_level
         self.available_models = available_models
         self.custom_skills_enabled = custom_skills_enabled
+        self.goal_manager = goal_manager
 
         self.yaml = YAML()
         self.yaml.preserve_quotes = True
