@@ -11,6 +11,9 @@ system:
     compact_context: true
     compact_max_chars: 24000
     suppress_waiting_heartbeats: true
+    task_ledger_enabled: true
+    task_ledger_max_chars: 7000
+    provider_rebase_prompt_tokens: 45000
 ```
 
 `enabled` registers the lifecycle skills and durable store. Only one goal may
@@ -28,10 +31,32 @@ not truncate the static system instructions.
 active goal explicitly waits without a due wakeup. User messages, Telegram,
 file events, and other external events still wake the agent.
 
+## Local Task Ledger
+
+`task_ledger_enabled` makes the active Goal own a compact authoritative
+execution checkpoint. It records the current phase, acceptance criteria,
+completed and pending stages, confirmed facts, active hypotheses, failed
+approaches and their retry conditions, artifacts, known tool/session state,
+blockers, the last action batch, and the exact next action.
+
+The ledger is not conversation history or chain-of-thought. Full results remain
+in ticks, the action journal, files, and other evidence stores. The ledger keeps
+only bounded summaries and evidence identifiers, and is atomically persisted
+before the next provider call. Goal Protocol v2 responses can update it with a
+sparse `ledger` object; omitted fields retain their current value.
+
+`task_ledger_max_chars` bounds the model-facing projection. The durable store
+can retain more bounded entries than are projected on one call.
+
+`provider_rebase_prompt_tokens` starts a fresh QWB lane when provider-reported
+prompt context reaches the configured threshold. The new Qwen chat receives
+the full static instructions plus the local Goal/Task Ledger bootstrap. Set the
+value to `0` to disable automatic rebasing.
+
 ## Lifecycle
 
 The model can create, inspect, resume, complete, block, cancel, or schedule a
-wakeup through `GoalSkills`. State is atomically stored in
+wakeup through `GoalSkills`. State, including the Task Ledger, is atomically stored in
 `src/utils/local/data/agent/goals.json`. A malformed store is preserved and
 mutations fail closed instead of overwriting recovery evidence.
 

@@ -25,6 +25,7 @@ from src.cli.widgets.ui import (
     set_window_title,
 )
 from src.l0_state.agent.state import AgentState
+from src.l3_agent.goals.ledger import TaskLedgerPatch
 from src.l3_agent.goals.manager import GoalManager
 from src.utils.settings import load_config
 
@@ -45,6 +46,9 @@ def _offline_manager() -> GoalManager:
         compact_context=config.compact_context,
         compact_max_chars=config.compact_max_chars,
         suppress_waiting_heartbeats=config.suppress_waiting_heartbeats,
+        task_ledger_enabled=config.task_ledger_enabled,
+        task_ledger_max_chars=config.task_ledger_max_chars,
+        provider_rebase_prompt_tokens=config.provider_rebase_prompt_tokens,
         recover_on_start=False,
     )
 
@@ -97,6 +101,13 @@ def _offline_control(action: str, params: Dict[str, Any]) -> Dict[str, Any]:
             if goal is None:
                 raise ValueError("No active goal.")
             return manager.view(goal.goal_id)
+        if action == "goal.ledger.update":
+            goal = await manager.record_ledger_patch(
+                TaskLedgerPatch.model_validate(params.get("patch", {}))
+            )
+            if goal is None:
+                raise ValueError("No active goal.")
+            return manager.view(goal.goal_id)
         raise ValueError(f"Unsupported offline action '{action}'.")
 
     return asyncio.run(invoke())
@@ -129,6 +140,7 @@ def _goal_panel(goal: Dict[str, Any] | None) -> Panel:
     remaining = goal.get("remaining_tokens")
     remaining_text = "unbounded" if remaining is None else str(remaining)
     wake = _fmt_time(goal.get("next_wakeup_at"))
+    ledger = goal.get("task_ledger") or {}
     body = (
         f"[bold]{goal.get('objective', '')}[/bold]\n\n"
         f"ID: [cyan]{goal.get('goal_id', '')}[/cyan]\n"
@@ -142,6 +154,11 @@ def _goal_panel(goal: Dict[str, Any] | None) -> Panel:
         f"Verification: {goal.get('verification_policy')} / "
         f"{goal.get('verification_status')}\n"
         f"Summary: {goal.get('last_summary') or '—'}"
+    )
+    body += (
+        f"\nLedger: rev {ledger.get('revision', 0)} / "
+        f"phase={ledger.get('current_phase', 'initial')}\n"
+        f"Next: {ledger.get('next_action') or 'not recorded'}"
     )
     color = {
         "active": "green",
@@ -259,6 +276,52 @@ def _show_history() -> None:
     input("\nPress Enter to return...")
 
 
+def _show_ledger(goal: Dict[str, Any]) -> None:
+    ledger = goal.get("task_ledger") or {}
+    clear_screen()
+    console.print(
+        Panel(
+            json.dumps(ledger, ensure_ascii=False, indent=2),
+            title=f"Task Ledger · revision {ledger.get('revision', 0)}",
+            border_style="cyan",
+        )
+    )
+    input("\nPress Enter to return...")
+
+
+def _edit_ledger(goal: Dict[str, Any]) -> None:
+    ledger = goal.get("task_ledger") or {}
+    phase = questionary.text(
+        "Current phase:",
+        default=str(ledger.get("current_phase") or "initial"),
+    ).ask()
+    if phase is None:
+        return
+    next_action = questionary.text(
+        "Exact next action:",
+        default=str(ledger.get("next_action") or ""),
+    ).ask()
+    if next_action is None:
+        return
+    summary = questionary.text(
+        "Checkpoint summary:",
+        default=str(ledger.get("checkpoint_summary") or ""),
+    ).ask()
+    if summary is None:
+        return
+    invoke_goal_control(
+        "goal.ledger.update",
+        {
+            "patch": {
+                "phase": phase.strip(),
+                "next_action": next_action.strip(),
+                "checkpoint_summary": summary.strip(),
+            }
+        },
+    )
+    print_success("Task Ledger checkpoint updated.")
+
+
 def goals_screen() -> None:
     set_window_title("JAWL - Durable Goals")
     while True:
@@ -274,6 +337,14 @@ def goals_screen() -> None:
             if goal and goal.get("status") == "blocked":
                 choices.append(questionary.Choice("[>] Resume Goal", "resume"))
             if active:
+                choices.extend(
+                    [
+                        questionary.Choice("[L] Inspect Task Ledger", "ledger"),
+                        questionary.Choice(
+                            "[e] Edit Ledger checkpoint", "ledger_edit"
+                        ),
+                    ]
+                )
                 choices.extend(
                     [
                         questionary.Choice("[✓] Complete Goal", "complete"),
@@ -310,10 +381,14 @@ def goals_screen() -> None:
                 _schedule_goal(goal)
             elif choice == "history":
                 _show_history()
+            elif choice == "ledger":
+                _show_ledger(goal)
+            elif choice == "ledger_edit":
+                _edit_ledger(goal)
         except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
             print_error(str(exc))
             print_info(
                 "If JAWL is running, the Host Terminal interface must be enabled."
             )
-        if choice not in {"history", None, "back"}:
+        if choice not in {"history", "ledger", None, "back"}:
             time.sleep(1.2)

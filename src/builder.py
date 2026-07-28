@@ -92,6 +92,11 @@ class SystemBuilder:
             compact_context=goal_config.compact_context,
             compact_max_chars=goal_config.compact_max_chars,
             suppress_waiting_heartbeats=goal_config.suppress_waiting_heartbeats,
+            task_ledger_enabled=goal_config.task_ledger_enabled,
+            task_ledger_max_chars=goal_config.task_ledger_max_chars,
+            provider_rebase_prompt_tokens=(
+                goal_config.provider_rebase_prompt_tokens
+            ),
         )
         self.container.context_registry.register_provider(
             "active_goal",
@@ -382,6 +387,9 @@ class SystemBuilder:
             ),
             tool_transport=self.container.settings.llm.tool_transport,
             thinking_policy=self.container.settings.llm.thinking_policy,
+            llm_invalid_request_retries=(
+                self.container.settings.llm.invalid_request_retries
+            ),
             event_queue_max=self.system_config.event_acceleration.queue_max_events,
             event_coalesce_window_sec=(
                 self.system_config.event_acceleration.coalesce_window_sec

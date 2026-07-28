@@ -53,8 +53,11 @@ class CodeGraphIndexing:
             # Parse all files asynchronously to not block the Event Loop
             stats = await asyncio.to_thread(self._parse_and_build_sync, safe_path, project_id)
 
-            # Save to state
-            rel_path = safe_path.relative_to(self.client.host_os.framework_dir).as_posix()
+            # Save to state — use relative path if inside framework, absolute otherwise
+            try:
+                rel_path = safe_path.relative_to(self.client.host_os.framework_dir).as_posix()
+            except ValueError:
+                rel_path = safe_path.as_posix()
             self.client.state.active_indexes[project_id] = rel_path
             self.client.state.save()
 

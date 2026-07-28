@@ -33,6 +33,30 @@ async def test_index_codebase_success(mock_to_thread, indexing_skill):
 
 
 @pytest.mark.asyncio
+@patch("src.l2_interfaces.code_graph.skills.indexing.asyncio.to_thread")
+async def test_index_codebase_preserves_absolute_path_outside_framework(
+    mock_to_thread, indexing_skill, tmp_path
+):
+    mock_to_thread.return_value = {"files": 1, "classes": 0, "functions": 1}
+    external = (tmp_path / "external_project").resolve()
+    external.mkdir()
+    framework = (tmp_path / "framework").resolve()
+    framework.mkdir()
+    indexing_skill.client.host_os.framework_dir = framework
+    indexing_skill.client.host_os.validate_path.side_effect = None
+    indexing_skill.client.host_os.validate_path.return_value = external
+    indexing_skill.client.state.save = MagicMock()
+
+    result = await indexing_skill.index_codebase(str(external), "external")
+
+    assert result.is_success is True
+    assert indexing_skill.client.state.active_indexes["external"] == (
+        external.as_posix()
+    )
+    indexing_skill.client.state.save.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_delete_index_success(indexing_skill):
     """Тест: Удаление индекса стирает данные из БД и стейта."""
     indexing_skill.client.state.active_indexes["old_app"] = "sandbox/old"

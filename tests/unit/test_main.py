@@ -52,7 +52,13 @@ async def test_watch_for_stop_file_triggers_shutdown(tmp_path):
 @patch("src.main.SystemBuilder")
 @patch("src.main.load_config")
 @patch("src.main.clear_registry")
-def test_main_keyboard_interrupt(mock_clear, mock_load, mock_builder_cls, mock_orchestrator):
+def test_main_keyboard_interrupt(
+    mock_clear,
+    mock_load,
+    mock_builder_cls,
+    mock_orchestrator,
+    tmp_path,
+):
     """Тест: main() ловит KeyboardInterrupt и возвращает код 0."""
     mock_load.return_value = (SettingsConfig(), InterfacesConfig())
 
@@ -65,7 +71,13 @@ def test_main_keyboard_interrupt(mock_clear, mock_load, mock_builder_cls, mock_o
     instance.run = AsyncMock(side_effect=KeyboardInterrupt())
     instance.stop = AsyncMock()
 
-    exit_code = asyncio.run(main())
+    with patch("src.main.SystemInstanceLock") as lock_cls, patch(
+        "src.main.get_pid_file_path", return_value=tmp_path / "agent.pid"
+    ), patch(
+        "src.main.get_lock_file_path", return_value=tmp_path / "agent.lock"
+    ):
+        lock_cls.return_value.acquire.return_value = True
+        exit_code = asyncio.run(main())
 
     assert exit_code == 0
     instance.stop.assert_awaited_once()
@@ -75,7 +87,13 @@ def test_main_keyboard_interrupt(mock_clear, mock_load, mock_builder_cls, mock_o
 @patch("src.main.SystemBuilder")
 @patch("src.main.load_config")
 @patch("src.main.clear_registry")
-def test_main_critical_exception(mock_clear, mock_load, mock_builder_cls, mock_orchestrator):
+def test_main_critical_exception(
+    mock_clear,
+    mock_load,
+    mock_builder_cls,
+    mock_orchestrator,
+    tmp_path,
+):
     """Тест: main() ловит любые исключения и не падает жестко."""
     mock_load.return_value = (SettingsConfig(), InterfacesConfig())
 
@@ -88,7 +106,13 @@ def test_main_critical_exception(mock_clear, mock_load, mock_builder_cls, mock_o
     instance.run = AsyncMock(side_effect=RuntimeError("Critical failure ядра"))
     instance.stop = AsyncMock()
 
-    exit_code = asyncio.run(main())
+    with patch("src.main.SystemInstanceLock") as lock_cls, patch(
+        "src.main.get_pid_file_path", return_value=tmp_path / "agent.pid"
+    ), patch(
+        "src.main.get_lock_file_path", return_value=tmp_path / "agent.lock"
+    ):
+        lock_cls.return_value.acquire.return_value = True
+        exit_code = asyncio.run(main())
 
     assert exit_code == 0
     instance.stop.assert_awaited_once()

@@ -53,3 +53,47 @@ async def test_goal_create_wakes_heartbeat():
     )
 
     assert result == {"goal_id": "goal-test", "status": "active"}
+
+
+@pytest.mark.asyncio
+async def test_goal_ledger_update_validates_and_forwards_sparse_patch():
+    goal = SimpleNamespace(goal_id="goal-ledger")
+
+    class Manager:
+        def __init__(self):
+            self.patch = None
+
+        async def record_ledger_patch(self, patch):
+            self.patch = patch
+            return goal
+
+        def view(self, goal_id=""):
+            return {
+                "goal_id": goal_id,
+                "task_ledger": {
+                    "current_phase": self.patch.phase,
+                    "next_action": self.patch.next_action,
+                },
+            }
+
+    manager = Manager()
+    container = SimpleNamespace(
+        settings=SettingsConfig(),
+        interfaces_config=InterfacesConfig(),
+        agent_state=AgentState(),
+        goal_manager=manager,
+        heartbeat=None,
+    )
+
+    result = await OperatorControl(container).handle(
+        "goal.ledger.update",
+        {
+            "patch": {
+                "phase": "verify",
+                "next_action": "Run the full unit suite",
+            }
+        },
+    )
+
+    assert manager.patch.phase == "verify"
+    assert result["task_ledger"]["next_action"] == "Run the full unit suite"

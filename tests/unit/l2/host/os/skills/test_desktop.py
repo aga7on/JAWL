@@ -1,5 +1,8 @@
+import asyncio
+import threading
+
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 from src.l2_interfaces.host.os.skills.desktop import HostOSDesktop
 
 
@@ -66,6 +69,65 @@ async def test_desktop_take_screenshot_accepts_save_path_alias(mock_grab, os_cli
 
     assert res.is_success is True
     assert mock_image.save.call_args[0][0].name == "alias-screen.png"
+
+
+@pytest.mark.asyncio
+@patch("src.l2_interfaces.host.os.skills.desktop.ImageGrab.grab")
+async def test_desktop_take_screenshot_generates_default_name(mock_grab, os_client):
+    desktop = HostOSDesktop(os_client)
+    mock_image = MagicMock()
+    mock_grab.return_value = mock_image
+    mock_image.save.side_effect = lambda path: path.write_bytes(b"image")
+
+    res = await desktop.take_screenshot()
+
+    assert res.is_success is True
+    saved_path = mock_image.save.call_args.args[0]
+    assert saved_path.name.startswith("screenshot-")
+    assert saved_path.suffix == ".png"
+    assert "download" in saved_path.parts
+
+
+@pytest.mark.asyncio
+@patch("src.l2_interfaces.host.os.skills.desktop.ImageGrab.grab")
+@patch(
+    "src.l2_interfaces.host.os.skills.desktop.asyncio.sleep",
+    new_callable=AsyncMock,
+)
+async def test_desktop_take_screenshot_retries_transient_capture(
+    mock_sleep, mock_grab, os_client
+):
+    desktop = HostOSDesktop(os_client)
+    mock_image = MagicMock()
+    mock_image.save.side_effect = lambda path: path.write_bytes(b"image")
+    mock_grab.side_effect = [OSError("desktop temporarily busy"), mock_image]
+
+    res = await desktop.take_screenshot("retry-screen.png", all_screens=True)
+
+    assert res.is_success is True
+    assert mock_grab.call_count == 2
+    mock_sleep.assert_awaited_once_with(0.25)
+
+
+@pytest.mark.asyncio
+async def test_desktop_observation_timeout_resets_uia_client(os_client):
+    desktop = HostOSDesktop(os_client)
+    semantic = MagicMock()
+    release = threading.Event()
+    semantic.observe.side_effect = lambda **kwargs: release.wait()
+    desktop._semantic_client = semantic
+
+    with patch.object(
+        desktop.host_os.config, "desktop_operation_timeout_sec", 0.01
+    ):
+        try:
+            res = await desktop.observe_desktop(window_title="Sotis")
+        finally:
+            release.set()
+
+    assert res.is_success is False
+    assert "exceeded 0.01s" in res.message
+    assert desktop._semantic_client is None
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ import shutil
 import ctypes
 import hashlib
 import json
+import threading
 from PIL import ImageGrab
 import time
 
@@ -53,6 +54,71 @@ class HostOSDesktop:
             )
         return self._semantic_client
 
+    async def _run_semantic(
+        self,
+        operation: str,
+        function,
+        *,
+        operation_timeout_sec: float | None = None,
+        **kwargs,
+    ):
+        """Run one potentially blocking UIA call behind a hard async boundary."""
+
+        configured_timeout = float(
+            self.host_os.config.desktop_operation_timeout_sec
+        )
+        effective_timeout = (
+            configured_timeout
+            if operation_timeout_sec is None
+            else float(operation_timeout_sec)
+        )
+        loop = asyncio.get_running_loop()
+        result_future = loop.create_future()
+
+        def deliver_result(value=None, error: Exception | None = None) -> None:
+            if result_future.done():
+                return
+            if error is not None:
+                result_future.set_exception(error)
+            else:
+                result_future.set_result(value)
+
+        def invoke() -> None:
+            try:
+                value = function(**kwargs)
+            except Exception as exc:
+                try:
+                    loop.call_soon_threadsafe(deliver_result, None, exc)
+                except RuntimeError:
+                    pass
+            else:
+                try:
+                    loop.call_soon_threadsafe(deliver_result, value, None)
+                except RuntimeError:
+                    pass
+
+        # UIA/COM can block below Python with no cancellation primitive. A
+        # daemon thread lets the async boundary time out without registering a
+        # stuck default-executor worker that prevents process shutdown.
+        threading.Thread(
+            target=invoke,
+            name=f"jawl-desktop-{operation}",
+            daemon=True,
+        ).start()
+        try:
+            return await asyncio.wait_for(
+                result_future,
+                timeout=effective_timeout,
+            )
+        except TimeoutError as exc:
+            # The OS call runs in a worker thread and cannot be killed safely.
+            # Drop the client so later calls do not queue behind its held lock.
+            self._semantic_client = None
+            raise DesktopAutomationError(
+                f"Desktop {operation} exceeded {effective_timeout:g}s; "
+                "the UI Automation client was reset."
+            ) from exc
+
     @skill()
     @require_access(HostOSAccessLevel.SANDBOX)
     async def observe_desktop(
@@ -69,8 +135,10 @@ class HostOSDesktop:
         """
 
         try:
-            result = await asyncio.to_thread(
-                self._semantic().observe,
+            semantic = self._semantic()
+            result = await self._run_semantic(
+                "observation",
+                semantic.observe,
                 window_title=window_title,
                 max_depth=max_depth,
                 max_elements=max_elements,
@@ -100,8 +168,10 @@ class HostOSDesktop:
         """
 
         try:
-            result = await asyncio.to_thread(
-                self._semantic().act,
+            semantic = self._semantic()
+            result = await self._run_semantic(
+                "action",
+                semantic.act,
                 element_ref=element_ref,
                 expected_element_sha256=expected_element_sha256,
                 action=action,
@@ -133,8 +203,19 @@ class HostOSDesktop:
         """
 
         try:
-            result = await asyncio.to_thread(
-                self._semantic().wait_for_element,
+            semantic = self._semantic()
+            result = await self._run_semantic(
+                "wait",
+                semantic.wait_for_element,
+                operation_timeout_sec=min(
+                    120,
+                    max(
+                        float(timeout_sec) + 5,
+                        float(
+                            self.host_os.config.desktop_operation_timeout_sec
+                        ),
+                    ),
+                ),
                 window_title=window_title,
                 name=name,
                 automation_id=automation_id,
@@ -255,7 +336,8 @@ class HostOSDesktop:
         """
         [GUI] Captures main screen screenshot and saves to sandbox.
 
-        filename: Destination path. ``save_path`` is a compatibility alias.
+        filename: Optional destination path. ``save_path`` is a compatibility
+            alias. When both are omitted, a unique sandbox filename is used.
         with_grid: Overlays coordinate grid.
         grid_step: Grid step in pixels.
         """
@@ -266,7 +348,7 @@ class HostOSDesktop:
                 )
             filename = filename or save_path
             if not filename:
-                return SkillResult.fail("filename or save_path is required.")
+                filename = f"screenshot-{time.time_ns()}.png"
 
             if "/" not in filename and "\\" not in filename:
                 filename = f"sandbox/_system/download/{filename}"
@@ -281,7 +363,25 @@ class HostOSDesktop:
                 if with_grid:
                     draw_image_grid(safe_path, step=grid_step)
 
-            await asyncio.to_thread(_grab)
+            capture_error: OSError | None = None
+            for capture_attempt in range(2):
+                try:
+                    await asyncio.to_thread(_grab)
+                    capture_error = None
+                    break
+                except PermissionError:
+                    raise
+                except OSError as exc:
+                    capture_error = exc
+                    if capture_attempt == 0:
+                        await asyncio.sleep(0.25)
+            if capture_error is not None:
+                return SkillResult.fail(
+                    "Failed to take screenshot after 2 attempts. "
+                    "Graphical interface may be temporarily unavailable "
+                    "or headless "
+                    f"(last error: {capture_error})."
+                )
             digest = await asyncio.to_thread(
                 lambda: hashlib.sha256(safe_path.read_bytes()).hexdigest()
             )
@@ -298,12 +398,13 @@ class HostOSDesktop:
                 )
             )
 
-        except OSError:
-            return SkillResult.fail(
-                "Failed to take screenshot. Graphical interface is unavailable (headless server)."
-            )
         except PermissionError as e:
             return SkillResult.fail(str(e))
+        except OSError as e:
+            return SkillResult.fail(
+                "Failed to take screenshot. Graphical interface may be "
+                f"unavailable or headless (last error: {e})."
+            )
         except Exception as e:
             return SkillResult.fail(f"Error taking screenshot: {e}")
 

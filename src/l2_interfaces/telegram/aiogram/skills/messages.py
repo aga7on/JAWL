@@ -5,8 +5,10 @@ Sending, deleting, editing, and pinning messages.
 """
 
 from typing import Optional
+from aiogram.types import FSInputFile
 from src.l2_interfaces.telegram.aiogram.client import AiogramClient
 from src.l3_agent.skills.registry import SkillResult, skill
+from src.utils._tools import validate_sandbox_path
 from src.utils.logger import main_logger
 
 
@@ -43,6 +45,29 @@ class AiogramMessages:
             if "bot was blocked" in str(e).lower():
                 return SkillResult.fail("User blocked the bot. Sending is impossible.")
             return SkillResult.fail(f"Error sending message (Aiogram): {e}")
+
+    @skill()
+    async def send_file(
+        self, chat_id: int, file_path: str, caption: str = ""
+    ) -> SkillResult:
+        """Sends a generated or downloaded sandbox file to a Telegram chat."""
+        try:
+            safe_path = validate_sandbox_path(file_path)
+            if not safe_path.is_file():
+                return SkillResult.fail(f"Error: File not found ({safe_path.name}).")
+            await self.client.bot().send_document(
+                chat_id=int(chat_id),
+                document=FSInputFile(safe_path),
+                caption=caption,
+            )
+            main_logger.info(
+                f"[Telegram Aiogram] File {safe_path.name} sent to {chat_id}"
+            )
+            return SkillResult.ok("True")
+        except PermissionError as exc:
+            return SkillResult.fail(str(exc))
+        except Exception as exc:
+            return SkillResult.fail(f"Error sending file (Aiogram): {exc}")
 
     @skill()
     async def delete_message(self, chat_id: int, message_id: int) -> SkillResult:

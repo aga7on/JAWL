@@ -14,6 +14,9 @@ llm:
   is_multimodal: false
   temperature: 1.0
   max_react_steps: 15
+  # Retry provider-side input/session rejection once. Unsupported models and
+  # deterministic configuration errors still fail immediately.
+  invalid_request_retries: 1
   # provider_default, always, never, or first_step. QWB understands the
   # enable_thinking extension; provider_default sends no extra field.
   thinking_policy: provider_default
@@ -47,6 +50,12 @@ system:
     compact_context: true
     compact_max_chars: 24000
     suppress_waiting_heartbeats: true
+    # Compact local execution state survives Qwen chat/account resets.
+    task_ledger_enabled: true
+    task_ledger_max_chars: 7000
+    # Start a clean QWB lane after the upstream conversation grows this large.
+    # Set 0 to disable automatic rebasing.
+    provider_rebase_prompt_tokens: 45000
 
   # Подробнее: docs/yaml/settings/event_acceleration.md
   # Repeated timer heartbeats which complete without any action back off
@@ -57,13 +66,6 @@ system:
     max_multiplier: 8
     # Keep below QWB's default one-hour active-chat expiry.
     max_interval_sec: 3300
-
-  # Repeated timer heartbeats which complete without any action back off
-  # exponentially. Incoming events are never delayed by this policy.
-  idle_heartbeat_backoff:
-    enabled: true
-    no_op_threshold: 2
-    max_multiplier: 8
 
   event_acceleration:
     # Keep long provider requests alive; yield before stale actions and run the

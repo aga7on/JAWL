@@ -197,9 +197,9 @@ async def test_executor_does_not_retry_deterministic_bad_request(
     request = httpx.Request("POST", "http://bridge.test/v1/chat/completions")
     response = httpx.Response(400, request=request)
     session.chat.completions.create.side_effect = openai.BadRequestError(
-        "invalid_input",
+        "unsupported model qwen-does-not-exist",
         response=response,
-        body={"error": {"code": "invalid_input"}},
+        body={"error": {"code": "model_not_found"}},
     )
     logger = MagicMock()
     executor = LLMExecutor(llm, tracker)
@@ -216,8 +216,83 @@ async def test_executor_does_not_retry_deterministic_bad_request(
     assert result is None
     assert session.chat.completions.create.await_count == 1
     assert executor.last_call_metrics["status"] == "invalid_request"
+    assert executor.last_call_metrics["error_kind"] == "configuration"
+    assert executor.last_call_metrics["retryable"] is False
     assert executor.last_call_metrics["attempts"] == 1
     assert "Invalid upstream request" in logger.error.call_args.args[0]
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.llm.executor.asyncio.sleep", new_callable=AsyncMock)
+async def test_executor_retries_provider_input_rejection_once(
+    mock_sleep, mock_executor_deps
+):
+    llm, tracker = mock_executor_deps
+    tracker.add_input_record.return_value = 100
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    request = httpx.Request("POST", "http://bridge.test/v1/chat/completions")
+    response = httpx.Response(400, request=request)
+    rejection = openai.BadRequestError(
+        "invalid_input or attachment",
+        response=response,
+        body={"error": {"code": "invalid_input"}},
+    )
+    success = MagicMock()
+    success.choices[0].message.tool_calls = None
+    success.choices[0].message.content = "recovered"
+    session.chat.completions.create.side_effect = [rejection, success]
+    executor = LLMExecutor(llm, tracker)
+
+    result = await executor.execute(
+        "qwen3.8-max-preview",
+        [{"role": "user", "content": "retry bounded"}],
+        0.0,
+        MagicMock(),
+        "[LLM]",
+        max_retries=3,
+        max_invalid_request_retries=1,
+    )
+
+    assert result == "recovered"
+    assert session.chat.completions.create.await_count == 2
+    mock_sleep.assert_awaited_once_with(2)
+    assert executor.last_call_metrics["attempts"] == 2
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.llm.executor.asyncio.sleep", new_callable=AsyncMock)
+async def test_executor_records_retryable_rejection_after_bounded_retries(
+    mock_sleep, mock_executor_deps
+):
+    llm, tracker = mock_executor_deps
+    tracker.add_input_record.return_value = 100
+    session = AsyncMock()
+    llm.get_session.return_value = session
+    request = httpx.Request("POST", "http://bridge.test/v1/chat/completions")
+    response = httpx.Response(400, request=request)
+    rejection = openai.BadRequestError(
+        "CHAT_NOT_FOUND: chat abc is not exist",
+        response=response,
+        body={"error": {"code": "CHAT_NOT_FOUND"}},
+    )
+    session.chat.completions.create.side_effect = rejection
+    executor = LLMExecutor(llm, tracker)
+
+    result = await executor.execute(
+        "qwen3.8-max-preview",
+        [],
+        0.0,
+        MagicMock(),
+        "[LLM]",
+        max_retries=3,
+        max_invalid_request_retries=1,
+    )
+
+    assert result is None
+    assert session.chat.completions.create.await_count == 2
+    assert executor.last_call_metrics["error_kind"] == "session_state"
+    assert executor.last_call_metrics["retryable"] is True
 
 
 @pytest.mark.asyncio

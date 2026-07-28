@@ -49,6 +49,12 @@ class SkillResult:
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
 _NATIVE_TOOL_INDEX: Dict[str, str] = {}
 _ACTION_ENGINE = ActionExecutionEngine()
+_SKILL_PARAMETER_ALIASES: Dict[str, Dict[str, str]] = {
+    # Qwen frequently uses the generic chat field name even after discovering
+    # the exact terminal signature. Keep the public schema canonical while
+    # repairing this one unambiguous transport-level synonym.
+    "HostTerminalMessages.send_message_to_terminal": {"message": "text"},
+}
 
 
 def configure_action_journal(path: Path) -> ActionJournal:
@@ -569,7 +575,11 @@ async def call_skill(
     guard_model = item["guard"]
 
     try:
-        validated_params = guard_model(**params)
+        normalized_params = dict(params)
+        for alias, canonical in _SKILL_PARAMETER_ALIASES.get(name, {}).items():
+            if canonical not in normalized_params and alias in normalized_params:
+                normalized_params[canonical] = normalized_params.pop(alias)
+        validated_params = guard_model(**normalized_params)
         clean_kwargs = validated_params.model_dump()
     except ValidationError as e:
         errors = [

@@ -11,6 +11,8 @@ import json
 from typing import Any, Dict, List, Literal, Tuple, Optional
 from pydantic import BaseModel, Field
 
+from src.l3_agent.goals.ledger import TaskLedgerPatch
+
 
 class ActionCall(BaseModel):
     tool_name: str
@@ -35,6 +37,7 @@ class AgentResponse(BaseModel):
     goal_state: Literal["", "act", "continue", "wait", "done", "blocked"] = ""
     goal_summary: str = ""
     wake_after_seconds: Optional[int] = None
+    ledger: Optional[TaskLedgerPatch] = None
 
     @property
     def thoughts(self) -> str:
@@ -160,6 +163,80 @@ ACTION_SCHEMA = [
                         "minimum": 1,
                         "maximum": 86400,
                     },
+                    "ledger": {
+                        "type": "object",
+                        "description": (
+                            "Sparse durable Goal checkpoint. Omitted fields "
+                            "remain unchanged; include only operational state, "
+                            "never chain-of-thought."
+                        ),
+                        "properties": {
+                            "phase": {"type": "string", "maxLength": 300},
+                            "acceptance_criteria": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "completed_add": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "pending_steps": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "facts_add": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "hypotheses": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {"type": "string"},
+                            },
+                            "failures_add": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "action": {"type": "string"},
+                                        "reason": {"type": "string"},
+                                        "retry_when": {"type": "string"},
+                                    },
+                                    "required": ["action", "reason"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "artifacts_add": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "tool_state_add": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "blockers": {
+                                "type": "array",
+                                "maxItems": 12,
+                                "items": {"type": "string"},
+                            },
+                            "next_action": {
+                                "type": "string",
+                                "maxLength": 1000,
+                            },
+                            "checkpoint_summary": {
+                                "type": "string",
+                                "maxLength": 1200,
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
                 },
                 "required": [],
                 "additionalProperties": False,
@@ -270,6 +347,17 @@ def _goal_v2_payload(data: Any) -> Optional[AgentResponse]:
         return None
     if state in {"done", "wait", "blocked"} and not summary.strip():
         return None
+    ledger = data.get("ledger")
+    if ledger is not None and not isinstance(ledger, dict):
+        return None
+    try:
+        ledger_patch = (
+            TaskLedgerPatch.model_validate(ledger)
+            if ledger is not None
+            else None
+        )
+    except Exception:
+        return None
     return AgentResponse(
         observation="",
         reasoning="",
@@ -279,6 +367,7 @@ def _goal_v2_payload(data: Any) -> Optional[AgentResponse]:
         goal_state=state,
         goal_summary=summary.strip(),
         wake_after_seconds=wake_after,
+        ledger=ledger_patch,
     )
 
 

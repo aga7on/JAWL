@@ -291,8 +291,10 @@ class TelethonEvents:
         return sender_id
 
     async def _download_visual_media(self, message: Any) -> List[str]:
-        """Download a supported Telegram image into the sandbox for Qwen vision."""
+        """Download a supported Telegram image/video for Qwen vision."""
 
+        if not self.config.download_visual_media:
+            return []
         media = getattr(message, "media", None)
         if media is None:
             return []
@@ -310,6 +312,12 @@ class TelethonEvents:
                 "image/png": ".png",
                 "image/webp": ".webp",
                 "image/gif": ".gif",
+                "video/mp4": ".mp4",
+                "video/webm": ".webm",
+                "video/quicktime": ".mov",
+                "video/x-matroska": ".mkv",
+                "video/x-msvideo": ".avi",
+                "video/mpeg": ".mpeg",
             }
             suffix = suffix_by_mime.get(mime_type.lower(), "")
 
@@ -319,9 +327,11 @@ class TelethonEvents:
         file_meta = getattr(message, "file", None)
         raw_size = getattr(file_meta, "size", 0) if file_meta else 0
         size = raw_size if isinstance(raw_size, int) else 0
-        if size > 20 * 1024 * 1024:
+        max_bytes = int(self.config.visual_media_max_mb) * 1024 * 1024
+        if size > max_bytes:
             main_logger.warning(
-                f"[Telethon] Skipped oversized vision media ({size} bytes)."
+                f"[Telethon] Skipped oversized visual media "
+                f"({size} bytes; limit={max_bytes})."
             )
             return []
 
@@ -345,16 +355,19 @@ class TelethonEvents:
                     "[Telethon] Ignored vision media downloaded outside its sandbox."
                 )
                 return []
-            if actual_path.stat().st_size > 20 * 1024 * 1024:
+            if actual_path.stat().st_size > max_bytes:
                 actual_path.unlink(missing_ok=True)
-                main_logger.warning("[Telethon] Removed oversized downloaded vision media.")
+                main_logger.warning(
+                    "[Telethon] Removed oversized downloaded visual media."
+                )
                 return []
             main_logger.info(
-                f"[Telethon] Vision media downloaded: {actual_path.name} ({mime_type})"
+                f"[Telethon] Visual media downloaded: "
+                f"{actual_path.name} ({mime_type})"
             )
             return [str(actual_path)]
         except Exception as exc:
-            main_logger.warning(f"[Telethon] Failed to download vision media: {exc}")
+            main_logger.warning(f"[Telethon] Failed to download visual media: {exc}")
             return []
 
     async def _consume_approval_control(self, event: Any) -> bool:

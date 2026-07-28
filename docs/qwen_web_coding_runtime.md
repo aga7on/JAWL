@@ -16,10 +16,28 @@ complete authoritative bootstrap; subsequent requests remain on the accepted
 Qwen `parent_id` chain and send only the snapshot delta. JAWL still persists the
 objective, evidence, tool results, and continuation state locally.
 
+The active Goal also owns a versioned local Task Ledger. Unlike chat history,
+the ledger is an authoritative operational checkpoint: phase, acceptance
+criteria, completed/pending stages, evidence-backed facts, failed approaches
+with retry conditions, artifacts, known tool/session state, blockers, last
+action batch, and the exact next action. Each sparse model-authored update is
+persisted before dispatching the associated action batch; physical outcomes
+then add bounded evidence pointers and failed-action records automatically.
+
 QWB starts a fresh full chain when the model/static prompt/tool schema changes,
 the checkpoint is incomplete, the delta is too large, the pinned account fails,
 or downstream cancellation makes the outcome ambiguous. A JAWL restart also
 increments the durable goal lane epoch and forces a clean bootstrap.
+
+Goal lanes allow a larger bounded snapshot delta than disposable trace lanes
+(90% versus 60%, with the same 32k absolute ceiling). This avoids throwing
+away a useful warm Goal branch merely because its compact 24k projection
+changed substantially after a tool result.
+
+When provider-reported prompt context reaches the configured Goal threshold
+(45k tokens by default), JAWL increments the durable lane epoch. QWB then
+creates a clean upstream conversation and bootstraps it from the local Goal and
+Task Ledger instead of carrying an indefinitely growing web-chat chain.
 
 ## Web tool transport
 
@@ -93,3 +111,36 @@ For this preview model, `enable_thinking: false` is a downstream presentation
 preference only. Qwen Web rejects literal `thinking_enabled:false`, so QWB
 keeps upstream Thinking enabled and strips its private phases before returning
 the OpenAI-compatible answer.
+
+## Failure and retry contract
+
+Retries are reason-aware rather than based on HTTP status alone:
+
+- stale/deleted Qwen chat state is an upstream session failure; QWB discards
+  the account-local chat ID, rotates away from a failed pinned account, creates
+  a fresh chat, and returns HTTP 503 if bounded recovery is exhausted;
+- network, TLS, SSE-abort, inactivity, quota, and other transient upstream
+  failures remain retryable under the existing bounded backoff;
+- ambiguous provider HTTP 400 input rejections receive one configurable fresh
+  JAWL retry (`llm.invalid_request_retries`, default `1`);
+- deterministic model/parameter/context configuration errors are not replayed.
+
+If a retryable rejection still exhausts a ReAct call, an active Goal is left
+active with a scheduled continuation. Only a deterministic configuration error
+blocks it for operator correction. This prevents an otherwise durable Goal
+from ending because one Qwen web chat disappeared.
+
+## UI and MCP routing
+
+Adaptive context always exposes the small MCP broker surface and routes desktop
+skills when the objective mentions windows, dialogs, screenshots, or GUI work.
+For a named target such as x64dbg, discovery is constrained to the configured
+`x64dbg-mcp` server. Cross-server results prioritize the server explicitly
+named in the query and allowlisted tools, preventing unrelated Ghidra debugger
+matches from consuming the bounded result first.
+
+Windows UI work follows an evidence loop: identify the target window, observe
+its exact UI Automation controls, act using the short-lived element/hash pair,
+then wait or re-observe. Screenshot capture retries one transient OS failure;
+capture failure alone is not interpreted as proof that a working desktop is
+headless.

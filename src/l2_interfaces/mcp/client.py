@@ -673,7 +673,9 @@ class MCPClientManager:
                     }
                 )
                 continue
-            for tool in self._ranked_tools(normalized, tools):
+            for relevance_rank, tool in enumerate(
+                self._ranked_tools(normalized, tools)
+            ):
                 contract = _tool_contract(tool)
                 matches.append(
                     {
@@ -686,9 +688,20 @@ class MCPClientManager:
                         "input_schema": contract["input_schema"],
                         "schema_sha256": worker.tool_hashes[tool.name],
                         "allowed": tool.name in worker.config.allowed_tools,
+                        "_relevance_rank": relevance_rank,
                     }
                 )
-        matches.sort(key=lambda item: (item["server"], item["name"]))
+        matches.sort(
+            key=lambda item: (
+                0 if item["server"].lower() in normalized.lower() else 1,
+                0 if item["allowed"] else 1,
+                item["_relevance_rank"],
+                item["server"],
+                item["name"],
+            )
+        )
+        for match in matches:
+            match.pop("_relevance_rank", None)
         return {
             "query": normalized,
             "count": min(len(matches), limit),
@@ -846,8 +859,15 @@ class MCPClientManager:
         self, server: str, tool: str, result: types.CallToolResult
     ) -> dict[str, Any]:
         contents = []
+        text_reports_error = False
         for content in result.content:
             if isinstance(content, types.TextContent):
+                if re.match(
+                    r"^\s*(?:http\s+)?error\s*(?:[:\-]\s*)?[45]\d{2}\b",
+                    content.text,
+                    flags=re.IGNORECASE,
+                ):
+                    text_reports_error = True
                 contents.append(
                     {
                         "type": "text",
@@ -900,10 +920,23 @@ class MCPClientManager:
                     }
                 contents.append({"type": "resource", "resource": value})
         structured = self._bounded_value(result.structuredContent)
+        structured_reports_error = bool(
+            isinstance(result.structuredContent, dict)
+            and (
+                result.structuredContent.get("success") is False
+                or bool(result.structuredContent.get("error"))
+            )
+        )
         return {
             "server": server,
             "tool": tool,
-            "is_error": bool(result.isError),
+            # A few third-party MCP servers incorrectly return protocol-level
+            # success while embedding an HTTP error or {"success": false} in
+            # the payload. Preserve the content, but expose a truthful outcome
+            # to the agent so it does not reason from a false green result.
+            "is_error": bool(
+                result.isError or text_reports_error or structured_reports_error
+            ),
             "content": contents,
             "structured_content": structured,
         }

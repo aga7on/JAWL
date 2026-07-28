@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from src.l3_agent.goals.ledger import TaskLedgerPatch
 from src.system.container import SystemContainer
 from src.utils.event.registry import EventLevel
 
@@ -66,6 +67,9 @@ class OperatorControl:
                     self.container.settings.system.event_acceleration.active_cycle_policy
                 ),
                 "mcp_enabled": self.container.interfaces_config.mcp.enabled,
+                "media": (
+                    self.container.interfaces_config.multimodality.model_dump()
+                ),
             },
             "goal": manager.view() if manager is not None else None,
             "heartbeat": (
@@ -129,6 +133,12 @@ class OperatorControl:
                 summary=str(params.get("summary", "")),
                 wake_after_seconds=seconds,
             )
+            if goal is None:
+                raise ValueError("No active goal.")
+            return manager.view(goal.goal_id)
+        if action == "goal.ledger.update":
+            patch = TaskLedgerPatch.model_validate(params.get("patch", {}))
+            goal = await manager.record_ledger_patch(patch)
             if goal is None:
                 raise ValueError("No active goal.")
             return manager.view(goal.goal_id)

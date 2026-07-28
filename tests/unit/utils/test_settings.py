@@ -11,11 +11,22 @@ from src.utils.settings import (
     TelethonConfig,
     AiogramConfig,
     LifecycleCommandHookConfig,
+    LLMConfig,
     MCPConfig,
     MCPServerConfig,
     _log_missing_defaults,
     SystemConfig,
 )
+
+
+def test_llm_invalid_request_retry_bounds():
+    assert LLMConfig().invalid_request_retries == 1
+    assert LLMConfig(invalid_request_retries=0).invalid_request_retries == 0
+    assert LLMConfig(invalid_request_retries=3).invalid_request_retries == 3
+    with pytest.raises(ValueError):
+        LLMConfig(invalid_request_retries=-1)
+    with pytest.raises(ValueError):
+        LLMConfig(invalid_request_retries=4)
 
 
 def test_mcp_config_enforces_transport_and_authorization_boundaries():
@@ -103,6 +114,7 @@ def test_host_os_config_parsing():
     assert config.enabled is True
     assert config.file_read_max_chars == 5000
     assert config.desktop_max_elements == 250
+    assert config.desktop_operation_timeout_sec == 30
 
     with pytest.raises(ValueError):
         HostOSConfig(desktop_max_result_chars=1000)
@@ -291,6 +303,9 @@ def test_goal_mode_config_parsing_and_validation():
                 "compact_context": False,
                 "compact_max_chars": 12000,
                 "suppress_waiting_heartbeats": False,
+                "task_ledger_enabled": False,
+                "task_ledger_max_chars": 5000,
+                "provider_rebase_prompt_tokens": 32000,
             }
         }
     )
@@ -299,6 +314,9 @@ def test_goal_mode_config_parsing_and_validation():
     assert config.goal_mode.compact_context is False
     assert config.goal_mode.compact_max_chars == 12000
     assert config.goal_mode.suppress_waiting_heartbeats is False
+    assert config.goal_mode.task_ledger_enabled is False
+    assert config.goal_mode.task_ledger_max_chars == 5000
+    assert config.goal_mode.provider_rebase_prompt_tokens == 32000
 
     with pytest.raises(ValueError):
         SystemConfig.model_validate(

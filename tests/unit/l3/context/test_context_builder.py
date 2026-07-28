@@ -106,9 +106,38 @@ async def test_adaptive_context_routes_coding_and_event_namespaces(monkeypatch):
     assert captured["include_omitted_index"] is True
     assert captured["max_chars"] == 4000
     assert "SkillCatalog" in captured["prefixes"]
+    assert "MCPTools" in captured["prefixes"]
     assert "Telethon" in captured["prefixes"]
     assert "HostOSCoding" in captured["prefixes"]
     assert "HostOSExecution" in captured["prefixes"]
+
+
+@pytest.mark.asyncio
+async def test_adaptive_context_routes_desktop_skills(monkeypatch):
+    captured = {}
+
+    def fake_library(*args, **kwargs):
+        captured.update(kwargs)
+        return "adaptive library"
+
+    monkeypatch.setattr(
+        "src.l3_agent.context.builder.get_skills_library", fake_library
+    )
+    builder = ContextBuilder(
+        AgentState(current_goal="Inspect the application UI dialog"),
+        ContextRegistry(),
+        budget_config=ContextBudgetConfig(
+            enabled=True,
+            skill_policy="adaptive",
+            skills_max_chars=4000,
+            max_dynamic_chars=8000,
+        ),
+    )
+
+    await builder.build("HEARTBEAT", {"message": "click the window button"}, [])
+
+    assert "HostOSDesktop" in captured["prefixes"]
+    assert "VisionSkills" in captured["prefixes"]
 
 
 @pytest.mark.asyncio

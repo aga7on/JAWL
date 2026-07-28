@@ -92,6 +92,42 @@ def test_parser_accepts_compact_goal_v2_action():
     assert "Inspect" in parsed.thoughts
 
 
+def test_parser_accepts_sparse_task_ledger_checkpoint():
+    payload = {
+        "v": 2,
+        "state": "act",
+        "calls": [
+            {
+                "tool": "MCPTools.call_tool",
+                "args": {"server": "x64dbg-mcp"},
+            }
+        ],
+        "note": "Continue from the local checkpoint.",
+        "ledger": {
+            "phase": "debug_exception",
+            "completed_add": ["Confirmed debugger is paused"],
+            "pending_steps": ["Read call stack"],
+            "facts_add": ["Sotis is paused"],
+            "failures_add": [
+                {
+                    "action": "UIA observation",
+                    "reason": "Timed out",
+                    "retry_when": "Process is responsive",
+                }
+            ],
+            "next_action": "Read the call stack through x64dbg-mcp",
+        },
+    }
+
+    parsed, error = parse_llm_json(json.dumps(payload))
+
+    assert error is None
+    assert parsed.ledger.phase == "debug_exception"
+    assert parsed.ledger.pending_steps == ["Read call stack"]
+    assert parsed.ledger.failures_add[0].retry_when == "Process is responsive"
+    assert parsed.actions[0].tool_name == "MCPTools.call_tool"
+
+
 @pytest.mark.parametrize("state", ["done", "wait", "blocked"])
 def test_parser_accepts_explicit_goal_terminal_states(state):
     payload = {"v": 2, "state": state, "summary": f"{state} evidence"}

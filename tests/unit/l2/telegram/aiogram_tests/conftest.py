@@ -5,6 +5,7 @@ from src.utils.event.bus import EventBus
 from src.l2_interfaces.telegram.aiogram.state import AiogramState
 from src.l2_interfaces.telegram.aiogram.client import AiogramClient
 from src.l2_interfaces.telegram.aiogram.events import AiogramEvents
+from src.utils.settings import AiogramConfig
 
 
 @pytest.fixture
@@ -45,4 +46,4 @@ def mock_bus():
 @pytest.fixture
 def aiogram_events(mock_client, state, mock_bus):
     """Инициализированный обработчик событий."""
-    return AiogramEvents(mock_client, state, mock_bus)
+    return AiogramEvents(mock_client, state, mock_bus, AiogramConfig())

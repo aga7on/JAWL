@@ -57,6 +57,7 @@ class LLMExecutor:
         enable_thinking: Optional[bool] = None,
         max_retries: int = 1,
         max_timeout_retries: int = 1,
+        max_invalid_request_retries: int = 1,
         session_id: str = "",
     ) -> Optional[str]:
         """
@@ -74,6 +75,9 @@ class LLMExecutor:
                 top-level ``enable_thinking`` field through ``extra_body``.
             max_retries: Total retry attempts limit for any exceptions.
             max_timeout_retries: Specific retry attempts limit for timeouts.
+            max_invalid_request_retries: Bounded retries for provider input or
+                stale-session rejections. Deterministic configuration errors
+                are never retried.
             session_id: Optional durable provider lane, used by Goal Mode.
 
         Returns:
@@ -96,6 +100,7 @@ class LLMExecutor:
             "session_mode": "goal" if session_id else "trace",
         }
         timeout_count = 0
+        invalid_request_count = 0
 
         for attempt in range(max_retries):
             self.last_call_metrics["attempts"] = attempt + 1
@@ -197,10 +202,27 @@ class LLMExecutor:
                 continue
 
             except openai.BadRequestError as e:
-                # A 400 is deterministic for this exact request. Retrying the
-                # same large prompt only wastes provider quota and cannot heal
-                # malformed input, an unsupported model, or an invalid field.
-                logger.error(f"{log_prefix} Invalid upstream request (400): {e}")
+                error_kind, retryable = self._classify_bad_request(e)
+                invalid_request_count += 1
+                can_retry = (
+                    retryable
+                    and invalid_request_count <= max_invalid_request_retries
+                    and attempt < max_retries - 1
+                )
+                if can_retry:
+                    delay = min(2 ** invalid_request_count, 4)
+                    logger.warning(
+                        f"{log_prefix} Upstream rejected the request "
+                        f"({error_kind}). Retrying in {delay}s "
+                        f"({invalid_request_count}/"
+                        f"{max_invalid_request_retries})."
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error(
+                    f"{log_prefix} Invalid upstream request (400, "
+                    f"{error_kind}, retryable={retryable}): {e}"
+                )
                 self._finish_error_metrics(
                     request_id,
                     model_name,
@@ -209,6 +231,8 @@ class LLMExecutor:
                     "invalid_request",
                     str(e),
                 )
+                self.last_call_metrics["error_kind"] = error_kind
+                self.last_call_metrics["retryable"] = retryable
                 return None
 
             except (openai.APITimeoutError, asyncio.TimeoutError):
@@ -283,6 +307,47 @@ class LLMExecutor:
     # -------------------------------------------------------------------------
     # Private Helpers
     # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _classify_bad_request(error: Exception) -> tuple[str, bool]:
+        """Separate stale/provider input failures from static configuration."""
+
+        text = str(error).lower()
+        if (
+            "chat_not_found" in text
+            or (
+                ("chat" in text or "chat_id" in text)
+                and ("not exist" in text or "not found" in text)
+            )
+        ):
+            return "session_state", True
+        if any(
+            marker in text
+            for marker in (
+                "unsupported model",
+                "unknown model",
+                "model_not_found",
+                "unknown parameter",
+                "unsupported parameter",
+                "missing required",
+                "maximum context length",
+                "context_length_exceeded",
+            )
+        ):
+            return "configuration", False
+        if any(
+            marker in text
+            for marker in (
+                "invalid_input",
+                "invalid input",
+                "invalid attachment",
+                "attachment",
+            )
+        ):
+            return "input_rejected", True
+        # Provider-compatible gateways sometimes collapse recoverable request
+        # state into an otherwise untyped 400. Allow one bounded retry.
+        return "unclassified_rejection", True
 
     def _extract_response_text(
         self,

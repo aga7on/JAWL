@@ -4,6 +4,7 @@ import time
 import pytest
 
 from src.l0_state.agent.state import AgentState
+from src.l3_agent.goals.ledger import LedgerFailurePatch, TaskLedgerPatch
 from src.l3_agent.goals.manager import GoalManager
 
 
@@ -201,6 +202,246 @@ async def test_atomic_store_is_valid_json_after_updates(manager):
         await manager.record_action_result(f"result-{index}")
     payload = json.loads(manager.path.read_text(encoding="utf-8"))
 
-    assert payload["version"] == 1
+    assert payload["version"] == GoalManager.VERSION
     assert payload["goals"][0]["goal_id"] == created.goal_id
     assert not list(manager.path.parent.glob(".*.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_task_ledger_sparse_checkpoint_survives_restart(tmp_path):
+    path = tmp_path / "goals.json"
+    manager = GoalManager(path, AgentState())
+    created = await manager.create("Diagnose and verify the application")
+
+    await manager.record_ledger_patch(
+        TaskLedgerPatch(
+            phase="diagnosis",
+            acceptance_criteria=["Application starts without the key dialog"],
+            pending_steps=["Inspect debugger", "Run clean verification"],
+            facts_add=["Sotis is paused under x32dbg"],
+            hypotheses=["Debugger is stopping on a first-chance exception"],
+            failures_add=[
+                LedgerFailurePatch(
+                    action="Observe Sotis with UIA",
+                    reason="Timed out while the process was paused",
+                    retry_when="Sotis becomes responsive",
+                )
+            ],
+            artifacts_add=["sandbox/_system/download/sotis.png"],
+            tool_state_add=["x64dbg-mcp:GetState schema=abc123"],
+            next_action="Read the exception call stack",
+            checkpoint_summary="Debugger state established.",
+        )
+    )
+    await manager.record_ledger_patch(
+        TaskLedgerPatch(
+            completed_add=["Inspect debugger"],
+            pending_steps=["Run clean verification"],
+            checkpoint_summary="",
+        )
+    )
+
+    restored = GoalManager(path, AgentState(), recover_on_start=False)
+    ledger = restored.get(created.goal_id).task_ledger
+
+    assert ledger.current_phase == "diagnosis"
+    assert ledger.completed_steps == ["Inspect debugger"]
+    assert ledger.pending_steps == ["Run clean verification"]
+    assert ledger.confirmed_facts == ["Sotis is paused under x32dbg"]
+    assert ledger.failed_attempts[0].retry_when == "Sotis becomes responsive"
+    assert ledger.next_action == "Read the exception call stack"
+    assert ledger.checkpoint_summary == ""
+    assert ledger.revision == 2
+
+
+@pytest.mark.asyncio
+async def test_action_failure_is_automatically_checkpointed(manager):
+    await manager.create("Recover from a failed tool")
+
+    await manager.record_action_result(
+        "* MCPTools.call_tool: Error 500\n"
+        "  [action_id=debug; status=failed; duration_ms=10]",
+        actions=[
+            {
+                "tool_name": "MCPTools.call_tool",
+                "action_id": "debug",
+                "parameters": {"server": "x64dbg-mcp"},
+            }
+        ],
+    )
+
+    ledger = manager.active_goal.task_ledger
+    assert ledger.last_action_batch[0].status == "failed"
+    assert ledger.last_action_batch[0].evidence_id
+    assert ledger.failed_attempts[0].action == "MCPTools.call_tool (debug)"
+    assert "new evidence" in ledger.failed_attempts[0].retry_when
+
+
+@pytest.mark.asyncio
+async def test_action_failure_checkpoint_keeps_only_its_result_block(manager):
+    await manager.create("Keep failure memory concise")
+
+    await manager.record_action_result(
+        "* Terminal.send: missing text\n"
+        "  [action_id=notify; status=failed; duration_ms=1]\n"
+        "* Shell.run: " + ("unrelated output " * 100) + "\n"
+        "  [action_id=inspect; status=success; duration_ms=2]",
+        actions=[
+            {
+                "tool_name": "Terminal.send",
+                "action_id": "notify",
+                "parameters": {},
+            },
+            {
+                "tool_name": "Shell.run",
+                "action_id": "inspect",
+                "parameters": {},
+            },
+        ],
+    )
+
+    reason = manager.active_goal.task_ledger.failed_attempts[0].reason
+    assert "missing text" in reason
+    assert "unrelated output" not in reason
+
+
+@pytest.mark.asyncio
+async def test_provider_context_threshold_rebases_lane_from_local_ledger(tmp_path):
+    manager = GoalManager(
+        tmp_path / "goals.json",
+        AgentState(),
+        provider_rebase_prompt_tokens=1000,
+    )
+    created = await manager.create("Continue after context reset")
+    original_lane = manager.lane_id
+
+    updated = await manager.record_usage(
+        {
+            "provider_prompt_tokens": 1200,
+            "provider_total_tokens": 1300,
+        }
+    )
+
+    assert updated.lane_epoch == created.lane_epoch + 1
+    assert updated.context_rebase_count == 1
+    assert updated.last_provider_prompt_tokens == 1200
+    assert manager.lane_id != original_lane
+    block = await manager.get_context_block()
+    assert "Local Task Ledger" in block
+    assert "rebases=1" in block
+
+
+@pytest.mark.asyncio
+async def test_ledger_projection_keeps_recovery_prefix_when_history_is_large(
+    tmp_path,
+):
+    manager = GoalManager(
+        tmp_path / "goals.json",
+        AgentState(),
+        task_ledger_max_chars=2000,
+    )
+    await manager.create("Recover without replaying provider history")
+    await manager.record_ledger_patch(
+        TaskLedgerPatch(
+            phase="verification",
+            pending_steps=[f"pending-{index}-" + "p" * 390 for index in range(16)],
+            facts_add=[f"fact-{index}-" + "f" * 490 for index in range(20)],
+            next_action="RUN_THE_EXACT_RECOVERY_CHECK",
+            checkpoint_summary="The implementation is ready for verification.",
+        )
+    )
+    await manager.record_action_result(
+        "* Test.run: green\n"
+        "  [action_id=focused; status=success; duration_ms=4]",
+        actions=[
+            {
+                "tool_name": "Test.run",
+                "action_id": "focused",
+                "parameters": {},
+            }
+        ],
+    )
+
+    projection = manager._task_ledger_context(manager.active_goal)
+
+    assert len(projection) <= 2000
+    assert "RUN_THE_EXACT_RECOVERY_CHECK" in projection
+    assert "Test.run [focused]: success" in projection
+    assert "Pending stages" in projection
+
+
+@pytest.mark.asyncio
+async def test_new_lane_is_retained_while_provider_context_is_below_threshold(
+    tmp_path,
+):
+    manager = GoalManager(
+        tmp_path / "goals.json",
+        AgentState(),
+        provider_rebase_prompt_tokens=1000,
+    )
+    await manager.create("Bound provider history")
+
+    first = await manager.record_usage({"provider_prompt_tokens": 1200})
+    first_rebased_lane = first.lane_epoch
+    second = await manager.record_usage({"provider_prompt_tokens": 900})
+
+    assert second.lane_epoch == first_rebased_lane
+    assert second.context_rebase_count == 1
+
+
+def test_version_one_store_migrates_without_losing_active_goal(tmp_path):
+    path = tmp_path / "goals.json"
+    now = time.time()
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "goals": [
+                    {
+                        "goal_id": "legacy",
+                        "objective": "Preserve this objective",
+                        "created_at": now,
+                        "updated_at": now,
+                        "last_activity_at": now,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = GoalManager(path, AgentState(), recover_on_start=False)
+
+    assert manager.active_goal.goal_id == "legacy"
+    assert manager.active_goal.task_ledger.current_phase == "legacy_recovery"
+    assert "Reconcile" in manager.active_goal.task_ledger.next_action
+
+
+def test_version_one_active_store_is_persisted_as_v2_on_restart(tmp_path):
+    path = tmp_path / "goals.json"
+    now = time.time()
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "goals": [
+                    {
+                        "goal_id": "legacy-live",
+                        "objective": "Resume from durable state",
+                        "created_at": now,
+                        "updated_at": now,
+                        "last_activity_at": now,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    GoalManager(path, AgentState())
+    stored = json.loads(path.read_text(encoding="utf-8"))
+
+    assert stored["version"] == GoalManager.VERSION
+    assert stored["goals"][0]["task_ledger"]["current_phase"] == (
+        "legacy_recovery"
+    )

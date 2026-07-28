@@ -3,6 +3,7 @@ from typing import Literal
 from src.l3_agent.skills import registry
 from src.l3_agent.skills.schema import ActionCall
 from src.l3_agent.skills.registry import (
+    call_skill,
     skill,
     register_instance,
     execute_skill,
@@ -186,6 +187,31 @@ async def test_execute_skill_ignores_extra_kwargs(mock_plain_func):
     ]
     report = await execute_skill(actions=actions)
     assert "* mock.plain_func: Plain: Valid" in report
+
+
+@pytest.mark.asyncio
+async def test_terminal_message_alias_is_repaired_without_weakening_schema():
+    received = []
+
+    @skill(name_override="HostTerminalMessages.send_message_to_terminal")
+    async def send_terminal(text: str) -> SkillResult:
+        received.append(text)
+        return SkillResult.ok("sent")
+
+    native = get_native_tools_schema(
+        prefixes=["HostTerminalMessages.send_message_to_terminal"],
+        limit=1,
+    )
+    result = await call_skill(
+        "HostTerminalMessages.send_message_to_terminal",
+        {"message": "runtime status"},
+    )
+
+    assert result.is_success is True
+    assert received == ["runtime status"]
+    properties = native[0]["function"]["parameters"]["properties"]
+    assert "text" in properties
+    assert "message" not in properties
 
 
 @pytest.mark.asyncio

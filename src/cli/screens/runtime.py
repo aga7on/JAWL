@@ -56,6 +56,7 @@ def _offline_status() -> Dict[str, Any]:
                 settings.system.event_acceleration.active_cycle_policy
             ),
             "mcp_enabled": interfaces.mcp.enabled,
+            "media": interfaces.multimodality.model_dump(),
         },
         "goal": None,
         "heartbeat": None,
@@ -107,7 +108,9 @@ def _render(status: Dict[str, Any], qwb: Dict[str, Any]) -> None:
     mode_table.add_row(
         "Goal Mode",
         f"enabled={goal_mode.get('enabled', False)}, "
-        f"compact={goal_mode.get('compact_context', False)}",
+        f"compact={goal_mode.get('compact_context', False)}, "
+        f"ledger={goal_mode.get('task_ledger_enabled', False)}, "
+        f"rebase={goal_mode.get('provider_rebase_prompt_tokens', 0)} tokens",
     )
     idle = modes.get("idle_heartbeat_backoff") or {}
     mode_table.add_row(
@@ -118,9 +121,19 @@ def _render(status: Dict[str, Any], qwb: Dict[str, Any]) -> None:
             f"max={idle.get('max_interval_sec', '—')}s"
         ),
     )
+    media = modes.get("media") or {}
+    mode_table.add_row(
+        "Media",
+        (
+            f"vision={media.get('enabled', False)}, "
+            f"video={media.get('video_understanding_enabled', False)}, "
+            f"generation={media.get('media_generation_enabled', False)}"
+        ),
+    )
     console.print(mode_table)
 
     if goal:
+        ledger = goal.get("task_ledger") or {}
         console.print(
             Panel(
                 f"[bold]{goal.get('objective', '')}[/bold]\n"
@@ -133,6 +146,12 @@ def _render(status: Dict[str, Any], qwb: Dict[str, Any]) -> None:
                 if goal.get("status") == "active"
                 else "yellow",
             )
+        )
+
+        console.print(
+            f"[dim]Task Ledger: phase={ledger.get('current_phase', 'initial')} · "
+            f"rev={ledger.get('revision', 0)} · "
+            f"next={ledger.get('next_action') or 'not recorded'}[/dim]"
         )
 
     accounts = qwb.get("accounts")
@@ -152,6 +171,14 @@ def _render(status: Dict[str, Any], qwb: Dict[str, Any]) -> None:
                 str(account.get("inFlight", 0)),
             )
         console.print(table)
+
+    media_jobs = qwb.get("mediaJobs") or {}
+    if media_jobs:
+        console.print(
+            f"[dim]QWB media jobs: active={media_jobs.get('active', 0)} · "
+            f"total={media_jobs.get('total', 0)} · "
+            f"{media_jobs.get('counts') or {}}[/dim]"
+        )
 
     backoff = heartbeat.get("idle_heartbeat_backoff") or {}
     if backoff:

@@ -8,6 +8,8 @@ from src.l2_interfaces.base import BaseInterface
 from src.l2_interfaces.host.os.client import HostOSClient
 from src.l2_interfaces.host.os.state import HostOSState
 from src.l2_interfaces.multimodality.client import MultimodalityClient
+from src.l2_interfaces.multimodality.media_client import QWBMediaClient
+from src.l2_interfaces.multimodality.skills.media import MediaSkills
 from src.l2_interfaces.multimodality.skills.vision import VisionSkills
 from src.l3_agent.skills.registry import register_instance
 from src.l3_agent.context.registry import ContextSection
@@ -51,9 +53,49 @@ class MultimodalityPlugin(BaseInterface):
 
         register_instance(VisionSkills(client))
 
+        media_client = None
+        multimodality_config = container.interfaces_config.multimodality
+        if multimodality_config.media_generation_enabled:
+            api_keys = env_vars.get("LLM_API_KEYS") or []
+            api_key = str(api_keys[0]) if api_keys else ""
+            media_client = QWBMediaClient(
+                host_os_client=host_os_client,
+                config=multimodality_config,
+                api_url=str(env_vars.get("LLM_API_URL") or ""),
+                api_key=api_key,
+                state_path=(
+                    container.local_data_dir
+                    / "interfaces"
+                    / "multimodality"
+                    / "media_jobs.json"
+                ),
+            )
+            container.l2_clients["qwb_media"] = media_client
+            container.context_registry.register_provider(
+                "qwb_media",
+                media_client.get_context_block,
+                ContextSection.INTERFACES,
+            )
+
+        if (
+            multimodality_config.video_understanding_enabled
+            or multimodality_config.media_generation_enabled
+        ):
+            register_instance(
+                MediaSkills(
+                    client,
+                    media_client,
+                    multimodality_config.video_understanding_enabled,
+                )
+            )
+
         container.context_registry.register_provider(
             "multimodality", client.get_context_block, ContextSection.INTERFACES
         )
 
-        main_logger.info("[Multimodality] Agent gained vision (Plugin).")
+        main_logger.info(
+            "[Multimodality] Visual analysis loaded "
+            f"(video={multimodality_config.video_understanding_enabled}, "
+            f"generation={multimodality_config.media_generation_enabled})."
+        )
         return []

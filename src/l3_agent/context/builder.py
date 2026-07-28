@@ -194,7 +194,7 @@ class ContextBuilder:
 
         limits = {
             "skills": 9000,
-            "active_goal": 9000,
+            "active_goal": 12000,
             "heartbeat": 7000,
             "sql_ticks": 5000,
             "rag memories": 4000,
@@ -218,7 +218,7 @@ class ContextBuilder:
         total = len(self._join_blocks(bounded))
         minimums = {
             "skills": 1000,
-            "active_goal": 5000,
+            "active_goal": 8000,
             "heartbeat": 1000,
             "agent_state": 500,
         }
@@ -298,7 +298,13 @@ class ContextBuilder:
         missed_events: List[Dict[str, Any]],
     ) -> List[str]:
         """Select likely namespaces while retaining on-demand catalogue discovery."""
-        prefixes = ["SkillCatalog", "MemoryRecallSkill", "SQLTasks", "SQLNotes"]
+        prefixes = [
+            "SkillCatalog",
+            "MCPTools",
+            "MemoryRecallSkill",
+            "SQLTasks",
+            "SQLNotes",
+        ]
         upper_event = event_name.upper()
         event_routes = {
             "TELETHON": ["Telethon"],
@@ -348,6 +354,17 @@ class ContextBuilder:
                     "GitHubLocalGit",
                 ]
             )
+
+        desktop_pattern = re.compile(
+            r"(?:\bdesktop\b|\bgui\b|\bui\b|\bwindow\b|\bscreen(?:shot)?\b|"
+            r"\bclick\b|\bbutton\b|\bdialog\b|РёРЅС‚РµСЂС„РµР№СЃ|РѕРєРЅРѕ|"
+            r"РєРЅРѕРїРє|РґРёР°Р»РѕРі|СЃРєСЂРёРЅС€РѕС‚)"
+        )
+        if desktop_pattern.search(signal) or any(
+            tool.startswith("HostOSDesktop")
+            for tool in self.agent_state.last_action_tools
+        ):
+            prefixes.extend(["HostOSDesktop", "VisionSkills"])
 
         prefixes.extend(
             tool.split(".", 1)[0]

@@ -322,6 +322,27 @@ async def test_react_injects_pending_image_on_first_step(mock_dependencies, tmp_
     )
 
 
+@pytest.mark.asyncio
+async def test_react_injects_pending_video_as_video_url(mock_dependencies, tmp_path):
+    loop = ReactLoop(**mock_dependencies)
+    loop.agent_state.last_actions_result = ""
+    fake_video = tmp_path / "telegram.mp4"
+    fake_video.write_bytes(b"video")
+    messages = [
+        {"role": "system", "content": "System"},
+        {"role": "user", "content": "Inspect video"},
+    ]
+
+    result = await loop._inject_images_to_payload(
+        messages, pending_media=[str(fake_video)]
+    )
+
+    assert result[1]["content"][1]["type"] == "video_url"
+    assert result[1]["content"][1]["video_url"]["url"].startswith(
+        "data:video/mp4;base64,"
+    )
+
+
 def test_collect_pending_media_includes_buffered_and_coalesced_events():
     primary = {"media_paths": ["primary.jpg"]}
     events = [
@@ -404,6 +425,71 @@ async def test_goal_action_result_is_durable_before_done(
 
 
 @pytest.mark.asyncio
+@patch("src.l3_agent.react.loop.execute_skill", new_callable=AsyncMock)
+async def test_goal_ledger_is_saved_before_action_and_survives_completion(
+    mock_execute_skill, mock_dependencies, tmp_path
+):
+    deps = dict(mock_dependencies)
+    manager = GoalManager(tmp_path / "goals.json", deps["agent_state"])
+    created = await manager.create("Resume from an exact local checkpoint")
+    deps["goal_manager"] = manager
+    deps["executor"].last_call_metrics = {"provider_total_tokens": 5}
+    deps["executor"].execute.side_effect = [
+        json.dumps(
+            {
+                "v": 2,
+                "state": "act",
+                "calls": [
+                    {
+                        "tool": "HostOSReader.read_file",
+                        "args": {"filepath": "README.md"},
+                        "action_id": "read",
+                    }
+                ],
+                "ledger": {
+                    "phase": "inspect",
+                    "acceptance_criteria": ["README evidence captured"],
+                    "pending_steps": ["Read README", "Verify evidence"],
+                    "next_action": "Read README",
+                    "checkpoint_summary": "Ready to inspect the file.",
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "v": 2,
+                "state": "done",
+                "summary": "README evidence captured.",
+                "ledger": {
+                    "phase": "complete",
+                    "completed_add": ["Read README", "Verify evidence"],
+                    "pending_steps": [],
+                    "facts_add": ["README was read successfully"],
+                    "next_action": "",
+                    "checkpoint_summary": "Acceptance criterion satisfied.",
+                },
+            }
+        ),
+    ]
+    mock_execute_skill.return_value = (
+        "* HostOSReader.read_file: README contents\n"
+        "  [action_id=read; status=success; duration_ms=5]"
+    )
+    loop = ReactLoop(**deps)
+
+    await loop.run("HEARTBEAT", {}, [])
+
+    finished = manager.get(created.goal_id)
+    assert finished.task_ledger.current_phase == "complete"
+    assert finished.task_ledger.pending_steps == []
+    assert finished.task_ledger.next_action == ""
+    assert "README was read successfully" in (
+        finished.task_ledger.confirmed_facts
+    )
+    assert finished.task_ledger.last_action_batch[0].status == "success"
+
+
+@pytest.mark.asyncio
 async def test_goal_wait_schedules_without_marking_complete(
     mock_dependencies, tmp_path
 ):
@@ -425,3 +511,56 @@ async def test_goal_wait_schedules_without_marking_complete(
     assert waiting.pending_work is False
     assert waiting.next_wakeup_at is not None
     assert manager.should_run_heartbeat(now=waiting.next_wakeup_at - 1) is False
+
+
+@pytest.mark.asyncio
+async def test_goal_retryable_invalid_request_schedules_continuation(
+    mock_dependencies, tmp_path
+):
+    deps = dict(mock_dependencies)
+    manager = GoalManager(tmp_path / "goals.json", deps["agent_state"])
+    created = await manager.create("Survive a transient provider rejection")
+    deps["goal_manager"] = manager
+    deps["executor"].execute.return_value = None
+    deps["executor"].last_call_metrics = {
+        "status": "invalid_request",
+        "error_kind": "session_state",
+        "retryable": True,
+    }
+    loop = ReactLoop(**deps)
+
+    await loop.run("HEARTBEAT", {}, [])
+
+    pending = manager.get(created.goal_id)
+    assert pending.status == "active"
+    assert pending.last_cycle_status == "failed"
+    assert pending.pending_work is True
+    assert pending.next_wakeup_at is not None
+    assert "Goal remains active" in pending.last_summary
+    assert loop.last_cycle_outcome["status"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_goal_deterministic_invalid_request_blocks(
+    mock_dependencies, tmp_path
+):
+    deps = dict(mock_dependencies)
+    manager = GoalManager(tmp_path / "goals.json", deps["agent_state"])
+    created = await manager.create("Stop on a broken provider configuration")
+    deps["goal_manager"] = manager
+    deps["executor"].execute.return_value = None
+    deps["executor"].last_call_metrics = {
+        "status": "invalid_request",
+        "error_kind": "configuration",
+        "retryable": False,
+    }
+    loop = ReactLoop(**deps)
+
+    await loop.run("HEARTBEAT", {}, [])
+
+    blocked = manager.get(created.goal_id)
+    assert blocked.status == "blocked"
+    assert blocked.last_cycle_status == "blocked"
+    assert blocked.pending_work is False
+    assert blocked.next_wakeup_at is None
+    assert "operator correction" in blocked.blocked_reason

@@ -204,6 +204,37 @@ async def test_shared_file_resource_serializes_explicit_parallel_group():
 
 
 @pytest.mark.asyncio
+async def test_desktop_actions_are_serialized_inside_parallel_group():
+    engine = ActionExecutionEngine(max_parallel_actions=4)
+    active = 0
+    max_active = 0
+
+    async def runner(action: ActionCall):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return result()
+
+    await engine.execute(
+        [
+            ActionCall(
+                tool_name="HostOSDesktop.observe_desktop",
+                parallel_group="desktop",
+            ),
+            ActionCall(
+                tool_name="HostOSDesktop.take_screenshot",
+                parallel_group="desktop",
+            ),
+        ],
+        runner,
+    )
+
+    assert max_active == 1
+
+
+@pytest.mark.asyncio
 async def test_resource_locks_are_shared_across_concurrent_plans():
     engine = ActionExecutionEngine(max_parallel_actions=4)
     active = 0

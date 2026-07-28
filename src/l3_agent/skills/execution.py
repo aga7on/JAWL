@@ -475,6 +475,15 @@ class ActionExecutionEngine:
     def _resource_keys(self, action: ActionCall) -> List[str]:
         keys = {f"explicit:{resource}" for resource in action.resources if resource}
 
+        if action.tool_name.startswith("HostOSDesktop."):
+            keys.add("tool-family:host-os-desktop")
+        if action.tool_name in {
+            "MCPTools.call_tool",
+            "MCPTools.reconnect_server",
+        }:
+            server = str(action.parameters.get("server") or "").strip()
+            keys.add(f"mcp-server:{server or 'unknown'}")
+
         for name, value in action.parameters.items():
             if name.lower() not in self._PATH_PARAMETER_NAMES:
                 continue

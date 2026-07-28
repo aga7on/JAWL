@@ -84,6 +84,7 @@ class HostOSConfig(BaseModel):
     desktop_max_elements: int = Field(default=250, ge=10, le=1000)
     desktop_max_text_chars: int = Field(default=500, ge=50, le=5000)
     desktop_max_result_chars: int = Field(default=60000, ge=5000, le=200000)
+    desktop_operation_timeout_sec: float = Field(default=30, ge=1, le=120)
 
     access_level: int = 0
     env_access: bool = False
@@ -164,6 +165,8 @@ class TelethonConfig(BaseModel):
     recent_chats_limit: int = 20
     private_chat_history_limit: int = 3
     incoming_history_limit: int = 8
+    download_visual_media: bool = True
+    visual_media_max_mb: int = Field(default=50, ge=1, le=200)
     coding_approval_chat_id: StrictInt | str | None = None
     coding_approval_remote_decisions: bool = False
     coding_approval_actor_id: StrictInt | None = Field(default=None, gt=0)
@@ -195,6 +198,8 @@ class TelethonConfig(BaseModel):
 class AiogramConfig(BaseModel):
     enabled: bool = False
     recent_chats_limit: int = 20
+    download_visual_media: bool = True
+    visual_media_max_mb: int = Field(default=20, ge=1, le=50)
     coding_approval_chat_id: StrictInt | str | None = None
     coding_approval_remote_decisions: bool = False
     coding_approval_actor_id: StrictInt | None = Field(default=None, gt=0)
@@ -326,6 +331,12 @@ class CodeGraphConfig(BaseModel):
 
 class MultimodalityConfig(BaseModel):
     enabled: bool = False
+    video_understanding_enabled: bool = False
+    media_generation_enabled: bool = False
+    media_request_timeout_sec: int = Field(default=30, ge=5, le=300)
+    media_poll_interval_sec: float = Field(default=5.0, ge=0.5, le=60.0)
+    media_max_upload_mb: int = Field(default=50, ge=1, le=200)
+    media_max_download_mb: int = Field(default=500, ge=1, le=2048)
 
 
 class MCPServerConfig(BaseModel):
@@ -548,6 +559,7 @@ class LLMConfig(BaseModel):
     is_multimodal: bool = False
     temperature: float = 1.0
     max_react_steps: int = 15
+    invalid_request_retries: int = Field(default=1, ge=0, le=3)
     thinking_policy: Literal[
         "provider_default", "always", "never", "first_step"
     ] = "provider_default"
@@ -615,6 +627,11 @@ class GoalModeConfig(BaseModel):
     compact_context: bool = True
     compact_max_chars: int = Field(default=24000, ge=8000, le=100000)
     suppress_waiting_heartbeats: bool = True
+    task_ledger_enabled: bool = True
+    task_ledger_max_chars: int = Field(default=7000, ge=2000, le=30000)
+    provider_rebase_prompt_tokens: int = Field(
+        default=45000, ge=0, le=1000000
+    )
 
 
 class IdleHeartbeatBackoffConfig(BaseModel):

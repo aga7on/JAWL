@@ -33,10 +33,16 @@ class MultimodalityClient:
         Returns a formatted context block for the agent.
         """
 
-        desc = "Description: Processing and understanding images/screenshots."
+        desc = (
+            "Description: Processing images/screenshots and, when configured, "
+            "video understanding."
+        )
 
         status = "ON" if self.is_online else "OFF"
         if not self.is_online:
             return f"### MULTIMODALITY [{status}]\n{desc}\nThe interface is disabled."
 
-        return f"### MULTIMODALITY [{status}]\n{desc}\nMultimodal vision is active."
+        return (
+            f"### MULTIMODALITY [{status}]\n{desc}\n"
+            "Multimodal visual analysis is active."
+        )

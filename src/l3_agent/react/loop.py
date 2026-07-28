@@ -10,6 +10,8 @@ import asyncio
 from typing import Callable, Dict, Any, List, Literal, Optional, Tuple, Union, TYPE_CHECKING
 
 import base64
+import mimetypes
+import os
 import re
 import copy
 from pathlib import Path
@@ -77,6 +79,7 @@ class ReactLoop:
         cooldown_sec: int = 30,
         llm_max_retries: int = 3,
         llm_max_timeout_retries: int = 2,
+        llm_invalid_request_retries: int = 1,
         event_queue_max: int = 100,
         event_coalesce_window_sec: float = 2.0,
         event_coalesce_names: Optional[List[str]] = None,
@@ -118,6 +121,9 @@ class ReactLoop:
         self.cooldown_sec = cooldown_sec
         self.llm_max_retries = max(1, llm_max_retries)
         self.llm_max_timeout_retries = max(1, llm_max_timeout_retries)
+        self.llm_invalid_request_retries = max(
+            0, min(int(llm_invalid_request_retries), 3)
+        )
 
         self.event_bus = event_bus
 
@@ -260,6 +266,9 @@ class ReactLoop:
                     enable_thinking=self._thinking_enabled_for_step(),
                     max_retries=self.llm_max_retries,
                     max_timeout_retries=self.llm_max_timeout_retries,
+                    max_invalid_request_retries=(
+                        self.llm_invalid_request_retries
+                    ),
                     session_id=(
                         self.goal_manager.lane_id
                         if self.goal_manager is not None
@@ -280,19 +289,37 @@ class ReactLoop:
                     break
                 if raw_answer is None:
                     self.agent_state.update_state(AgentStatus.ERROR)
+                    failure_metrics = self._llm_metrics_snapshot()
                     failure_status = str(
-                        self._llm_metrics_snapshot().get("status") or "failed"
+                        failure_metrics.get("status") or "failed"
                     )
                     self.last_cycle_outcome["status"] = failure_status
                     if self.goal_manager is not None:
                         if failure_status == "invalid_request":
-                            await self.goal_manager.finish_cycle(
-                                state="blocked",
-                                summary=(
-                                    "Provider rejected the request as invalid; "
-                                    "automatic replay was stopped."
-                                ),
+                            error_kind = str(
+                                failure_metrics.get("error_kind") or "unknown"
                             )
+                            if bool(failure_metrics.get("retryable")):
+                                await self.goal_manager.finish_cycle(
+                                    state="failed",
+                                    summary=(
+                                        "Provider rejected the request after "
+                                        "bounded retries "
+                                        f"({error_kind}); Goal remains active "
+                                        "for a fresh continuation."
+                                    ),
+                                    wake_after_seconds=60,
+                                )
+                            else:
+                                await self.goal_manager.finish_cycle(
+                                    state="blocked",
+                                    summary=(
+                                        "Provider rejected a deterministic "
+                                        "request configuration "
+                                        f"({error_kind}); operator correction "
+                                        "is required."
+                                    ),
+                                )
                         else:
                             await self.goal_manager.finish_cycle(
                                 state="failed",
@@ -316,6 +343,18 @@ class ReactLoop:
 
                 thoughts = parsed_response.thoughts.strip()
                 actions = parsed_response.actions
+
+                if (
+                    self.goal_manager is not None
+                    and parsed_response.ledger is not None
+                ):
+                    # Persist the operational checkpoint before dispatch. If
+                    # execution or the provider chat disappears afterwards,
+                    # the next ReAct cycle can reconcile this declared next
+                    # action with the durable action journal/tool evidence.
+                    await self.goal_manager.record_ledger_patch(
+                        parsed_response.ledger
+                    )
 
                 if thoughts:
                     log = f"[Thoughts]:\n{thoughts}\n"
@@ -780,7 +819,9 @@ class ReactLoop:
         self, messages: List[Dict[str, Any]], pending_media: Optional[List[str]] = None
     ) -> List[Dict[str, Any]]:
         """
-        Injects Base64 images into the User prompt if a system marker is found.
+        Injects Base64 images/videos into the user prompt when markers or
+        Telegram media are present. The historical method name is preserved
+        for compatibility with callers and tests.
 
         Args:
             messages: Messages list.
@@ -793,42 +834,99 @@ class ReactLoop:
         image_paths = re.findall(
             r"\[SYSTEM_MARKER_IMAGE_ATTACHED:\s*(.+?)\]", last_result
         )
+        video_paths = re.findall(
+            r"\[SYSTEM_MARKER_VIDEO_ATTACHED:\s*(.+?)\]", last_result
+        )
 
         # Also include pending Telegram media
         if pending_media:
-            image_paths.extend(pending_media)
+            for media_path in pending_media:
+                suffix = Path(media_path).suffix.lower()
+                if suffix in {
+                    ".mp4",
+                    ".webm",
+                    ".mov",
+                    ".mkv",
+                    ".avi",
+                    ".mpeg",
+                    ".mpg",
+                }:
+                    video_paths.append(media_path)
+                else:
+                    image_paths.append(media_path)
 
-        if not image_paths:
+        if not image_paths and not video_paths:
             return messages
 
         user_msg = messages[1]
 
         if isinstance(user_msg, dict) and user_msg.get("role") == "user":
             original_text = user_msg["content"]
-            new_content = [{"type": "text", "text": original_text}]
+            if isinstance(original_text, list):
+                new_content = copy.deepcopy(original_text)
+            else:
+                new_content = [{"type": "text", "text": str(original_text)}]
 
             seen_paths = set()
-            for img_path in image_paths:
-                if img_path in seen_paths:
+            inline_limit = max(
+                1,
+                int(
+                    os.getenv(
+                        "JAWL_MEDIA_INLINE_MAX_BYTES",
+                        str(50 * 1024 * 1024),
+                    )
+                ),
+            )
+            media_items = [
+                ("image", media_path) for media_path in image_paths
+            ] + [("video", media_path) for media_path in video_paths]
+            for media_type, media_path in media_items:
+                if media_path in seen_paths:
                     continue
-                seen_paths.add(img_path)
+                seen_paths.add(media_path)
                 try:
-                    path_obj = Path(img_path)
+                    path_obj = Path(media_path)
                     if path_obj.exists():
+                        if path_obj.stat().st_size > inline_limit:
+                            main_logger.warning(
+                                f"[ReAct] Skipped oversized {media_type} "
+                                f"{path_obj.name} ({path_obj.stat().st_size} bytes; "
+                                f"limit={inline_limit})."
+                            )
+                            continue
                         base64_data = await asyncio.to_thread(
                             self._encode_image, str(path_obj)
                         )
-                        ext = path_obj.suffix.lower()
-                        mime = "image/jpeg" if ext in [".jpg", ".jpeg"] else f"image/{ext[1:]}"
+                        mime = mimetypes.guess_type(path_obj.name)[0]
+                        if not mime or not mime.startswith(f"{media_type}/"):
+                            mime = (
+                                "video/mp4"
+                                if media_type == "video"
+                                else "image/png"
+                            )
+                        if media_type == "video":
+                            new_content.append(
+                                {
+                                    "type": "video_url",
+                                    "video_url": {
+                                        "url": f"data:{mime};base64,{base64_data}"
+                                    },
+                                }
+                            )
+                        else:
+                            new_content.append(
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{mime};base64,{base64_data}"
+                                    },
+                                }
+                            )
 
-                        new_content.append(
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{mime};base64,{base64_data}"},
-                            }
+                        log = (
+                            f"[ReAct] {media_type.title()} {path_obj.name} "
+                            "successfully injected."
                         )
-
-                        log = f"[ReAct] Image {path_obj.name} successfully injected."
                         agent_logger.info(log)
 
                 except Exception as e:

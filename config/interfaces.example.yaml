@@ -7,6 +7,7 @@ host:
     desktop_max_elements: 250
     desktop_max_text_chars: 500
     desktop_max_result_chars: 60000
+    desktop_operation_timeout_sec: 30
 
     access_level: 0
     env_access: false 
@@ -88,6 +89,8 @@ telegram:
     recent_chats_limit: 20
     private_chat_history_limit: 2
     incoming_history_limit: 8
+    download_visual_media: true
+    visual_media_max_mb: 50
     # Optional passive push target for redacted coding approval requests.
     coding_approval_chat_id: null
     # Opt-in exact /jawl_approve and /jawl_deny interception. Remote decisions
@@ -99,6 +102,8 @@ telegram:
   aiogram:
     enabled: false
     recent_chats_limit: 20
+    download_visual_media: true
+    visual_media_max_mb: 20
     # Optional passive push target for redacted coding approval requests.
     coding_approval_chat_id: null
     # Opt-in exact /jawl_approve and /jawl_deny interception. Remote decisions
@@ -180,6 +185,12 @@ meta:
 # Подробнее: docs/yaml/interfaces/multimodality.md
 multimodality:
   enabled: false
+  video_understanding_enabled: false
+  media_generation_enabled: false
+  media_request_timeout_sec: 30
+  media_poll_interval_sec: 5.0
+  media_max_upload_mb: 50
+  media_max_download_mb: 500
 
 # Подробнее: docs/yaml/interfaces/mcp.md
 mcp:

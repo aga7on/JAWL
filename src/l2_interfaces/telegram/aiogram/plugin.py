@@ -65,6 +65,7 @@ class AiogramPlugin(BaseInterface):
             aiogram_client=client,
             state=state,
             event_bus=container.event_bus,
+            config=config,
             approval_control=approval_control,
         )
         approval_notifications = (

@@ -7,6 +7,8 @@ to wake up the agent core.
 """
 
 import asyncio
+import uuid
+from pathlib import Path
 from typing import Optional
 
 from aiogram import Dispatcher, F
@@ -15,6 +17,8 @@ from aiogram.types import Message
 from src.utils.event.bus import EventBus
 from src.utils.event.registry import Events
 from src.utils.logger import main_logger
+from src.utils._tools import get_project_root
+from src.utils.settings import AiogramConfig
 
 from src.l2_interfaces.telegram.aiogram.state import AiogramState
 from src.l2_interfaces.telegram.aiogram.client import AiogramClient
@@ -34,6 +38,7 @@ class AiogramEvents:
         aiogram_client: AiogramClient,
         state: AiogramState,
         event_bus: EventBus,
+        config: AiogramConfig,
         approval_control: Optional[TelegramCodingApprovalControl] = None,
     ) -> None:
         """
@@ -47,10 +52,68 @@ class AiogramEvents:
         self.client = aiogram_client
         self.state = state
         self.bus = event_bus
+        self.config = config
         self.approval_control = approval_control
 
         self.dp = Dispatcher()
         self._polling_task: Optional[asyncio.Task] = None
+
+    async def _download_visual_media(self, message: Message) -> list[str]:
+        """Download one supported Bot API image/video into the sandbox."""
+
+        if not self.config.download_visual_media:
+            return []
+        attachment = None
+        mime_type = ""
+        suffix = ""
+        if message.photo:
+            attachment = message.photo[-1]
+            mime_type, suffix = "image/jpeg", ".jpg"
+        elif message.video:
+            attachment = message.video
+            mime_type = message.video.mime_type or "video/mp4"
+            suffix = Path(message.video.file_name or "").suffix or ".mp4"
+        elif message.document:
+            mime_type = message.document.mime_type or ""
+            suffix_by_mime = {
+                "image/jpeg": ".jpg",
+                "image/png": ".png",
+                "image/webp": ".webp",
+                "image/gif": ".gif",
+                "video/mp4": ".mp4",
+                "video/webm": ".webm",
+                "video/quicktime": ".mov",
+                "video/x-matroska": ".mkv",
+            }
+            suffix = suffix_by_mime.get(mime_type.lower(), "")
+            if suffix:
+                attachment = message.document
+        if attachment is None or not suffix:
+            return []
+        max_bytes = int(self.config.visual_media_max_mb) * 1024 * 1024
+        if int(getattr(attachment, "file_size", 0) or 0) > max_bytes:
+            main_logger.warning("[Aiogram] Skipped oversized visual media.")
+            return []
+        media_dir = get_project_root() / "sandbox" / "telegram_media"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        target = media_dir / (
+            f"bot_{message.message_id}_{uuid.uuid4().hex[:8]}{suffix.lower()}"
+        )
+        try:
+            bot = self.client.bot()
+            remote_file = await bot.get_file(attachment.file_id)
+            await bot.download_file(remote_file.file_path, destination=target)
+            if not target.is_file() or target.stat().st_size > max_bytes:
+                target.unlink(missing_ok=True)
+                return []
+            main_logger.info(
+                f"[Aiogram] Visual media downloaded: {target.name} ({mime_type})"
+            )
+            return [str(target.resolve())]
+        except Exception as exc:
+            target.unlink(missing_ok=True)
+            main_logger.warning(f"[Aiogram] Failed to download visual media: {exc}")
+            return []
 
     async def start(self) -> None:
         """
@@ -151,8 +214,7 @@ class AiogramEvents:
 
         sender_name = message.from_user.first_name if message.from_user else "Unknown"
 
-        await self.bus.publish(
-            Events.AIOGRAM_MESSAGE_INCOMING,
+        payload = dict(
             message=message.text or message.caption or "[Media]",
             raw_text=message.text or message.caption or "",
             sender_name=sender_name,
@@ -160,6 +222,10 @@ class AiogramEvents:
             sender_id=message.from_user.id if message.from_user else None,
             msg_id=message.message_id,
         )
+        media_paths = await self._download_visual_media(message)
+        if media_paths:
+            payload["media_paths"] = media_paths
+        await self.bus.publish(Events.AIOGRAM_MESSAGE_INCOMING, **payload)
 
     async def _on_group_message(self, message: Message) -> None:
         """Trigger on messages in groups/supergroups."""
@@ -187,8 +253,7 @@ class AiogramEvents:
         )
         sender_name = message.from_user.first_name if message.from_user else "Unknown"
 
-        await self.bus.publish(
-            event_type,
+        payload = dict(
             message=message.text or message.caption or "[Media]",
             raw_text=message.text or message.caption or "",
             sender_name=sender_name,
@@ -196,6 +261,10 @@ class AiogramEvents:
             sender_id=message.from_user.id if message.from_user else None,
             msg_id=message.message_id,
         )
+        media_paths = await self._download_visual_media(message)
+        if media_paths:
+            payload["media_paths"] = media_paths
+        await self.bus.publish(event_type, **payload)
 
     async def _on_system_message(self, message: Message) -> None:
         """Trigger on system service events (join, leave, title change)."""

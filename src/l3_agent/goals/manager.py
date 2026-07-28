@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -14,6 +15,13 @@ from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel, Field
 
 from src.l0_state.agent.state import AgentState
+from src.l3_agent.goals.ledger import (
+    LedgerActionOutcome,
+    LedgerFailurePatch,
+    TaskLedger,
+    TaskLedgerPatch,
+    apply_ledger_patch,
+)
 from src.utils.logger import agent_logger
 
 
@@ -52,6 +60,10 @@ class GoalRecord(BaseModel):
     verification_at: Optional[float] = None
     last_action_tools: list[str] = Field(default_factory=list)
     evidence: list[Dict[str, Any]] = Field(default_factory=list)
+    task_ledger: TaskLedger = Field(default_factory=TaskLedger)
+    context_rebase_count: int = Field(default=0, ge=0)
+    last_provider_prompt_tokens: int = Field(default=0, ge=0)
+    last_rebased_lane_epoch: int = Field(default=0, ge=0)
 
     @property
     def remaining_tokens(self) -> Optional[int]:
@@ -67,7 +79,7 @@ class GoalRecord(BaseModel):
 class GoalManager:
     """Own one active durable goal and expose a bounded prompt projection."""
 
-    VERSION = 1
+    VERSION = 2
     MAX_RECORDS = 100
     MAX_EVIDENCE = 30
 
@@ -80,6 +92,9 @@ class GoalManager:
         compact_context: bool = True,
         compact_max_chars: int = 24000,
         suppress_waiting_heartbeats: bool = True,
+        task_ledger_enabled: bool = True,
+        task_ledger_max_chars: int = 7000,
+        provider_rebase_prompt_tokens: int = 45000,
         recover_on_start: bool = True,
     ) -> None:
         self.path = Path(path)
@@ -88,6 +103,11 @@ class GoalManager:
         self.compact_context = bool(compact_context)
         self.compact_max_chars = int(compact_max_chars)
         self.suppress_waiting_heartbeats = bool(suppress_waiting_heartbeats)
+        self.task_ledger_enabled = bool(task_ledger_enabled)
+        self.task_ledger_max_chars = int(task_ledger_max_chars)
+        self.provider_rebase_prompt_tokens = int(
+            provider_rebase_prompt_tokens
+        )
         self._lock = asyncio.Lock()
         self._records: list[GoalRecord] = []
         self._load_error = ""
@@ -109,14 +129,46 @@ class GoalManager:
             return
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or payload.get("version") != self.VERSION:
+            if not isinstance(payload, dict) or payload.get("version") not in {
+                1,
+                self.VERSION,
+            }:
                 raise ValueError("unsupported goal store version")
             records = payload.get("goals", [])
             if not isinstance(records, list):
                 raise ValueError("goal store goals must be a list")
-            self._records = [GoalRecord.model_validate(item) for item in records][
-                -self.MAX_RECORDS :
-            ]
+            loaded: list[GoalRecord] = []
+            for item in records:
+                record = GoalRecord.model_validate(item)
+                if (
+                    payload.get("version") == 1
+                    and isinstance(item, dict)
+                    and "task_ledger" not in item
+                    and record.status == "active"
+                ):
+                    # Legacy goals already contain useful evidence/result
+                    # fields, but no explicit execution checkpoint. Seed a
+                    # conservative recovery stage without inventing facts.
+                    record.task_ledger = TaskLedger(
+                        revision=1,
+                        current_phase="legacy_recovery",
+                        pending_steps=[
+                            self._bounded(
+                                f"Continue objective: {record.objective}", 400
+                            )
+                        ],
+                        next_action=(
+                            "Reconcile the latest durable evidence and action "
+                            "result, then record a precise Task Ledger checkpoint."
+                        ),
+                        checkpoint_summary=(
+                            self._bounded(record.last_summary, 1200)
+                            or "Migrated from Goal store v1."
+                        ),
+                        updated_at=time.time(),
+                    )
+                loaded.append(record)
+            self._records = loaded[-self.MAX_RECORDS :]
         except Exception as exc:
             # Preserve the corrupt file for operator inspection. Goal recovery is
             # fail-closed: no active state is guessed from malformed data.
@@ -343,17 +395,50 @@ class GoalManager:
             self._save()
             return goal.model_copy(deep=True)
 
-    def _append_evidence(self, goal: GoalRecord, kind: str, summary: str) -> None:
+    def _append_evidence(
+        self, goal: GoalRecord, kind: str, summary: str
+    ) -> str:
         text = self._bounded(summary, 2000)
         if not text:
-            return
+            return ""
         digest = hashlib.sha256(f"{kind}\0{text}".encode("utf-8")).hexdigest()[:16]
         if any(item.get("id") == digest for item in goal.evidence):
-            return
+            return digest
         goal.evidence.append(
-            {"id": digest, "kind": self._bounded(kind, 100), "summary": text, "at": time.time()}
+            {
+                "id": digest,
+                "kind": self._bounded(kind, 100),
+                "summary": text,
+                "at": time.time(),
+            }
         )
         goal.evidence = goal.evidence[-self.MAX_EVIDENCE :]
+        return digest
+
+    async def record_ledger_patch(
+        self, patch: TaskLedgerPatch
+    ) -> Optional[GoalRecord]:
+        """Atomically checkpoint sparse operational state before the next call."""
+
+        if not self.task_ledger_enabled:
+            goal = self.active_goal
+            return goal.model_copy(deep=True) if goal is not None else None
+        async with self._lock:
+            goal = self.active_goal
+            if goal is None:
+                return None
+            self._require_writable_store()
+            if not apply_ledger_patch(goal.task_ledger, patch):
+                return goal.model_copy(deep=True)
+            summary = (
+                patch.checkpoint_summary
+                or patch.next_action
+                or f"Task ledger advanced to {goal.task_ledger.current_phase}."
+            )
+            self._append_evidence(goal, "ledger_checkpoint", summary)
+            self._touch(goal)
+            self._save()
+            return goal.model_copy(deep=True)
 
     async def begin_cycle(self, event_name: str) -> Optional[GoalRecord]:
         async with self._lock:
@@ -468,7 +553,72 @@ class GoalManager:
                     f"verification:{goal.verification_status}",
                     goal.verification_summary,
                 )
-            self._append_evidence(goal, "tool_result", goal.last_result)
+            evidence_id = self._append_evidence(
+                goal, "tool_result", goal.last_result
+            )
+            if self.task_ledger_enabled:
+                result_by_action_id: dict[str, str] = {}
+                for block in re.split(r"(?m)(?=^\* )", result):
+                    match = re.search(
+                        r"\[action_id=([^;\]]+);", block, flags=re.IGNORECASE
+                    )
+                    if match:
+                        result_by_action_id[match.group(1).strip()] = block.strip()
+                statuses = re.findall(
+                    r"\[action_id=([^;\]]+);\s*status=(success|failed);",
+                    result,
+                    flags=re.IGNORECASE,
+                )
+                status_by_id = {
+                    action_id.strip(): status.casefold()
+                    for action_id, status in statuses
+                }
+                batch: list[LedgerActionOutcome] = []
+                automatic_failures: list[LedgerFailurePatch] = []
+                for index, action in enumerate(normalized_actions):
+                    action_id = self._bounded(
+                        action.get("action_id") or f"action_{index + 1}", 200
+                    )
+                    tool = self._bounded(action["tool_name"], 300)
+                    status = status_by_id.get(action_id, "unknown")
+                    batch.append(
+                        LedgerActionOutcome(
+                            action_id=action_id,
+                            tool=tool,
+                            status=status,
+                            evidence_id=evidence_id,
+                        )
+                    )
+                    if status == "failed":
+                        automatic_failures.append(
+                            LedgerFailurePatch(
+                                action=f"{tool} ({action_id})",
+                                reason=self._bounded(
+                                    result_by_action_id.get(action_id, result),
+                                    700,
+                                ),
+                                retry_when=(
+                                    "Only after new evidence, changed inputs, "
+                                    "or an explicit recovery condition."
+                                ),
+                            )
+                        )
+                ledger_before = goal.task_ledger.model_dump(
+                    mode="json", exclude={"updated_at", "revision"}
+                )
+                goal.task_ledger.last_action_batch = batch[-20:]
+                patch_changed = False
+                if automatic_failures:
+                    patch_changed = apply_ledger_patch(
+                        goal.task_ledger,
+                        TaskLedgerPatch(failures_add=automatic_failures),
+                    )
+                ledger_after = goal.task_ledger.model_dump(
+                    mode="json", exclude={"updated_at", "revision"}
+                )
+                if ledger_before != ledger_after and not patch_changed:
+                    goal.task_ledger.revision += 1
+                    goal.task_ledger.updated_at = time.time()
             self._touch(goal)
             self._save()
 
@@ -490,12 +640,32 @@ class GoalManager:
                 )
 
             provider = token_value("provider_total_tokens")
+            provider_prompt = token_value("provider_prompt_tokens")
             estimated = token_value("estimated_input_tokens") + token_value(
                 "estimated_output_tokens"
             )
             goal.provider_tokens += provider
             goal.estimated_tokens += estimated
             goal.accounted_tokens += provider or estimated
+            goal.last_provider_prompt_tokens = provider_prompt
+            if (
+                self.provider_rebase_prompt_tokens > 0
+                and provider_prompt >= self.provider_rebase_prompt_tokens
+                and goal.last_rebased_lane_epoch != goal.lane_epoch
+            ):
+                previous_epoch = goal.lane_epoch
+                goal.lane_epoch += 1
+                goal.last_rebased_lane_epoch = previous_epoch
+                goal.context_rebase_count += 1
+                self._append_evidence(
+                    goal,
+                    "context_rebase",
+                    (
+                        "Provider context reached "
+                        f"{provider_prompt} prompt tokens; continuing from the "
+                        "local Task Ledger in a fresh Qwen lane."
+                    ),
+                )
             if (
                 goal.token_budget is not None
                 and goal.accounted_tokens >= goal.token_budget
@@ -559,9 +729,13 @@ class GoalManager:
             if goal.remaining_tokens is None
             else str(goal.remaining_tokens)
         )
+        stable_evidence = [
+            item for item in goal.evidence if item.get("kind") != "tool_result"
+        ]
         evidence = "\n".join(
-            f"- {item['kind']}: {self._bounded(item['summary'], 300)}"
-            for item in goal.evidence[-5:]
+            f"- [{item['id']}] {item['kind']}: "
+            f"{self._bounded(item['summary'], 300)}"
+            for item in stable_evidence[-5:]
         ) or "- No durable evidence recorded yet."
         wake = (
             "event only"
@@ -570,6 +744,7 @@ class GoalManager:
                 "%Y-%m-%d %H:%M:%S", time.localtime(goal.next_wakeup_at)
             )
         )
+        ledger = self._task_ledger_context(goal)
         return f"""
 ## ACTIVE GOAL
 * Goal ID: {goal.goal_id}
@@ -582,9 +757,12 @@ class GoalManager:
 * Linked coding task: {goal.linked_task_id or "none"}
 * Verification: policy={goal.verification_policy}, status={goal.verification_status}
 * Verification evidence: {self._bounded(goal.verification_summary, 1000) or "none"}
+* Provider context: last_prompt={goal.last_provider_prompt_tokens}, rebases={goal.context_rebase_count}
 
 ### Objective
 {self._bounded(goal.objective, 3000)}
+
+{ledger}
 
 ### Latest durable evidence
 {evidence}
@@ -597,8 +775,82 @@ Keep working until the objective is actually achieved. For a compact response,
 execute_skill arguments may use Goal Protocol v2:
 `{{"v":2,"state":"act","calls":[{{"tool":"Exact.skill","args":{{}}}}],"note":"short"}}`.
 Terminal states are `done`, `wait`, and `blocked`; include a concrete summary.
+For every Goal response, include a sparse `ledger` checkpoint. Record only
+evidence-backed facts, current phase, unfinished steps, failed approaches and
+the exact next action. Omitted ledger fields remain unchanged; do not replay
+the full ledger. Example:
+`"ledger":{{"phase":"verify","completed_add":["patch applied"],"pending_steps":["run tests"],"next_action":"run the focused test"}}`.
 `wait` may include `wake_after_seconds`. Do not report `done` until durable
 evidence satisfies the objective. For coding goals, inspect the exact diff,
 run the smallest relevant test first, then the repository verification gate.
 A passing narrow test is evidence, not proof that the full goal is complete.
 """.strip()
+
+    def _task_ledger_context(self, goal: GoalRecord) -> str:
+        if not self.task_ledger_enabled:
+            return "### Task Ledger\nDisabled by configuration."
+        ledger = goal.task_ledger
+
+        def items(values: list[str], limit: int) -> str:
+            selected = values[-limit:]
+            return (
+                "\n".join(f"- {self._bounded(item, 400)}" for item in selected)
+                or "- none"
+            )
+
+        failures = "\n".join(
+            (
+                f"- {self._bounded(item.action, 220)}: "
+                f"{self._bounded(item.reason, 300)}"
+                + (
+                    f" | retry when: {self._bounded(item.retry_when, 220)}"
+                    if item.retry_when
+                    else ""
+                )
+            )
+            for item in ledger.failed_attempts[-5:]
+        ) or "- none"
+        last_batch = "\n".join(
+            f"- {item.tool} [{item.action_id}]: {item.status}; "
+            f"evidence={item.evidence_id}"
+            for item in ledger.last_action_batch[-8:]
+        ) or "- none"
+        # Put recovery-critical state in an independently bounded prefix.
+        # Optional sections are admitted in priority order, so truncation never
+        # removes both the exact next action and the newest tool outcomes.
+        projection = f"""
+### Local Task Ledger (authoritative after Qwen chat reset)
+* Ledger revision: {ledger.revision}
+* Current phase: {self._bounded(ledger.current_phase, 160)}
+* Checkpoint: {self._bounded(ledger.checkpoint_summary, 350) or "none"}
+* Exact next action: {self._bounded(ledger.next_action, 500) or "not recorded"}
+
+#### Last action batch — reconcile before repeating work
+{self._bounded(last_batch, 600)}
+""".strip()
+        optional_sections = [
+            ("Pending stages", items(ledger.pending_steps, 7)),
+            ("Current blockers", items(ledger.blockers, 5)),
+            (
+                "Failed approaches — do not repeat without the retry condition",
+                failures,
+            ),
+            ("Acceptance criteria", items(ledger.acceptance_criteria, 6)),
+            ("Confirmed facts", items(ledger.confirmed_facts, 8)),
+            ("Known tool/session state", items(ledger.tool_state, 7)),
+            ("Completed stages", items(ledger.completed_steps, 7)),
+            ("Artifacts", items(ledger.artifacts, 6)),
+            ("Active hypotheses", items(ledger.hypotheses, 5)),
+        ]
+        for title, content in optional_sections:
+            section = f"\n\n#### {title}\n{content}"
+            remaining = self.task_ledger_max_chars - len(projection)
+            if remaining <= 0:
+                break
+            if len(section) <= remaining:
+                projection += section
+                continue
+            if remaining >= 120:
+                projection += self._bounded(section, remaining)
+            break
+        return projection
