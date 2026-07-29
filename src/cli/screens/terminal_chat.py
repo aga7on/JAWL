@@ -70,6 +70,7 @@ async def _chat_loop(port: int, history_file: Path, agent_name: str) -> None:
         Panel(
             f"[bold cyan]Interactive chat with agent {agent_name}[/bold cyan]\n"
             "[dim]Send: Enter[/dim]\n"
+            "[dim]Status without interrupting work: /status[/dim]\n"
             "[dim]Exit: /exit or Ctrl+C[/dim]",
             border_style="cyan",
             expand=False,

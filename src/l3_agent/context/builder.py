@@ -194,7 +194,7 @@ class ContextBuilder:
 
         limits = {
             "skills": 9000,
-            "active_goal": 12000,
+            "active_goal": 16000,
             "heartbeat": 7000,
             "sql_ticks": 5000,
             "rag memories": 4000,
@@ -349,11 +349,23 @@ class ContextBuilder:
                     "HostOSEditor",
                     "HostOSWorkspace",
                     "HostOSExecution",
+                    "HostOSProcessSessions",
                     "HostOSWriter",
                     "CodeGraph",
                     "GitHubLocalGit",
                 ]
             )
+
+        finite_process_pattern = re.compile(
+            r"(?:\bscript\b|\bprocess\b|\bsubprocess\b|\bwait\b|\btimeout\b|"
+            r"\bdownload\b|\bbuild\b|\bcompile\b|\bpytest\b|"
+            r"скрипт|процесс|ожида|скач|сборк|тест)"
+        )
+        if finite_process_pattern.search(signal) or any(
+            tool.startswith("HostOSProcessSessions")
+            for tool in self.agent_state.last_action_tools
+        ):
+            prefixes.extend(["HostOSProcessSessions", "HostOSExecution"])
 
         desktop_pattern = re.compile(
             r"(?:\bdesktop\b|\bgui\b|\bui\b|\bwindow\b|\bscreen(?:shot)?\b|"

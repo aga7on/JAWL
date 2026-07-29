@@ -9,7 +9,7 @@ if the LLM violates formatting or escaping.
 import re
 import json
 from typing import Any, Dict, List, Literal, Tuple, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.l3_agent.goals.ledger import TaskLedgerPatch
 
@@ -21,6 +21,17 @@ class ActionCall(BaseModel):
     depends_on: List[str] = Field(default_factory=list)
     parallel_group: Optional[str] = None
     resources: List[str] = Field(default_factory=list)
+
+    @field_validator("depends_on", "resources", mode="before")
+    @classmethod
+    def _coerce_string_list(cls, value: Any) -> Any:
+        """Repair Qwen's common single-string form for list-valued fields."""
+
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        return value
 
 
 class AgentResponse(BaseModel):
@@ -182,9 +193,24 @@ ACTION_SCHEMA = [
                                 "maxItems": 20,
                                 "items": {"type": "string"},
                             },
+                            "completed_steps": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "completed_remove": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
                             "pending_steps": {
                                 "type": "array",
                                 "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "confirmed_facts": {
+                                "type": "array",
+                                "maxItems": 24,
                                 "items": {"type": "string"},
                             },
                             "facts_add": {
@@ -192,9 +218,33 @@ ACTION_SCHEMA = [
                                 "maxItems": 20,
                                 "items": {"type": "string"},
                             },
+                            "facts_remove": {
+                                "type": "array",
+                                "maxItems": 24,
+                                "items": {"type": "string"},
+                            },
                             "hypotheses": {
                                 "type": "array",
                                 "maxItems": 12,
+                                "items": {"type": "string"},
+                            },
+                            "failures": {
+                                "type": "array",
+                                "maxItems": 16,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "action": {"type": "string"},
+                                        "reason": {"type": "string"},
+                                        "retry_when": {"type": "string"},
+                                    },
+                                    "required": ["action", "reason"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "failures_remove": {
+                                "type": "array",
+                                "maxItems": 16,
                                 "items": {"type": "string"},
                             },
                             "failures_add": {
@@ -216,9 +266,29 @@ ACTION_SCHEMA = [
                                 "maxItems": 20,
                                 "items": {"type": "string"},
                             },
+                            "artifacts": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "artifacts_remove": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
                             "tool_state_add": {
                                 "type": "array",
                                 "maxItems": 20,
+                                "items": {"type": "string"},
+                            },
+                            "tool_state": {
+                                "type": "array",
+                                "maxItems": 24,
+                                "items": {"type": "string"},
+                            },
+                            "tool_state_remove": {
+                                "type": "array",
+                                "maxItems": 24,
                                 "items": {"type": "string"},
                             },
                             "blockers": {

@@ -43,3 +43,22 @@ Text is bounded and redacted, binary data is size-checked and stored under the
 JAWL sandbox, and lifecycle health never retains call parameters or results.
 Cross-server forwarding of secrets is not implied by enabling MCP and must not
 be performed without explicit user authorization.
+
+## x64dbg lifecycle workflow
+
+The local `x64dbg-mcp` adapter can expose `LaunchDebuggee` and `AttachProcess`
+in addition to the debugger inspection and mutation APIs. These two tools
+remove the ambiguous GUI/bootstrap step:
+
+1. Search the exact `x64dbg-mcp` server once for `LaunchDebuggee` or
+   `AttachProcess`.
+2. Call the returned allowlisted tool with its current schema hash.
+3. Confirm `mcp_ready=true`, then call `GetState`; launch success alone is not
+   evidence that the debuggee is paused at the intended location.
+4. Persist the tool/schema and current target or PID in the Goal Task Ledger.
+5. Use the returned state to set breakpoints, run, pause, step, and inspect.
+
+`LaunchDebuggee` accepts only an existing absolute PE path and can select
+x32dbg/x64dbg from the PE machine type. `AttachProcess` requires an explicit
+process ID and architecture. Both open the visible debugger application; the
+Edge/Qwen browser is unrelated to this MCP connection.

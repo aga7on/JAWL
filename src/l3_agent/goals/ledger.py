@@ -6,7 +6,7 @@ import hashlib
 import time
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class LedgerFailurePatch(BaseModel):
@@ -38,18 +38,58 @@ class TaskLedgerPatch(BaseModel):
     acceptance_criteria: Optional[list[str]] = Field(
         default=None, max_length=20
     )
+    completed_steps: Optional[list[str]] = Field(default=None, max_length=20)
     completed_add: list[str] = Field(default_factory=list, max_length=20)
+    completed_remove: list[str] = Field(default_factory=list, max_length=20)
     pending_steps: Optional[list[str]] = Field(default=None, max_length=20)
+    confirmed_facts: Optional[list[str]] = Field(default=None, max_length=24)
     facts_add: list[str] = Field(default_factory=list, max_length=20)
+    facts_remove: list[str] = Field(default_factory=list, max_length=24)
     hypotheses: Optional[list[str]] = Field(default=None, max_length=12)
+    failures: Optional[list[LedgerFailurePatch]] = Field(
+        default=None, max_length=16
+    )
+    failures_remove: list[str] = Field(default_factory=list, max_length=16)
     failures_add: list[LedgerFailurePatch] = Field(
         default_factory=list, max_length=12
     )
+    artifacts: Optional[list[str]] = Field(default=None, max_length=20)
     artifacts_add: list[str] = Field(default_factory=list, max_length=20)
+    artifacts_remove: list[str] = Field(default_factory=list, max_length=20)
+    tool_state: Optional[list[str]] = Field(default=None, max_length=24)
     tool_state_add: list[str] = Field(default_factory=list, max_length=20)
+    tool_state_remove: list[str] = Field(default_factory=list, max_length=24)
     blockers: Optional[list[str]] = Field(default=None, max_length=12)
     next_action: Optional[str] = Field(default=None, max_length=1000)
     checkpoint_summary: str = Field(default="", max_length=1200)
+
+    @field_validator(
+        "acceptance_criteria",
+        "completed_steps",
+        "completed_add",
+        "completed_remove",
+        "pending_steps",
+        "confirmed_facts",
+        "facts_add",
+        "facts_remove",
+        "hypotheses",
+        "failures_remove",
+        "artifacts",
+        "artifacts_add",
+        "artifacts_remove",
+        "tool_state",
+        "tool_state_add",
+        "tool_state_remove",
+        "blockers",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_string_collection(cls, value: object) -> object:
+        """Accept Qwen's unambiguous single-item shorthand."""
+
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        return value
 
 
 class TaskLedger(BaseModel):
@@ -107,12 +147,45 @@ def _dedupe(values: list[str], *, count: int, chars: int) -> list[str]:
 
 def _merge(current: list[str], additions: list[str], field: str) -> list[str]:
     count, chars = _LIMITS[field]
+    if field == "tool_state":
+        # Automatically produced tool-state entries use a stable key before
+        # the first separator. Replace that key instead of accumulating stale
+        # schemas/session observations forever.
+        keyed: dict[str, str] = {}
+        unkeyed: list[str] = []
+        for value in [*current, *additions]:
+            text = _bounded(value, chars)
+            if not text:
+                continue
+            key, separator, _ = text.partition(" | ")
+            if separator and key.strip():
+                keyed[" ".join(key.casefold().split())] = text
+            else:
+                unkeyed.append(text)
+        return _dedupe([*unkeyed, *keyed.values()], count=count, chars=chars)
     return _dedupe([*current, *additions], count=count, chars=chars)
 
 
 def _replace(values: list[str], field: str) -> list[str]:
     count, chars = _LIMITS[field]
     return _dedupe(values, count=count, chars=chars)
+
+
+def _remove(current: list[str], removals: list[str], field: str) -> list[str]:
+    """Remove exact normalized items from one bounded ledger collection."""
+
+    if not removals:
+        return current
+    removal_keys = {
+        " ".join(_bounded(item, _LIMITS[field][1]).casefold().split())
+        for item in removals
+        if str(item or "").strip()
+    }
+    return [
+        item
+        for item in current
+        if " ".join(item.casefold().split()) not in removal_keys
+    ]
 
 
 def apply_ledger_patch(ledger: TaskLedger, patch: TaskLedgerPatch) -> bool:
@@ -131,6 +204,14 @@ def apply_ledger_patch(ledger: TaskLedger, patch: TaskLedgerPatch) -> bool:
         ledger.pending_steps = _replace(
             patch.pending_steps or [], "pending_steps"
         )
+    if "completed_steps" in fields_set:
+        ledger.completed_steps = _replace(
+            patch.completed_steps or [], "completed_steps"
+        )
+    if patch.completed_remove:
+        ledger.completed_steps = _remove(
+            ledger.completed_steps, patch.completed_remove, "completed_steps"
+        )
     if patch.completed_add:
         ledger.completed_steps = _merge(
             ledger.completed_steps, patch.completed_add, "completed_steps"
@@ -143,12 +224,51 @@ def apply_ledger_patch(ledger: TaskLedger, patch: TaskLedgerPatch) -> bool:
             for item in ledger.pending_steps
             if " ".join(item.casefold().split()) not in completed_keys
         ]
+    if "confirmed_facts" in fields_set:
+        ledger.confirmed_facts = _replace(
+            patch.confirmed_facts or [], "confirmed_facts"
+        )
+    if patch.facts_remove:
+        ledger.confirmed_facts = _remove(
+            ledger.confirmed_facts, patch.facts_remove, "confirmed_facts"
+        )
     if patch.facts_add:
         ledger.confirmed_facts = _merge(
             ledger.confirmed_facts, patch.facts_add, "confirmed_facts"
         )
     if "hypotheses" in fields_set:
         ledger.hypotheses = _replace(patch.hypotheses or [], "hypotheses")
+    if "failures" in fields_set:
+        ledger.failed_attempts = []
+        for failure in patch.failures or []:
+            action = _bounded(failure.action, 500)
+            reason = _bounded(failure.reason, 1000)
+            retry_when = _bounded(failure.retry_when, 500)
+            if not action:
+                continue
+            ledger.failed_attempts.append(
+                LedgerFailure(
+                    failure_id=hashlib.sha256(
+                        f"{action}\0{reason}\0{retry_when}".encode("utf-8")
+                    ).hexdigest()[:16],
+                    action=action,
+                    reason=reason,
+                    retry_when=retry_when,
+                    at=time.time(),
+                )
+            )
+        ledger.failed_attempts = ledger.failed_attempts[-16:]
+    if patch.failures_remove:
+        removal_keys = {
+            " ".join(str(item).casefold().split())
+            for item in patch.failures_remove
+            if str(item).strip()
+        }
+        ledger.failed_attempts = [
+            item
+            for item in ledger.failed_attempts
+            if " ".join(item.action.casefold().split()) not in removal_keys
+        ]
     if patch.failures_add:
         known = {item.failure_id for item in ledger.failed_attempts}
         for failure in patch.failures_add:
@@ -171,9 +291,21 @@ def apply_ledger_patch(ledger: TaskLedger, patch: TaskLedgerPatch) -> bool:
                 )
             )
         ledger.failed_attempts = ledger.failed_attempts[-16:]
+    if "artifacts" in fields_set:
+        ledger.artifacts = _replace(patch.artifacts or [], "artifacts")
+    if patch.artifacts_remove:
+        ledger.artifacts = _remove(
+            ledger.artifacts, patch.artifacts_remove, "artifacts"
+        )
     if patch.artifacts_add:
         ledger.artifacts = _merge(
             ledger.artifacts, patch.artifacts_add, "artifacts"
+        )
+    if "tool_state" in fields_set:
+        ledger.tool_state = _replace(patch.tool_state or [], "tool_state")
+    if patch.tool_state_remove:
+        ledger.tool_state = _remove(
+            ledger.tool_state, patch.tool_state_remove, "tool_state"
         )
     if patch.tool_state_add:
         ledger.tool_state = _merge(

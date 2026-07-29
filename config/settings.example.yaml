@@ -48,14 +48,14 @@ system:
   goal_mode:
     enabled: true
     compact_context: true
-    compact_max_chars: 24000
+    compact_max_chars: 36000
     suppress_waiting_heartbeats: true
     # Compact local execution state survives Qwen chat/account resets.
     task_ledger_enabled: true
-    task_ledger_max_chars: 7000
+    task_ledger_max_chars: 10000
     # Start a clean QWB lane after the upstream conversation grows this large.
     # Set 0 to disable automatic rebasing.
-    provider_rebase_prompt_tokens: 45000
+    provider_rebase_prompt_tokens: 65000
 
   # Подробнее: docs/yaml/settings/event_acceleration.md
   # Repeated timer heartbeats which complete without any action back off

@@ -128,6 +128,35 @@ def test_parser_accepts_sparse_task_ledger_checkpoint():
     assert parsed.actions[0].tool_name == "MCPTools.call_tool"
 
 
+def test_goal_parser_repairs_single_dependency_and_ledger_removals():
+    payload = {
+        "v": 2,
+        "state": "act",
+        "calls": [
+            {
+                "tool": "MCPTools.call_tool",
+                "args": {"server": "x64dbg-mcp", "tool": "GetCallStack"},
+                "depends_on": "launch",
+                "resources": "debugger",
+            }
+        ],
+        "ledger": {
+            "facts_remove": "Launcher was not created",
+            "failures_remove": "Old launcher attempt",
+            "tool_state_remove": "mcp:x64dbg:old",
+        },
+    }
+
+    parsed, error = parse_llm_json(json.dumps(payload))
+
+    assert error is None
+    assert parsed.actions[0].depends_on == ["launch"]
+    assert parsed.actions[0].resources == ["debugger"]
+    assert parsed.ledger.facts_remove == ["Launcher was not created"]
+    assert parsed.ledger.failures_remove == ["Old launcher attempt"]
+    assert parsed.ledger.tool_state_remove == ["mcp:x64dbg:old"]
+
+
 @pytest.mark.parametrize("state", ["done", "wait", "blocked"])
 def test_parser_accepts_explicit_goal_terminal_states(state):
     payload = {"v": 2, "state": state, "summary": f"{state} evidence"}

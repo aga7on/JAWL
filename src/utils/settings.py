@@ -625,12 +625,12 @@ class GoalModeConfig(BaseModel):
 
     enabled: bool = True
     compact_context: bool = True
-    compact_max_chars: int = Field(default=24000, ge=8000, le=100000)
+    compact_max_chars: int = Field(default=36000, ge=8000, le=100000)
     suppress_waiting_heartbeats: bool = True
     task_ledger_enabled: bool = True
-    task_ledger_max_chars: int = Field(default=7000, ge=2000, le=30000)
+    task_ledger_max_chars: int = Field(default=10000, ge=2000, le=30000)
     provider_rebase_prompt_tokens: int = Field(
-        default=45000, ge=0, le=1000000
+        default=65000, ge=0, le=1000000
     )
 
 

@@ -255,6 +255,87 @@ async def test_task_ledger_sparse_checkpoint_survives_restart(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_task_ledger_can_remove_and_authoritatively_replace_stale_state(manager):
+    await manager.create("Reconcile contradictory evidence")
+    await manager.record_ledger_patch(
+        TaskLedgerPatch(
+            completed_add=["Old completed step"],
+            facts_add=["Launcher was not created", "Crash is caused by FPU"],
+            failures_add=[
+                {
+                    "action": "Old launcher attempt",
+                    "reason": "File did not exist",
+                    "retry_when": "Writer is available",
+                }
+            ],
+            artifacts_add=["old.bin"],
+            tool_state_add=["mcp:x64dbg:GetState | schema=old"],
+        )
+    )
+
+    await manager.record_ledger_patch(
+        TaskLedgerPatch(
+            completed_remove=["Old completed step"],
+            confirmed_facts=["Launcher v7 was created and executed"],
+            failures_remove=["Old launcher attempt"],
+            artifacts=[],
+            tool_state=["mcp:x64dbg:GetState | schema=new"],
+        )
+    )
+
+    ledger = manager.active_goal.task_ledger
+    assert ledger.completed_steps == []
+    assert ledger.confirmed_facts == ["Launcher v7 was created and executed"]
+    assert ledger.failed_attempts == []
+    assert ledger.artifacts == []
+    assert ledger.tool_state == ["mcp:x64dbg:GetState | schema=new"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_discovery_is_checkpointed_and_repetition_is_guarded(manager):
+    await manager.create("Use the debugger without rediscovering it forever")
+    actions = [
+        {
+            "tool_name": "MCPTools.search_tools",
+            "action_id": "discover",
+            "parameters": {
+                "server": "x64dbg-mcp",
+                "query": "create attach process debuggee call stack",
+            },
+        }
+    ]
+    result = (
+        '* MCPTools.search_tools: {"matches":[{"name":"GetCallStack",'
+        '"schema_sha256":"'
+        + "a" * 64
+        + '","allowed":true}]}\n'
+        "  [action_id=discover; status=success; duration_ms=1]"
+    )
+    await manager.record_action_result(result, actions=actions)
+    actions[0]["parameters"]["query"] = (
+        "open attach create process executable debuggee call stack"
+    )
+    await manager.record_action_result(result, actions=actions)
+
+    warning = manager.repeated_action_warning(
+        [
+            {
+                "tool_name": "MCPTools.search_tools",
+                "parameters": {
+                    "server": "x64dbg-mcp",
+                    "query": "attach create process debuggee call stack start",
+                },
+            }
+        ]
+    )
+
+    assert "repetition guard" in warning.casefold()
+    assert manager.active_goal.task_ledger.tool_state == [
+        f"mcp:x64dbg-mcp:GetCallStack | allowed=true schema={'a' * 64}"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_action_failure_is_automatically_checkpointed(manager):
     await manager.create("Recover from a failed tool")
 

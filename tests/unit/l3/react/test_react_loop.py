@@ -426,6 +426,64 @@ async def test_goal_action_result_is_durable_before_done(
 
 @pytest.mark.asyncio
 @patch("src.l3_agent.react.loop.execute_skill", new_callable=AsyncMock)
+async def test_goal_repetition_guard_forces_replan_without_dispatch(
+    mock_execute_skill, mock_dependencies, tmp_path
+):
+    deps = dict(mock_dependencies)
+    manager = GoalManager(tmp_path / "goals.json", deps["agent_state"])
+    await manager.create("Stop rediscovering the same debugger operation")
+    prior_action = {
+        "tool_name": "MCPTools.search_tools",
+        "action_id": "prior",
+        "parameters": {
+            "server": "x64dbg-mcp",
+            "query": "launch attach process debuggee call stack",
+        },
+    }
+    prior_result = (
+        "* MCPTools.search_tools: catalog\n"
+        "  [action_id=prior; status=success; duration_ms=1]"
+    )
+    await manager.record_action_result(prior_result, actions=[prior_action])
+    prior_action["parameters"]["query"] = (
+        "open attach process debuggee call stack launch"
+    )
+    await manager.record_action_result(prior_result, actions=[prior_action])
+
+    deps["goal_manager"] = manager
+    deps["executor"].last_call_metrics = {}
+    deps["executor"].execute.side_effect = [
+        json.dumps(
+            {
+                "v": 2,
+                "state": "act",
+                "calls": [
+                    {
+                        "tool": "MCPTools.search_tools",
+                        "args": {
+                            "server": "x64dbg-mcp",
+                            "query": "attach launch process debuggee call stack start",
+                        },
+                        "action_id": "again",
+                    }
+                ],
+            }
+        ),
+        '{"v":2,"state":"done","summary":"Replanned from known tool state."}',
+    ]
+    loop = ReactLoop(**deps)
+
+    await loop.run("HEARTBEAT", {}, [])
+
+    mock_execute_skill.assert_not_awaited()
+    assert deps["executor"].execute.await_count == 2
+    guarded_tick = deps["sql_ticks"].save_tick.await_args_list[0].kwargs
+    assert guarded_tick["results"]["status"] == "repetition_guard"
+    assert "repetition guard" in deps["agent_state"].last_action_error.casefold()
+
+
+@pytest.mark.asyncio
+@patch("src.l3_agent.react.loop.execute_skill", new_callable=AsyncMock)
 async def test_goal_ledger_is_saved_before_action_and_survives_completion(
     mock_execute_skill, mock_dependencies, tmp_path
 ):

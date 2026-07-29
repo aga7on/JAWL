@@ -250,9 +250,15 @@ class HostOSExecution:
 
     @skill(swarm=[Subagents.CODER, Subagents.QA_ENGINEER, Subagents.SYSADMIN])
     @require_access(HostOSAccessLevel.ROOT)
-    async def execute_shell_command(self, command: str) -> SkillResult:
+    async def execute_shell_command(
+        self, command: str, allow_nonzero: bool = False
+    ) -> SkillResult:
         """
         Executes raw bash/cmd command in host OS terminal.
+
+        allow_nonzero: Treat a non-zero exit code as an expected successful
+            observation. Leave false for normal commands so Goal evidence does
+            not misclassify a failed command as success.
         """
 
         if self._targets_protected_process(command):
@@ -296,6 +302,8 @@ class HostOSExecution:
             if stderr_str:
                 report += f"\n\nSTDERR:\n{stderr_str}"
 
+            if exit_code != 0 and not allow_nonzero:
+                return SkillResult.fail(report)
             return SkillResult.ok(report)
 
         except Exception as e:

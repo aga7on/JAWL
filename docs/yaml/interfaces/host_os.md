@@ -116,6 +116,12 @@ handle. Only finite Python scripts are supported. At SANDBOX/OBSERVER access
 they must be inside `sandbox/` and run through the existing sandbox guard. Use
 `start_daemon` only for intentionally persistent services.
 
+At OPERATOR/ROOT access the selected Python script runs directly as a managed
+host process while retaining the same bounded lifetime, captured log, exact
+exit code, inspect/wait contract, and process-tree cleanup. This permits
+explicitly authorized `ctypes`/WinAPI automation without falling back to an
+untracked shell background process.
+
 ### One-shot approvals and command profiles
 
 Set `coding_approval_mode: required` to require an operator decision for every

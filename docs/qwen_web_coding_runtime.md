@@ -139,6 +139,10 @@ For a named target such as x64dbg, discovery is constrained to the configured
 named in the query and allowlisted tools, preventing unrelated Ghidra debugger
 matches from consuming the bounded result first.
 
+The bundled local x64dbg workflow uses explicit `LaunchDebuggee` and
+`AttachProcess` tools. The agent should call one of them and verify `GetState`,
+not repeatedly search for paraphrases such as "open/create debuggee".
+
 Windows UI work follows an evidence loop: identify the target window, observe
 its exact UI Automation controls, act using the short-lived element/hash pair,
 then wait or re-observe. Screenshot capture retries one transient OS failure;

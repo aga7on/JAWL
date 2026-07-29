@@ -59,6 +59,7 @@ class GoalRecord(BaseModel):
     verification_summary: str = ""
     verification_at: Optional[float] = None
     last_action_tools: list[str] = Field(default_factory=list)
+    recent_action_fingerprints: list[Dict[str, Any]] = Field(default_factory=list)
     evidence: list[Dict[str, Any]] = Field(default_factory=list)
     task_ledger: TaskLedger = Field(default_factory=TaskLedger)
     context_rebase_count: int = Field(default=0, ge=0)
@@ -82,6 +83,25 @@ class GoalManager:
     VERSION = 2
     MAX_RECORDS = 100
     MAX_EVIDENCE = 30
+    MAX_ACTION_FINGERPRINTS = 32
+    _DISCOVERY_TOOLS = {
+        "MCPTools.search_tools",
+        "SkillCatalog.search_skills",
+    }
+    _SEARCH_STOP_WORDS = {
+        "a",
+        "an",
+        "and",
+        "for",
+        "in",
+        "of",
+        "or",
+        "the",
+        "to",
+        "tool",
+        "tools",
+        "with",
+    }
 
     def __init__(
         self,
@@ -90,11 +110,11 @@ class GoalManager:
         *,
         enabled: bool = True,
         compact_context: bool = True,
-        compact_max_chars: int = 24000,
+        compact_max_chars: int = 36000,
         suppress_waiting_heartbeats: bool = True,
         task_ledger_enabled: bool = True,
-        task_ledger_max_chars: int = 7000,
-        provider_rebase_prompt_tokens: int = 45000,
+        task_ledger_max_chars: int = 10000,
+        provider_rebase_prompt_tokens: int = 65000,
         recover_on_start: bool = True,
     ) -> None:
         self.path = Path(path)
@@ -123,6 +143,148 @@ class GoalManager:
         if len(text) <= limit:
             return text
         return text[: max(0, limit - 18)] + "...[truncated]"
+
+    @classmethod
+    def _search_tokens(cls, value: Any) -> list[str]:
+        return sorted(
+            {
+                token
+                for token in re.findall(r"[a-z0-9_.:-]{2,}", str(value or "").casefold())
+                if token not in cls._SEARCH_STOP_WORDS
+            }
+        )[:40]
+
+    @classmethod
+    def _action_fingerprint(
+        cls, action: Dict[str, Any], status: str = "unknown"
+    ) -> Optional[Dict[str, Any]]:
+        tool = str(action.get("tool_name") or "")
+        if tool not in cls._DISCOVERY_TOOLS:
+            return None
+        parameters = action.get("parameters")
+        parameters = parameters if isinstance(parameters, dict) else {}
+        query_tokens = cls._search_tokens(parameters.get("query"))
+        if not query_tokens:
+            return None
+        return {
+            "tool": tool,
+            "server": cls._bounded(parameters.get("server"), 100),
+            "tokens": query_tokens,
+            "status": status,
+            "at": time.time(),
+        }
+
+    def repeated_action_warning(
+        self, actions: list[Dict[str, Any]]
+    ) -> str:
+        """Reject a third semantically equivalent discovery search.
+
+        Discovery is intentionally cheap, but repeated catalog searches without
+        advancing to a concrete tool call are a strong signal that provider
+        context or tool-state was lost.
+        """
+
+        goal = self.active_goal
+        if goal is None:
+            return ""
+        history = goal.recent_action_fingerprints[-20:]
+        for action in actions:
+            current = self._action_fingerprint(action)
+            if current is None:
+                continue
+            current_tokens = set(current["tokens"])
+            similar = 0
+            for previous in history:
+                if (
+                    previous.get("tool") != current["tool"]
+                    or previous.get("server", "") != current["server"]
+                    or previous.get("status") not in {"success", "guarded"}
+                ):
+                    continue
+                previous_tokens = set(previous.get("tokens") or [])
+                if not previous_tokens:
+                    continue
+                overlap = len(current_tokens & previous_tokens)
+                union = len(current_tokens | previous_tokens)
+                similarity = overlap / union if union else 0.0
+                if current_tokens == previous_tokens or (
+                    overlap >= 3 and similarity >= 0.25
+                ):
+                    similar += 1
+            if similar >= 2:
+                query = str((action.get("parameters") or {}).get("query") or "")
+                return (
+                    "Goal repetition guard rejected another semantically "
+                    f"equivalent {current['tool']} query ({query[:240]}). "
+                    "Use an already discovered exact tool, persist its schema in "
+                    "ledger.tool_state, reconnect the MCP server if its catalog "
+                    "changed, or record a concrete blocker instead of searching "
+                    "the same capability again."
+                )
+        return ""
+
+    @classmethod
+    def _automatic_tool_state(
+        cls,
+        action: Dict[str, Any],
+        result_block: str,
+        status: str,
+    ) -> list[str]:
+        """Project durable, non-secret tool/session facts from action outcomes."""
+
+        tool = str(action.get("tool_name") or "")
+        parameters = action.get("parameters")
+        parameters = parameters if isinstance(parameters, dict) else {}
+        entries: list[str] = []
+        if tool == "MCPTools.search_tools" and status == "success":
+            for match in re.finditer(
+                r'"name"\s*:\s*"([^"]+)".{0,2200}?'
+                r'"schema_sha256"\s*:\s*"([a-f0-9]{64})".{0,300}?'
+                r'"allowed"\s*:\s*(true|false)',
+                result_block,
+                flags=re.IGNORECASE | re.DOTALL,
+            ):
+                name, schema_hash, allowed = match.groups()
+                server = cls._bounded(parameters.get("server") or "unknown", 100)
+                entries.append(
+                    f"mcp:{server}:{name} | allowed={allowed.casefold()} "
+                    f"schema={schema_hash.casefold()}"
+                )
+        elif tool == "MCPTools.call_tool":
+            server = cls._bounded(parameters.get("server") or "unknown", 100)
+            called_tool = cls._bounded(parameters.get("tool") or "unknown", 160)
+            schema_hash = cls._bounded(
+                parameters.get("expected_schema_sha256") or "unknown", 80
+            )
+            entries.append(
+                f"mcp:{server}:{called_tool} | last_status={status} "
+                f"schema={schema_hash}"
+            )
+        elif tool == "MCPTools.reconnect_server":
+            server = cls._bounded(parameters.get("server") or "unknown", 100)
+            entries.append(
+                f"mcp-session:{server} | reconnect_status={status}"
+            )
+        elif tool.startswith("HostOSProcessSessions."):
+            session_match = re.search(
+                r'"id"\s*:\s*"([a-f0-9]{12})"', result_block, re.IGNORECASE
+            )
+            if session_match:
+                session_status_match = re.search(
+                    r'"status"\s*:\s*"([^"]+)"',
+                    result_block,
+                    re.IGNORECASE,
+                )
+                session_status = (
+                    session_status_match.group(1).casefold()
+                    if session_status_match
+                    else status
+                )
+                entries.append(
+                    f"process-session:{session_match.group(1).casefold()} | "
+                    f"tool={tool} status={session_status}"
+                )
+        return entries
 
     def _load(self) -> None:
         if not self.path.exists():
@@ -575,12 +737,14 @@ class GoalManager:
                 }
                 batch: list[LedgerActionOutcome] = []
                 automatic_failures: list[LedgerFailurePatch] = []
+                automatic_tool_state: list[str] = []
                 for index, action in enumerate(normalized_actions):
                     action_id = self._bounded(
                         action.get("action_id") or f"action_{index + 1}", 200
                     )
                     tool = self._bounded(action["tool_name"], 300)
                     status = status_by_id.get(action_id, "unknown")
+                    result_block = result_by_action_id.get(action_id, result)
                     batch.append(
                         LedgerActionOutcome(
                             action_id=action_id,
@@ -589,12 +753,22 @@ class GoalManager:
                             evidence_id=evidence_id,
                         )
                     )
+                    fingerprint = self._action_fingerprint(action, status)
+                    if fingerprint is not None:
+                        goal.recent_action_fingerprints.append(fingerprint)
+                    automatic_tool_state.extend(
+                        self._automatic_tool_state(
+                            action,
+                            result_block,
+                            status,
+                        )
+                    )
                     if status == "failed":
                         automatic_failures.append(
                             LedgerFailurePatch(
                                 action=f"{tool} ({action_id})",
                                 reason=self._bounded(
-                                    result_by_action_id.get(action_id, result),
+                                    result_block,
                                     700,
                                 ),
                                 retry_when=(
@@ -603,15 +777,21 @@ class GoalManager:
                                 ),
                             )
                         )
+                goal.recent_action_fingerprints = goal.recent_action_fingerprints[
+                    -self.MAX_ACTION_FINGERPRINTS :
+                ]
                 ledger_before = goal.task_ledger.model_dump(
                     mode="json", exclude={"updated_at", "revision"}
                 )
                 goal.task_ledger.last_action_batch = batch[-20:]
                 patch_changed = False
-                if automatic_failures:
+                if automatic_failures or automatic_tool_state:
                     patch_changed = apply_ledger_patch(
                         goal.task_ledger,
-                        TaskLedgerPatch(failures_add=automatic_failures),
+                        TaskLedgerPatch(
+                            failures_add=automatic_failures,
+                            tool_state_add=automatic_tool_state,
+                        ),
                     )
                 ledger_after = goal.task_ledger.model_dump(
                     mode="json", exclude={"updated_at", "revision"}
@@ -780,6 +960,11 @@ evidence-backed facts, current phase, unfinished steps, failed approaches and
 the exact next action. Omitted ledger fields remain unchanged; do not replay
 the full ledger. Example:
 `"ledger":{{"phase":"verify","completed_add":["patch applied"],"pending_steps":["run tests"],"next_action":"run the focused test"}}`.
+When new evidence disproves durable state, correct it immediately with
+`facts_remove`, `completed_remove`, or an authoritative replacement using
+`confirmed_facts` / `completed_steps`. Persist exact discovered MCP schemas and
+owned process-session IDs in `tool_state_add`; do not repeat catalog discovery
+that is already represented there.
 `wait` may include `wake_after_seconds`. Do not report `done` until durable
 evidence satisfies the objective. For coding goals, inspect the exact diff,
 run the smallest relevant test first, then the repository verification gate.

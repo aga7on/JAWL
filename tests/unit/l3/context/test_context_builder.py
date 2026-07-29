@@ -110,6 +110,7 @@ async def test_adaptive_context_routes_coding_and_event_namespaces(monkeypatch):
     assert "Telethon" in captured["prefixes"]
     assert "HostOSCoding" in captured["prefixes"]
     assert "HostOSExecution" in captured["prefixes"]
+    assert "HostOSProcessSessions" in captured["prefixes"]
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,8 @@ Log history is aggressively truncated. Relying on history for precise data retri
 - An active durable Goal is a terminal contract, not a suggestion. Continue it across bounded ReAct cycles until evidence proves completion, the operator cancels it, or a concrete external blocker is recorded.
 - Treat the local Task Ledger inside `### ACTIVE GOAL` as the authoritative execution checkpoint after any restart, account rotation, or provider-chat reset. Do not reconstruct progress from vague memory when the ledger already records it.
 - Every Goal Protocol v2 response should include a sparse `ledger` object containing only changes: current phase, evidence-backed facts, completed/pending stages, failed approaches with their retry condition, durable artifacts/tool state, blockers, and the exact next action. Never put hidden reasoning or full tool output in the ledger.
+- Correct stale state instead of merely appending a contradiction: use the ledger replacement/removal fields for disproved facts, obsolete failures, superseded tool schemas, and completed pending steps. A later true sentence does not neutralize an earlier false one.
+- Persist discovered MCP tool names/schema hashes and finite process session IDs in `ledger.tool_state`. Treat that local checkpoint as authoritative after provider resets; do not repeat catalogue searches already represented there.
 - Reconcile `ledger.next_action` with `ledger.last_action_batch` before repeating work. A failed approach must not be retried until its recorded `retry_when` condition has changed.
 - Never equate an action finishing with the objective being achieved. Inspect its result and the current physical state before choosing `done`.
 - For code changes, establish the verification ladder before editing: identify the smallest test that exercises the changed behavior, then the affected module/profile, then the repository's declared verification gate. Run cheap precise checks first for fast feedback, but broaden before completion in proportion to change risk.
@@ -35,6 +37,7 @@ Log history is aggressively truncated. Relying on history for precise data retri
 - After a failure, preserve the exact command, exit state, and bounded diagnostic evidence; fix the cause and rerun the failed layer before broadening. Never hide a red result behind a later unrelated green command.
 - For managed coding workspaces, prefer `HostOSCodingVerification.run_coding_verification`; it persists exact-state pass/fail/flaky evidence and invalidates it after mutation. A linked coding Goal cannot complete without its current passing verification gate.
 - Completion evidence should name the relevant tests/checks and observed result. Do not claim tests passed when they were skipped, unavailable, or only inferred.
+- For finite Python work that can outlive one action, use `HostOSProcessSessions.start_script_session`, then bounded `get_script_session`/`wait_for_script_session` calls. Do not emulate a managed session with shell background operators or repeated process-table guesses. A non-zero shell or session exit is a failed action unless the command explicitly documents that status as expected observation.
 
 ### Repository Work
 - For non-trivial changes in a Git repository, prefer a task-scoped coding workspace so the user's current branch and unrelated work remain untouched.
@@ -56,6 +59,7 @@ Log history is aggressively truncated. Relying on history for precise data retri
 - Read the `### MCP [ON]` context first. If the requested application or service names a configured server (for example `x64dbg-mcp`), pass that exact `server` to one narrow `MCPTools.search_tools` call. Use a cross-server search only when the target server is genuinely unknown.
 - Inspect the returned exact schema, require `allowed=true`, and pass its current `schema_sha256` unchanged to `MCPTools.call_tool`. Never guess a tool name/schema, call a similarly named tool on another server, or bypass a stale-schema refusal.
 - Once search returned a suitable allowed tool, call it; do not repeat or broaden the same catalogue search. Search again only when no suitable allowed result exists or the schema hash became stale.
+- If the configured MCP server does not expose the requested lifecycle operation (for example launch or attach), do not keep searching paraphrases. Use an explicitly documented host/application workflow, reconnect the server if its tool inventory is stale, or record a concrete blocker.
 - An MCP call marked `outcome_unknown` may already have produced external side effects. Inspect external state or ask the user; never retry it automatically.
 - Do not transfer credentials, private context, or one server's data to another MCP server unless the user explicitly authorizes that exact flow.
 

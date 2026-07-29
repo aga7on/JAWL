@@ -419,6 +419,18 @@ class ReactLoop:
                 # Actions execution
                 # --------------------------------------------------------------
 
+                if self.goal_manager is not None:
+                    repetition_warning = self.goal_manager.repeated_action_warning(
+                        [action.model_dump() for action in actions]
+                    )
+                    if repetition_warning:
+                        await self._handle_repetition_guard(
+                            thoughts,
+                            actions,
+                            repetition_warning,
+                        )
+                        self.agent_state.next_step()
+                        continue
                 await self._execute_actions(thoughts, actions)
 
                 if cycle_goal_id and self.goal_manager is not None:
@@ -551,6 +563,48 @@ class ReactLoop:
             thoughts=thoughts,
             actions=[a.model_dump() for a in actions],
             results={
+                "execution_report": results_str,
+                "step": self.agent_state.current_step,
+                "max_steps": self.agent_state.max_react_steps,
+                "llm_metrics": self._llm_metrics_snapshot(),
+                "trace": current_trace(),
+            },
+        )
+        await self.event_bus.publish(Events.REACT_TICK_SAVED)
+
+    async def _handle_repetition_guard(
+        self,
+        thoughts: str,
+        actions: List[ActionCall],
+        warning: str,
+    ) -> None:
+        """Persist a rejected repeated discovery batch and force replanning."""
+
+        self.agent_state.update_state(AgentStatus.ACTING)
+        self.last_cycle_outcome["status"] = "repetition_guard"
+        reports = []
+        for index, action in enumerate(actions):
+            action_id = action.action_id or f"action_{index + 1}"
+            reports.append(
+                f"* GoalRepetitionGuard: {warning}\n"
+                f"  [action_id={action_id}; status=failed; duration_ms=0]"
+            )
+        results_str = "\n".join(reports)
+        self.agent_state.last_thoughts = thoughts
+        self.agent_state.last_action_error = warning
+        self.agent_state.last_actions_result = results_str
+        self.agent_state.last_action_tools = [action.tool_name for action in actions]
+        if self.goal_manager is not None:
+            await self.goal_manager.record_action_result(
+                results_str,
+                actions=[action.model_dump() for action in actions],
+            )
+        agent_logger.warning(f"[Goal] {warning}")
+        await self.sql_ticks.save_tick(
+            thoughts=thoughts,
+            actions=[action.model_dump() for action in actions],
+            results={
+                "status": "repetition_guard",
                 "execution_report": results_str,
                 "step": self.agent_state.current_step,
                 "max_steps": self.agent_state.max_react_steps,

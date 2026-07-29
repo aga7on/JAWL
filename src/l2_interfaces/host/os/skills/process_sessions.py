@@ -119,12 +119,18 @@ class HostOSProcessSessions:
                 / "templates"
                 / "sandbox_runner.py"
             )
-            if self.host_os.access_level < HostOSAccessLevel.OPERATOR and not runner.is_file():
+            guarded = self.host_os.access_level < HostOSAccessLevel.OPERATOR
+            if guarded and not runner.is_file():
                 return SkillResult.fail("Sandbox runner is unavailable; refusing unguarded execution.")
-            command = [sys.executable, str(runner if runner.is_file() else safe_path)]
+            command = (
+                [sys.executable, str(runner)]
+                if guarded
+                else [sys.executable, str(safe_path), *arguments]
+            )
             env = self.execution._build_isolated_env()
-            env["JAWL_TARGET_SCRIPT"] = str(safe_path)
-            env["JAWL_SCRIPT_ARGS"] = json.dumps(arguments, ensure_ascii=False)
+            if guarded:
+                env["JAWL_TARGET_SCRIPT"] = str(safe_path)
+                env["JAWL_SCRIPT_ARGS"] = json.dumps(arguments, ensure_ascii=False)
 
             session_id = uuid.uuid4().hex[:12]
             log_path = self.logs_dir / f"{session_id}.log"
@@ -148,6 +154,7 @@ class HostOSProcessSessions:
                 "pid": process.pid,
                 "filepath": self._display_path(safe_path),
                 "arguments_count": len(arguments),
+                "execution_mode": "sandbox" if guarded else "host",
                 "timeout_seconds": timeout_seconds,
                 "started_at": time.time(),
                 "finished_at": None,

@@ -32,6 +32,22 @@ async def test_execute_shell_command_safe(os_client):
     assert "Command exited with code 0" in res.message
 
 
+@pytest.mark.asyncio
+async def test_execute_shell_command_nonzero_is_failure_unless_explicitly_allowed(
+    os_client,
+):
+    os_client.access_level = HostOSAccessLevel.ROOT
+    executor = HostOSExecution(os_client)
+    command = "python -c \"import sys; sys.exit(3)\""
+
+    failed = await executor.execute_shell_command(command)
+    observed = await executor.execute_shell_command(command, allow_nonzero=True)
+
+    assert failed.is_success is False
+    assert "code 3" in failed.message
+    assert observed.is_success is True
+
+
 def test_process_guard_allows_unrelated_target_with_jawl_path_later():
     command = (
         "taskkill /F /IM Sotis.exe 2>nul & "

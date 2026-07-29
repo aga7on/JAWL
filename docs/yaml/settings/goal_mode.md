@@ -9,11 +9,11 @@ system:
   goal_mode:
     enabled: true
     compact_context: true
-    compact_max_chars: 24000
+    compact_max_chars: 36000
     suppress_waiting_heartbeats: true
     task_ledger_enabled: true
-    task_ledger_max_chars: 7000
-    provider_rebase_prompt_tokens: 45000
+    task_ledger_max_chars: 10000
+    provider_rebase_prompt_tokens: 65000
 ```
 
 `enabled` registers the lifecycle skills and durable store. Only one goal may
@@ -26,6 +26,10 @@ SOUL and safety instructions remain in the static system message.
 
 `compact_max_chars` is the hard target for the dynamic Goal projection. It does
 not truncate the static system instructions.
+
+The default leaves room for the active ledger and relevant tool schemas without
+returning to unbounded history replay. Long transcripts and raw tool output
+remain local and are projected only when relevant.
 
 `suppress_waiting_heartbeats` skips only deterministic timer heartbeats when an
 active goal explicitly waits without a due wakeup. User messages, Telegram,
@@ -45,6 +49,13 @@ only bounded summaries and evidence identifiers, and is atomically persisted
 before the next provider call. Goal Protocol v2 responses can update it with a
 sparse `ledger` object; omitted fields retain their current value.
 
+Append fields (`*_add`) preserve prior entries. Authoritative collection fields
+replace stale state, while `*_remove` fields delete exact superseded entries.
+This is important after a hypothesis is disproved or a previously missing
+artifact/tool becomes available: appending the opposite sentence is not a
+valid reconciliation. Discovered MCP schema hashes and finite process-session
+IDs are also checkpointed automatically in `tool_state`.
+
 `task_ledger_max_chars` bounds the model-facing projection. The durable store
 can retain more bounded entries than are projected on one call.
 
@@ -52,6 +63,10 @@ can retain more bounded entries than are projected on one call.
 prompt context reaches the configured threshold. The new Qwen chat receives
 the full static instructions plus the local Goal/Task Ledger bootstrap. Set the
 value to `0` to disable automatic rebasing.
+
+The default threshold deliberately sits above normal compact Goal turns. This
+reduces unnecessary provider-chat resets while retaining a safety margin before
+the upstream context becomes unreliable.
 
 ## Lifecycle
 
