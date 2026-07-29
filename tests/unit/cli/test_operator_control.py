@@ -24,7 +24,50 @@ async def test_runtime_status_does_not_require_goal_manager():
 
     assert result["agent"]["model"] == "qwen3.8-max-preview"
     assert result["modes"]["idle_heartbeat_backoff"]["enabled"] is True
+    assert result["modes"]["debug_broker"]["x64dbg_port_start"] == 8888
     assert result["goal"] is None
+
+
+@pytest.mark.asyncio
+async def test_debug_operator_controls_do_not_require_goal_mode():
+    class Broker:
+        def session_snapshot(self, session_id=None):
+            return {"session_id": session_id, "sessions": []}
+
+        def search_operations(self, query, provider, limit):
+            return {
+                "query": query,
+                "provider": provider,
+                "limit": limit,
+                "operations": [],
+            }
+
+        async def start_session(self, provider, target, options):
+            return {"session_id": "debug-1", "provider": provider, "target": target}
+
+        async def stop_session(self, session_id):
+            return {"session_id": session_id, "status": "closed"}
+
+    container = SimpleNamespace(
+        settings=SettingsConfig(),
+        interfaces_config=InterfacesConfig(),
+        agent_state=AgentState(),
+        goal_manager=None,
+        heartbeat=None,
+        l2_clients={"debug_broker": Broker()},
+    )
+    control = OperatorControl(container)
+
+    assert (await control.handle("debug.get", {}))["sessions"] == []
+    started = await control.handle(
+        "debug.start",
+        {"provider": "triton", "options": {}},
+    )
+    assert started["session_id"] == "debug-1"
+    stopped = await control.handle(
+        "debug.stop", {"session_id": "debug-1"}
+    )
+    assert stopped["status"] == "closed"
 
 
 @pytest.mark.asyncio

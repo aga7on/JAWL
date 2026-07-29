@@ -476,6 +476,65 @@ class MCPConfig(BaseModel):
         return self
 
 
+class DebugBrokerConfig(BaseModel):
+    """Local reverse-engineering provider orchestration boundary."""
+
+    enabled: bool = False
+    re_root: str = Field(default="G:/RE", min_length=1, max_length=1000)
+    auto_start: bool = True
+    startup_timeout_sec: float = Field(default=30.0, gt=0, le=180)
+    request_timeout_sec: float = Field(default=120.0, gt=0, le=1800)
+    max_result_chars: int = Field(default=30000, ge=1000, le=200000)
+    max_sessions: int = Field(default=20, ge=1, le=100)
+    x64dbg_port_start: int = Field(default=8888, ge=1024, le=65535)
+    x64dbg_port_end: int = Field(default=8899, ge=1024, le=65535)
+    enabled_providers: list[
+        Literal[
+            "x64dbg",
+            "ghidra",
+            "frida",
+            "windbg",
+            "radare2",
+            "qiling",
+            "triton",
+        ]
+    ] = Field(
+        default_factory=lambda: [
+            "x64dbg",
+            "ghidra",
+            "frida",
+            "windbg",
+            "radare2",
+            "qiling",
+            "triton",
+        ]
+    )
+
+    @field_validator("re_root")
+    @classmethod
+    def validate_re_root(cls, value: str) -> str:
+        if "\x00" in value or "\r" in value or "\n" in value:
+            raise ValueError("debug_broker.re_root must be NUL/newline-free")
+        return value
+
+    @field_validator("enabled_providers")
+    @classmethod
+    def validate_provider_names(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("debug_broker enabled_providers must be unique")
+        return values
+
+    @model_validator(mode="after")
+    def validate_x64dbg_port_range(self) -> "DebugBrokerConfig":
+        if self.x64dbg_port_end < self.x64dbg_port_start:
+            raise ValueError(
+                "debug_broker.x64dbg_port_end must be >= x64dbg_port_start"
+            )
+        if self.x64dbg_port_end - self.x64dbg_port_start > 100:
+            raise ValueError("debug_broker x64dbg port range may contain at most 101 ports")
+        return self
+
+
 class CalendarConfig(BaseModel):
     enabled: bool = True
     polling_interval_sec: int = 60
@@ -538,6 +597,7 @@ class InterfacesConfig(BaseModel):
     code_graph: CodeGraphConfig = Field(default_factory=CodeGraphConfig)
     multimodality: MultimodalityConfig = Field(default_factory=MultimodalityConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    debug_broker: DebugBrokerConfig = Field(default_factory=DebugBrokerConfig)
     calendar: CalendarConfig = Field(default_factory=CalendarConfig)
     email: EmailConfig = Field(default_factory=EmailConfig)
     voice: VoiceInterfacesConfig = Field(default_factory=VoiceInterfacesConfig)

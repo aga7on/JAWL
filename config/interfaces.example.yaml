@@ -221,7 +221,27 @@ mcp:
   #     resources_enabled: false
   #     prompts_enabled: false
 
-# Подробнее: docs/yaml/interfaces/calendar.md
+# Debug Broker: docs/yaml/interfaces/debug_broker.md
+debug_broker:
+  enabled: false
+  re_root: "G:/RE"
+  auto_start: true
+  startup_timeout_sec: 30
+  request_timeout_sec: 180
+  max_result_chars: 30000
+  max_sessions: 20
+  x64dbg_port_start: 8888
+  x64dbg_port_end: 8899
+  enabled_providers:
+    - x64dbg
+    - ghidra
+    - frida
+    - windbg
+    - radare2
+    - qiling
+    - triton
+
+# Calendar: docs/yaml/interfaces/calendar.md
 calendar:
   enabled: false
   polling_interval_sec: 60

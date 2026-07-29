@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from src.l3_agent.goals.ledger import TaskLedgerPatch
@@ -67,6 +68,9 @@ class OperatorControl:
                     self.container.settings.system.event_acceleration.active_cycle_policy
                 ),
                 "mcp_enabled": self.container.interfaces_config.mcp.enabled,
+                "debug_broker": (
+                    self.container.interfaces_config.debug_broker.model_dump()
+                ),
                 "media": (
                     self.container.interfaces_config.multimodality.model_dump()
                 ),
@@ -87,6 +91,62 @@ class OperatorControl:
 
         if action == "status.get":
             return self._status()
+        if action.startswith("debug."):
+            broker = self.container.l2_clients.get("debug_broker")
+            if broker is None:
+                raise ValueError("Debug Broker is not initialized.")
+            if action == "debug.get":
+                session_id = str(params.get("session_id", "")).strip() or None
+                if session_id is not None and not re.fullmatch(
+                    r"[A-Za-z0-9_.-]{1,128}", session_id
+                ):
+                    raise ValueError("Invalid debug session ID.")
+                return broker.session_snapshot(session_id)
+            if action == "debug.search":
+                query = str(params.get("query", ""))
+                provider = str(params.get("provider", "")).strip() or None
+                limit = int(params.get("limit", 12))
+                return broker.search_operations(query, provider, limit)
+            if action == "debug.start":
+                options = params.get("options", {})
+                if not isinstance(options, dict):
+                    raise ValueError("Debug session options must be an object.")
+                target = str(params.get("target", "")).strip() or None
+                return await broker.start_session(
+                    str(params.get("provider", "")),
+                    target,
+                    options,
+                )
+            if action == "debug.stop":
+                session_id = str(params.get("session_id", "")).strip()
+                if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", session_id):
+                    raise ValueError("Invalid debug session ID.")
+                return await broker.stop_session(session_id)
+            if action == "debug.skill":
+                skill_name = str(params.get("skill", ""))
+                allowed = {
+                    "DebugBroker.list_providers",
+                    "DebugBroker.search_operations",
+                    "DebugBroker.start_session",
+                    "DebugBroker.call_operation",
+                    "DebugBroker.wait_session",
+                    "DebugBroker.session_snapshot",
+                    "DebugBroker.stop_session",
+                }
+                if skill_name not in allowed:
+                    raise ValueError("Only DebugBroker skills are allowed here.")
+                arguments = params.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    raise ValueError("Debug skill arguments must be an object.")
+                from src.l3_agent.skills.registry import call_skill
+
+                result = await call_skill(skill_name, arguments)
+                return {
+                    "skill": skill_name,
+                    "is_success": result.is_success,
+                    "message": result.message,
+                }
+            raise ValueError(f"Unsupported control action '{action}'.")
         manager = self._manager()
         if action == "goal.get":
             goal = manager.view(str(params.get("goal_id", "")))

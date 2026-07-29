@@ -56,6 +56,7 @@ def _offline_status() -> Dict[str, Any]:
                 settings.system.event_acceleration.active_cycle_policy
             ),
             "mcp_enabled": interfaces.mcp.enabled,
+            "debug_broker": interfaces.debug_broker.model_dump(),
             "media": interfaces.multimodality.model_dump(),
         },
         "goal": None,
@@ -128,6 +129,17 @@ def _render(status: Dict[str, Any], qwb: Dict[str, Any]) -> None:
             f"vision={media.get('enabled', False)}, "
             f"video={media.get('video_understanding_enabled', False)}, "
             f"generation={media.get('media_generation_enabled', False)}"
+        ),
+    )
+    debug = modes.get("debug_broker") or {}
+    mode_table.add_row(
+        "Debug Broker",
+        (
+            f"enabled={debug.get('enabled', False)}, "
+            f"auto_start={debug.get('auto_start', False)}, "
+            f"ports={debug.get('x64dbg_port_start', '—')}-"
+            f"{debug.get('x64dbg_port_end', '—')}, "
+            f"providers={len(debug.get('enabled_providers') or [])}"
         ),
     )
     console.print(mode_table)
