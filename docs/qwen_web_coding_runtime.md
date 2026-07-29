@@ -31,11 +31,11 @@ increments the durable goal lane epoch and forces a clean bootstrap.
 
 Goal lanes allow a larger bounded snapshot delta than disposable trace lanes
 (90% versus 60%, with the same 32k absolute ceiling). This avoids throwing
-away a useful warm Goal branch merely because its compact 24k projection
+away a useful warm Goal branch merely because its compact 36k projection
 changed substantially after a tool result.
 
 When provider-reported prompt context reaches the configured Goal threshold
-(45k tokens by default), JAWL increments the durable lane epoch. QWB then
+(65k tokens by default), JAWL increments the durable lane epoch. QWB then
 creates a clean upstream conversation and bootstraps it from the local Goal and
 Task Ledger instead of carrying an indefinitely growing web-chat chain.
 
@@ -67,6 +67,26 @@ Current low-risk mechanisms:
 - active Goal projection capped independently from general dynamic context;
 - compact Goal Protocol v2, which omits repeated chain-of-thought fields;
 - provider-vs-local token telemetry to measure QWB delta reuse.
+
+### Live commands and monitoring boundary
+
+QWB is intentionally a provider transport, not an operating-system monitor.
+JAWL owns application state, shell sessions, desktop/UIA observations, and MCP
+connections. Finite script sessions are monitored locally after the initiating
+LLM call returns; completion publishes a `HOST_OS_SANDBOX_EVENT`, so the next
+step reads the exact saved session instead of polling the process table.
+MCP application state is read through allowlisted tools; arbitrary automatic
+polling is not enabled because an MCP tool is not inherently read-only.
+
+For an explicitly small live command, terminal or Telegram input may start with
+`/quick` (alias `/fast`). JAWL retains SOUL and all static safety/tool protocol
+rules, but projects only the current trigger, active Goal checkpoint, agent/MCP/
+host state, and a bounded skill catalogue. The request uses a separate warm QWB
+lane keyed to the channel identity, so it neither replaces nor bloats the main
+Goal conversation. JAWL still sends the bounded authoritative snapshot over
+localhost; when the warm parent chain is healthy, QWB sends only its delta to
+Qwen. This preserves cold-recovery correctness while avoiding a full upstream
+bootstrap for each short command.
 
 ## Long-running delegated work
 

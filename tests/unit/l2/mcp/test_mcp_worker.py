@@ -97,6 +97,17 @@ def test_bounded_json_redacts_secrets_and_enforces_limit(tmp_path: Path):
             content=[],
             structuredContent={"success": False, "command": "attach 123"},
         ),
+        types.CallToolResult(
+            content=[
+                types.TextContent(
+                    type="text",
+                    text='{"error":"Failed to parse module list","raw":"..."}',
+                )
+            ],
+            structuredContent={
+                "result": '{"error":"Failed to parse module list"}'
+            },
+        ),
     ],
 )
 async def test_project_tool_result_normalizes_embedded_server_errors(
@@ -110,6 +121,67 @@ async def test_project_tool_result_normalizes_embedded_server_errors(
     )
 
     assert projected["is_error"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result",
+    [
+        types.CallToolResult(
+            content=[
+                types.TextContent(
+                    type="text",
+                    text="Request failed: connection refused",
+                )
+            ]
+        ),
+        types.CallToolResult(
+            content=[],
+            structuredContent={"success": False, "error": "not attached"},
+        ),
+        types.CallToolResult(
+            content=[
+                types.TextContent(
+                    type="text",
+                    text='{"error":"Failed to parse module list"}',
+                )
+            ],
+            structuredContent={
+                "result": '{"error":"Failed to parse module list"}'
+            },
+        ),
+    ],
+)
+async def test_call_tool_returns_failure_for_embedded_server_errors(
+    tmp_path: Path,
+    result: types.CallToolResult,
+):
+    manager = MCPClientManager(
+        MCPConfig(
+            servers=[
+                MCPServerConfig(
+                    name="x64dbg-mcp",
+                    command="python",
+                    allowed_tools=["ExecCommand"],
+                )
+            ]
+        ),
+        tmp_path,
+        MCPState(),
+    )
+    manager.workers["x64dbg-mcp"].request = AsyncMock(
+        return_value=(None, result)
+    )
+
+    success, payload = await manager.call_tool(
+        "x64dbg-mcp",
+        "ExecCommand",
+        {},
+        "a" * 64,
+    )
+
+    assert success is False
+    assert payload["is_error"] is True
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,7 @@ Log history is aggressively truncated. Relying on history for precise data retri
 - For managed coding workspaces, prefer `HostOSCodingVerification.run_coding_verification`; it persists exact-state pass/fail/flaky evidence and invalidates it after mutation. A linked coding Goal cannot complete without its current passing verification gate.
 - Completion evidence should name the relevant tests/checks and observed result. Do not claim tests passed when they were skipped, unavailable, or only inferred.
 - For finite Python work that can outlive one action, use `HostOSProcessSessions.start_script_session`, then bounded `get_script_session`/`wait_for_script_session` calls. Do not emulate a managed session with shell background operators or repeated process-table guesses. A non-zero shell or session exit is a failed action unless the command explicitly documents that status as expected observation.
+- A `HOST_OS_SANDBOX_EVENT` carrying a saved process-session ID is a completion notification, not a reason to rediscover the process. Read that exact session once and continue from its exit code/log tail. For repeated short MCP commands, reuse exact current schema hashes from `ledger.tool_state`; search again only after a stale-schema response or reconnect.
 
 ### Repository Work
 - For non-trivial changes in a Git repository, prefer a task-scoped coding workspace so the user's current branch and unrelated work remain untouched.

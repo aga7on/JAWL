@@ -133,6 +133,7 @@ class ContextBuilder:
             else:
                 blocks = compacted_blocks
         goal_compacted = {}
+        fast_profile_active = payload.get("_jawl_context_profile") == "fast"
         goal_profile_active = bool(
             self.goal_manager is not None
             and self.goal_manager.active_goal is not None
@@ -150,10 +151,22 @@ class ContextBuilder:
                         "after": values["after"],
                     }
                 trimmed[name] = values
+        if fast_profile_active:
+            blocks, fast_compacted = self._apply_fast_context_profile(blocks)
+            for name, values in fast_compacted.items():
+                existing = trimmed.get(name)
+                if existing:
+                    values = {
+                        "before": max(existing["before"], values["before"]),
+                        "after": values["after"],
+                    }
+                trimmed[name] = values
         context = self._join_blocks(blocks)
         self.last_build_metrics = {
             "policy": (
-                "goal_compact"
+                "fast"
+                if fast_profile_active
+                else "goal_compact"
                 if goal_profile_active
                 else self.budget.skill_policy if self.budget.enabled else "full"
             ),
@@ -169,6 +182,81 @@ class ContextBuilder:
                 f"trimmed={','.join(trimmed)}"
             )
         return context
+
+    def _apply_fast_context_profile(
+        self, blocks: Dict[str, str]
+    ) -> tuple[Dict[str, str], Dict[str, Dict[str, int]]]:
+        """Keep only live-command state for explicit `/quick` requests.
+
+        This is a local projection, not the sole memory source. QWB assigns the
+        request a separate warm lane, while normal/Goal lanes retain their full
+        authoritative snapshots for recovery.
+        """
+
+        bounded = dict(blocks)
+        trimmed: Dict[str, Dict[str, int]] = {}
+        retained = {
+            "skills",
+            "active_goal",
+            "agent_state",
+            "mcp",
+            "host_os",
+            "heartbeat",
+        }
+        for name in list(bounded):
+            if name not in retained:
+                before = len(bounded.pop(name))
+                trimmed[name] = {"before": before, "after": 0}
+
+        limits = {
+            "skills": 6000,
+            "active_goal": 6000,
+            "heartbeat": 4000,
+            "mcp": 1500,
+            "host_os": 1500,
+            "agent_state": 1000,
+        }
+        for name, block in list(bounded.items()):
+            reduced = self._trim_block(
+                block,
+                limits.get(name, 1000),
+                preserve_tail=name == "heartbeat",
+            )
+            if len(reduced) != len(block):
+                trimmed[name] = {"before": len(block), "after": len(reduced)}
+                bounded[name] = reduced
+
+        target = 14_000
+        total = len(self._join_blocks(bounded))
+        minimums = {
+            "skills": 1000,
+            "active_goal": 2500,
+            "heartbeat": 1000,
+            "mcp": 300,
+            "host_os": 300,
+            "agent_state": 300,
+        }
+        while total > target:
+            candidates = [
+                (len(block) - minimums.get(name, 0), name)
+                for name, block in bounded.items()
+                if len(block) > minimums.get(name, 0)
+            ]
+            if not candidates:
+                break
+            available, name = max(candidates)
+            before = len(bounded[name])
+            reduction = min(available, total - target)
+            bounded[name] = self._trim_block(
+                bounded[name],
+                before - reduction,
+                preserve_tail=name == "heartbeat",
+            )
+            entry = trimmed.setdefault(name, {"before": before, "after": before})
+            entry["before"] = max(entry["before"], before)
+            entry["after"] = len(bounded[name])
+            total = len(self._join_blocks(bounded))
+        return bounded, trimmed
 
     def _apply_goal_context_profile(
         self, blocks: Dict[str, str]
@@ -609,7 +697,10 @@ In the absence of current tasks, the system is advised to proactively generate t
             lines.append(f"Message: {payload['message']}")
 
         for k, v in payload.items():
-            if k not in ["message", "sender_name", "recent_history"]:
+            if (
+                k not in ["message", "sender_name", "recent_history"]
+                and not k.startswith("_jawl_")
+            ):
                 lines.append(f"* {k}: {v}")
 
         if "recent_history" in payload and payload["recent_history"]:

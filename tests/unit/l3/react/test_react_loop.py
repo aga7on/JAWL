@@ -30,6 +30,49 @@ def test_react_first_step_thinking_policy(mock_dependencies):
     assert loop._thinking_enabled_for_step() is False
 
 
+@pytest.mark.asyncio
+async def test_explicit_quick_command_uses_compact_context_and_warm_lane(
+    mock_dependencies,
+):
+    deps = mock_dependencies
+    loop = ReactLoop(**deps)
+
+    await loop.run(
+        "HOST_TERMINAL_MESSAGE",
+        {"message": "/quick check the current debugger state"},
+        missed_events=[],
+    )
+
+    build_call = deps["context_builder"].build.await_args
+    assert build_call.args[1]["message"] == "check the current debugger state"
+    assert build_call.args[1]["_jawl_context_profile"] == "fast"
+    session_id = deps["executor"].execute.await_args.kwargs["session_id"]
+    assert session_id.startswith("quick-fast-")
+
+
+def test_fast_lane_is_stable_per_channel_identity(mock_dependencies):
+    loop = ReactLoop(**mock_dependencies)
+
+    first = loop._session_id_for_request(
+        "TELETHON_MESSAGE_INCOMING",
+        {"chat_id": 123},
+        fast_profile=True,
+    )
+    repeated = loop._session_id_for_request(
+        "TELETHON_MESSAGE_INCOMING",
+        {"chat_id": 123},
+        fast_profile=True,
+    )
+    other = loop._session_id_for_request(
+        "TELETHON_MESSAGE_INCOMING",
+        {"chat_id": 456},
+        fast_profile=True,
+    )
+
+    assert first == repeated
+    assert first != other
+
+
 def test_react_realtime_event_context_is_bounded_and_explicitly_coalesced(
     mock_dependencies,
 ):

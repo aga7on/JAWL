@@ -334,3 +334,49 @@ async def test_active_goal_uses_compact_context_projection(monkeypatch, tmp_path
     assert "NEWEST_GOAL_EVIDENCE" in context
     assert "HYPOTHESIS_NOISE" not in context
     assert builder.last_build_metrics["policy"] == "goal_compact"
+
+
+@pytest.mark.asyncio
+async def test_explicit_fast_profile_keeps_live_state_and_drops_history(monkeypatch):
+    monkeypatch.setattr(
+        "src.l3_agent.context.builder.get_skills_library",
+        lambda *args, **kwargs: "SkillCatalog.search_skills\n"
+        + ("skill\n" * 2000),
+    )
+    registry = ContextRegistry()
+
+    async def mcp(**kwargs):
+        return "### MCP [ON]\nx64dbg-mcp online"
+
+    async def host_os(**kwargs):
+        return "### HOST OS [ON]\nROOT"
+
+    async def ticks(**kwargs):
+        return "## RECENT TICKS\n" + ("old history\n" * 2000)
+
+    registry.register_provider("mcp", mcp, ContextSection.INTERFACES)
+    registry.register_provider("host_os", host_os, ContextSection.INTERFACES)
+    registry.register_provider("sql_ticks", ticks, ContextSection.RECENT_TICKS)
+    builder = ContextBuilder(
+        AgentState(),
+        registry,
+        budget_config=ContextBudgetConfig(enabled=False),
+    )
+
+    context = await builder.build(
+        "HOST_TERMINAL_MESSAGE",
+        {
+            "message": "check the debugger state",
+            "_jawl_context_profile": "fast",
+        },
+        [],
+    )
+
+    assert len(context) <= 14_000
+    assert "SkillCatalog.search_skills" in context
+    assert "x64dbg-mcp online" in context
+    assert "### HOST OS [ON]" in context
+    assert "check the debugger state" in context
+    assert "old history" not in context
+    assert "_jawl_context_profile" not in context
+    assert builder.last_build_metrics["policy"] == "fast"

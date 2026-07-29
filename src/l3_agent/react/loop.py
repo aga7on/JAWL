@@ -10,6 +10,7 @@ import asyncio
 from typing import Callable, Dict, Any, List, Literal, Optional, Tuple, Union, TYPE_CHECKING
 
 import base64
+import hashlib
 import mimetypes
 import os
 import re
@@ -161,6 +162,52 @@ class ReactLoop:
             return False
         return self.agent_state.current_step == 1
 
+    @staticmethod
+    def _prepare_request_profile(
+        event_name: str, payload: Dict[str, Any]
+    ) -> tuple[Dict[str, Any], bool]:
+        """Recognize an explicit compact live-command request.
+
+        `/quick` and `/fast` are opt-in because silently dropping memory from a
+        normal user request would be unsafe. SOUL/system rules remain in the
+        static prompt; only volatile dynamic providers are compacted.
+        """
+
+        prepared = dict(payload)
+        message = prepared.get("message")
+        if not isinstance(message, str):
+            return prepared, False
+        match = re.match(r"^\s*/(?:quick|fast)(?:\s+|$)", message, re.IGNORECASE)
+        if match is None:
+            return prepared, False
+        command = message[match.end() :].strip()
+        prepared["message"] = command or "Report the current live runtime status."
+        prepared["_jawl_context_profile"] = "fast"
+        return prepared, True
+
+    def _session_id_for_request(
+        self,
+        event_name: str,
+        payload: Dict[str, Any],
+        *,
+        fast_profile: bool,
+    ) -> str:
+        """Return a durable Goal lane or an isolated short-command lane."""
+
+        goal_lane = self.goal_manager.lane_id if self.goal_manager is not None else ""
+        if not fast_profile:
+            return goal_lane
+        identity = str(
+            payload.get("chat_id")
+            or payload.get("sender_id")
+            or payload.get("user_id")
+            or "local"
+        )
+        digest = hashlib.sha256(
+            f"{event_name}\0{identity}".encode("utf-8")
+        ).hexdigest()[:12]
+        return f"{goal_lane or 'quick'}-fast-{digest}"
+
     async def run(
         self, event_name: str, payload: Dict[str, Any], missed_events: List[Dict[str, Any]]
     ) -> None:
@@ -172,6 +219,18 @@ class ReactLoop:
             payload: Primary trigger event payload parameters dict.
             missed_events: List of missed background events.
         """
+
+        payload, fast_profile = self._prepare_request_profile(event_name, payload)
+        provider_session_id = self._session_id_for_request(
+            event_name,
+            payload,
+            fast_profile=fast_profile,
+        )
+        if fast_profile:
+            agent_logger.info(
+                "[Context] Explicit fast command profile enabled; "
+                "using an isolated warm provider lane."
+            )
 
         self._realtime_events.clear()
         self._realtime_events.extend(missed_events)
@@ -270,9 +329,7 @@ class ReactLoop:
                         self.llm_invalid_request_retries
                     ),
                     session_id=(
-                        self.goal_manager.lane_id
-                        if self.goal_manager is not None
-                        else ""
+                        provider_session_id
                     ),
                 )
                 budget_blocked = False

@@ -336,6 +336,41 @@ async def test_mcp_discovery_is_checkpointed_and_repetition_is_guarded(manager):
 
 
 @pytest.mark.asyncio
+async def test_wide_mcp_discovery_is_bounded_without_aborting_cycle(manager):
+    await manager.create("Inspect a wide debugger catalog")
+    matches = ",".join(
+        json.dumps(
+            {
+                "name": f"Tool{index:02d}",
+                "schema_sha256": f"{index:064x}",
+                "allowed": True,
+            }
+        )
+        for index in range(30)
+    )
+    result = (
+        f'* MCPTools.search_tools: {{"matches":[{matches}]}}\n'
+        "  [action_id=discover; status=success; duration_ms=1]"
+    )
+
+    await manager.record_action_result(
+        result,
+        actions=[
+            {
+                "tool_name": "MCPTools.search_tools",
+                "action_id": "discover",
+                "parameters": {"server": "x64dbg-mcp", "query": "all tools"},
+            }
+        ],
+    )
+
+    ledger = manager.active_goal.task_ledger
+    assert len(ledger.tool_state) == 20
+    assert "Tool00" in ledger.tool_state[0]
+    assert "Tool19" in ledger.tool_state[-1]
+
+
+@pytest.mark.asyncio
 async def test_action_failure_is_automatically_checkpointed(manager):
     await manager.create("Recover from a failed tool")
 

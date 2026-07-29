@@ -4,9 +4,41 @@ from __future__ import annotations
 
 import hashlib
 import time
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
+
+
+_PATCH_LIST_LIMITS = {
+    "acceptance_criteria": 20,
+    "completed_steps": 20,
+    "completed_add": 20,
+    "completed_remove": 20,
+    "pending_steps": 20,
+    "confirmed_facts": 24,
+    "facts_add": 20,
+    "facts_remove": 24,
+    "hypotheses": 12,
+    "failures": 16,
+    "failures_remove": 16,
+    "failures_add": 12,
+    "artifacts": 20,
+    "artifacts_add": 20,
+    "artifacts_remove": 20,
+    "tool_state": 24,
+    "tool_state_add": 20,
+    "tool_state_remove": 24,
+    "blockers": 12,
+}
+_STRING_COLLECTIONS = set(_PATCH_LIST_LIMITS) - {
+    "failures",
+    "failures_add",
+}
+_TOOL_STATE_COLLECTIONS = {
+    "tool_state",
+    "tool_state_add",
+    "tool_state_remove",
+}
 
 
 class LedgerFailurePatch(BaseModel):
@@ -63,33 +95,43 @@ class TaskLedgerPatch(BaseModel):
     next_action: Optional[str] = Field(default=None, max_length=1000)
     checkpoint_summary: str = Field(default="", max_length=1200)
 
-    @field_validator(
-        "acceptance_criteria",
-        "completed_steps",
-        "completed_add",
-        "completed_remove",
-        "pending_steps",
-        "confirmed_facts",
-        "facts_add",
-        "facts_remove",
-        "hypotheses",
-        "failures_remove",
-        "artifacts",
-        "artifacts_add",
-        "artifacts_remove",
-        "tool_state",
-        "tool_state_add",
-        "tool_state_remove",
-        "blockers",
-        mode="before",
-    )
+    @model_validator(mode="before")
     @classmethod
-    def _coerce_string_collection(cls, value: object) -> object:
-        """Accept Qwen's unambiguous single-item shorthand."""
+    def _repair_bounded_collections(cls, value: Any) -> Any:
+        """Repair common Qwen shorthands without letting a patch kill a cycle.
 
-        if isinstance(value, str):
-            return [value] if value.strip() else []
-        return value
+        The JSON schema advertises finite collection sizes, but web-model output
+        and automatic MCP catalog checkpointing can still exceed them. Ledger
+        state is deliberately bounded, so retain the highest-ranked/first items
+        instead of raising after useful actions have already completed.
+        """
+
+        if not isinstance(value, dict):
+            return value
+        payload = dict(value)
+        for field, limit in _PATCH_LIST_LIMITS.items():
+            if field not in payload:
+                continue
+            collection = payload[field]
+            if isinstance(collection, str) and field in _STRING_COLLECTIONS:
+                collection = [collection] if collection.strip() else []
+            elif (
+                isinstance(collection, dict)
+                and field in _TOOL_STATE_COLLECTIONS
+            ):
+                collection = [
+                    f"{key} | schema={item}"
+                    for key, item in collection.items()
+                    if str(key).strip() and str(item).strip()
+                ]
+            elif (
+                isinstance(collection, dict)
+                and field in {"failures", "failures_add"}
+            ):
+                collection = [collection]
+            if isinstance(collection, (list, tuple)):
+                payload[field] = list(collection)[:limit]
+        return payload
 
 
 class TaskLedger(BaseModel):

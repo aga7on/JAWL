@@ -157,6 +157,33 @@ def test_goal_parser_repairs_single_dependency_and_ledger_removals():
     assert parsed.ledger.tool_state_remove == ["mcp:x64dbg:old"]
 
 
+def test_goal_parser_repairs_mapping_tool_state_and_bounds_wide_patch():
+    payload = {
+        "v": 2,
+        "state": "act",
+        "calls": [
+            {
+                "tool": "MCPTools.call_tool",
+                "args": {},
+            }
+        ],
+        "ledger": {
+            "tool_state_add": {
+                f"x64dbg.Tool{index:02d}": f"{index:064x}"
+                for index in range(30)
+            }
+        },
+    }
+
+    parsed, error = parse_llm_json(json.dumps(payload))
+
+    assert error is None
+    assert parsed is not None
+    assert len(parsed.ledger.tool_state_add) == 20
+    assert parsed.ledger.tool_state_add[0].startswith("x64dbg.Tool00 | schema=")
+    assert parsed.ledger.tool_state_add[-1].startswith("x64dbg.Tool19 | schema=")
+
+
 @pytest.mark.parametrize("state", ["done", "wait", "blocked"])
 def test_parser_accepts_explicit_goal_terminal_states(state):
     payload = {"v": 2, "state": state, "summary": f"{state} evidence"}

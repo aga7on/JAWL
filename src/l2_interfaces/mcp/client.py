@@ -726,7 +726,11 @@ class MCPClientManager:
             expected_schema_sha256=expected_schema_sha256,
         )
         payload = await self._project_tool_result(server, tool, result)
-        return not bool(result.isError), payload
+        # Some third-party servers return protocol-level success while their
+        # structured/text payload explicitly reports failure. The projector
+        # normalizes both forms; use that authoritative status here instead of
+        # accidentally turning the embedded error back into a green action.
+        return not bool(payload["is_error"]), payload
 
     async def list_resources(self, server: str) -> dict[str, Any]:
         worker = self._worker(server)
@@ -862,11 +866,7 @@ class MCPClientManager:
         text_reports_error = False
         for content in result.content:
             if isinstance(content, types.TextContent):
-                if re.match(
-                    r"^\s*(?:http\s+)?error\s*(?:[:\-]\s*)?[45]\d{2}\b",
-                    content.text,
-                    flags=re.IGNORECASE,
-                ):
+                if self._payload_reports_error(content.text):
                     text_reports_error = True
                 contents.append(
                     {
@@ -920,12 +920,8 @@ class MCPClientManager:
                     }
                 contents.append({"type": "resource", "resource": value})
         structured = self._bounded_value(result.structuredContent)
-        structured_reports_error = bool(
-            isinstance(result.structuredContent, dict)
-            and (
-                result.structuredContent.get("success") is False
-                or bool(result.structuredContent.get("error"))
-            )
+        structured_reports_error = self._payload_reports_error(
+            result.structuredContent
         )
         return {
             "server": server,
@@ -940,6 +936,45 @@ class MCPClientManager:
             "content": contents,
             "structured_content": structured,
         }
+
+    @classmethod
+    def _payload_reports_error(cls, value: Any, *, _depth: int = 0) -> bool:
+        """Recognize bounded semantic failures embedded in successful MCP data."""
+
+        if _depth > 3:
+            return False
+        if isinstance(value, str):
+            if re.match(
+                r"^\s*(?:(?:http\s+)?error\s*(?:[:\-]\s*)?[45]\d{2}\b"
+                r"|request\s+failed\s*:|x64dbg\s+request\s+failed\s*:"
+                r"|connection\s+(?:failed|refused)\s*:)",
+                value,
+                flags=re.IGNORECASE,
+            ):
+                return True
+            stripped = value.strip()
+            if stripped.startswith(("{", "[")):
+                try:
+                    decoded = json.loads(stripped)
+                except json.JSONDecodeError:
+                    return False
+                return cls._payload_reports_error(decoded, _depth=_depth + 1)
+            return False
+        if not isinstance(value, dict):
+            return False
+        if value.get("success") is False or value.get("ok") is False:
+            return True
+        error = value.get("error")
+        if error not in (None, "", False, [], {}):
+            return True
+        # FastMCP wraps plain Python return values as {"result": ...}. Inspect
+        # that exact wrapper without recursively treating arbitrary nested
+        # application data as a failure contract.
+        if set(value).issubset({"result"}) and "result" in value:
+            return cls._payload_reports_error(
+                value["result"], _depth=_depth + 1
+            )
+        return False
 
     def _bounded_value(self, value: Any) -> Any:
         if value is None:
