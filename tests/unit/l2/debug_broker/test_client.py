@@ -147,6 +147,19 @@ async def test_ttd_status_and_recording_safety_gate(
         )
 
 
+@pytest.mark.asyncio
+async def test_ttd_replay_rejects_non_trace_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = make_client(tmp_path, monkeypatch, providers=["windbg"])
+    target = tmp_path / "not-a-trace.exe"
+    target.touch()
+    session = DebugSession(provider="windbg", target=str(target), status="ready")
+
+    with pytest.raises(DebugBrokerError, match=r"existing \.run file"):
+        await client._replay_ttd_trace(session, {}, 10)
+
+
 def test_x64dbg_port_allocator_never_reuses_an_open_port(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -156,11 +169,48 @@ def test_x64dbg_port_allocator_never_reuses_an_open_port(
     assert client._free_x64_port() == 8890
 
 
+def test_x64dbg_repairs_cp1251_mojibake_recursively() -> None:
+    result = DebugBrokerClient._repair_x64dbg_text(
+        {
+            "output": (
+                "Р–СѓСЂРЅР°Р» Р±СѓРґРµС‚ РїРµСЂРµРЅР°РїСЂР°РІР»РµРЅ"
+            ),
+            "nested": ["РќРµРґРѕРїСѓСЃС‚РёРјРѕРµ Р·РЅР°С‡РµРЅРёРµ"],
+            "valid": "Русский текст не повреждён",
+        }
+    )
+
+    assert result["output"] == "Журнал будет перенаправлен"
+    assert result["nested"] == ["Недопустимое значение"]
+    assert result["valid"] == "Русский текст не повреждён"
+
+
 def test_invalid_x64dbg_port_ranges_are_rejected() -> None:
     with pytest.raises(ValidationError):
         DebugBrokerConfig(x64dbg_port_start=9000, x64dbg_port_end=8999)
     with pytest.raises(ValidationError):
         DebugBrokerConfig(x64dbg_port_start=8000, x64dbg_port_end=8200)
+
+
+def test_external_state_namespace_cannot_overwrite_native_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    native = make_client(tmp_path, monkeypatch)
+    external = DebugBrokerClient(
+        native.config,
+        tmp_path,
+        state_namespace="mcp-1234",
+    )
+
+    assert native.sessions_path.name == "sessions.json"
+    assert external.sessions_path.name == "sessions-mcp-1234.json"
+    assert native.events_path != external.events_path
+    with pytest.raises(ValueError, match="state namespace"):
+        DebugBrokerClient(
+            native.config,
+            tmp_path,
+            state_namespace="../escape",
+        )
 
 
 @pytest.mark.asyncio
@@ -178,3 +228,22 @@ async def test_context_provider_accepts_registry_event_arguments(
 
     assert "DEBUG BROKER" in block
     assert "progressive discovery" in block
+
+
+@pytest.mark.asyncio
+async def test_external_mcp_lifespan_owns_broker_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.l2_interfaces.debug_broker import mcp_server
+
+    start = AsyncMock()
+    stop = AsyncMock()
+    monkeypatch.setattr(mcp_server.client, "start", start)
+    monkeypatch.setattr(mcp_server.client, "stop", stop)
+
+    async with mcp_server._broker_lifespan(mcp_server.server):
+        assert mcp_server._started is True
+        start.assert_awaited_once()
+
+    assert mcp_server._started is False
+    stop.assert_awaited_once()

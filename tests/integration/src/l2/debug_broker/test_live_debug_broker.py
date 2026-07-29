@@ -81,6 +81,10 @@ async def test_all_installed_providers_on_a_real_target() -> None:
     finally:
         await client.stop_session(session["session_id"])
 
+    dbgeng = await invoke(client, "windbg", "dbgeng_status", {})
+    assert dbgeng["result"]["engine_version"]
+    assert dbgeng["result"]["all_components_installed"] is True
+
     ttd = await invoke(client, "windbg", "ttd_status", {})
     assert ttd["result"]["installed"] is True
     assert ttd["result"]["agent_can_accept_eula"] is False

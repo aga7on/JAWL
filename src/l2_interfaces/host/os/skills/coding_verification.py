@@ -33,7 +33,7 @@ from src.l2_interfaces.host.os.skills.coding_pytest_sharding import (
 )
 from src.l3_agent.skills.registry import SkillResult, skill
 from src.l3_agent.swarm.roles import Subagents
-from src.utils._tools import redact_sensitive_text
+from src.utils._tools import get_project_root, redact_sensitive_text
 from src.utils.logger import main_logger
 from src.utils.tracing import current_trace
 
@@ -869,12 +869,37 @@ if errors:
         started_monotonic = time.monotonic()
         actual_command = self._windows_batch_command(command)
         env = os.environ.copy()
+        # JAWL itself is commonly launched with its repository in PYTHONPATH.
+        # Letting that value leak into verification subprocesses makes an
+        # unrelated target package named ``src`` resolve to JAWL's own source
+        # tree. Keep caller-provided paths, but remove this framework root and
+        # put the exact task workspace first.
+        framework_roots = {
+            self.host_os.framework_dir.resolve(),
+            get_project_root().resolve(),
+        }
+        inherited_pythonpath = [
+            item
+            for item in env.get("PYTHONPATH", "").split(os.pathsep)
+            if item.strip()
+        ]
+        isolated_pythonpath = []
+        for item in inherited_pythonpath:
+            try:
+                if Path(item).resolve() in framework_roots:
+                    continue
+            except OSError:
+                pass
+            isolated_pythonpath.append(item)
         env.update(
             {
                 "CI": "1",
                 "GIT_TERMINAL_PROMPT": "0",
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONUNBUFFERED": "1",
+                "PYTHONPATH": os.pathsep.join(
+                    [str(workspace), *isolated_pythonpath]
+                ),
             }
         )
         process = await asyncio.create_subprocess_exec(

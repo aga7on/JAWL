@@ -448,8 +448,9 @@ async def test_cancelled_stability_run_persists_completed_attempt_evidence(
 
 @pytest.mark.asyncio
 async def test_affected_pytest_selection_follows_transitive_imports(
-    os_client,
+    os_client, monkeypatch
 ):
+    monkeypatch.setenv("PYTHONPATH", str(Path.cwd()))
     repository = create_repository(os_client.sandbox_dir)
     source_dir = repository / "src"
     tests_dir = repository / "tests"
@@ -690,7 +691,10 @@ async def test_duration_aware_pytest_workers_persist_and_reuse_repository_histor
 
 
 @pytest.mark.asyncio
-async def test_parallel_pytest_workers_execute_real_file_shards(os_client):
+async def test_parallel_pytest_workers_execute_real_file_shards(
+    os_client, monkeypatch
+):
+    monkeypatch.setenv("PYTHONPATH", str(Path.cwd()))
     repository = create_repository(os_client.sandbox_dir)
     add_parallel_pytest_graph(repository)
     manager = HostOSCodingWorkspaces(os_client)

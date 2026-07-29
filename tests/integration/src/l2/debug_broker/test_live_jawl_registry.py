@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +53,7 @@ def test_every_debug_operation_through_running_jawl() -> None:
         )
         for item in discovered["operations"]:
             operations[(provider, item["operation"])] = item
-    assert len(operations) >= 33
+    assert len(operations) >= 35
 
     sessions: list[str] = []
 
@@ -105,6 +106,9 @@ def test_every_debug_operation_through_running_jawl() -> None:
 
     try:
         assert call("qiling", "inspect_environment", {})["result"]["version"]
+        dbgeng = call("windbg", "dbgeng_status", {})["result"]
+        assert dbgeng["engine_version"]
+        assert dbgeng["all_components_installed"]
         ttd_status = call("windbg", "ttd_status", {})["result"]
         assert ttd_status["installed"]
         assert not ttd_status["agent_can_accept_eula"]
@@ -171,7 +175,51 @@ def test_every_debug_operation_through_running_jawl() -> None:
             timeout=120,
         )
         assert "Program.Crash" in crash["result"]["output"]
-        if not ttd_status["record_ready"]:
+        record_ttd = os.environ.get("JAWL_DEBUG_BROKER_TTD_RECORD") == "1"
+        if record_ttd:
+            assert ttd_status["record_ready"], ttd_status["remediation"]
+            # The x64 .NET apphost is CET shadow-stack compatible and the
+            # standalone recorder correctly refuses to inject into it. Record
+            # the equivalent safe x86 fixture, which exercises the real TTD
+            # path without weakening host exploit mitigations.
+            stop(session_id)
+            recording = start("windbg", TARGET_X86)
+            session_id = recording["session_id"]
+            recorded = call(
+                "windbg",
+                "record_trace",
+                {
+                    "arguments": ["normal"],
+                    "ring": True,
+                    "max_file_mb": 8,
+                    "artifact_name": f"jawl-e2e-live-{uuid.uuid4().hex[:8]}.run",
+                    "timeout_sec": 180,
+                },
+                session_id,
+                timeout=240,
+            )
+            trace = Path(recorded["result"]["artifact"])
+            assert trace.is_file() and trace.stat().st_size > 0
+            stop(session_id)
+            replay = start("windbg", trace)
+            session_id = replay["session_id"]
+            replayed = call(
+                "windbg",
+                "replay_trace",
+                {
+                    "commands": [
+                        "!index",
+                        "dx @$curprocess.TTD.Position",
+                        "r",
+                        "k",
+                    ],
+                    "timeout_sec": 300,
+                },
+                session_id,
+                timeout=360,
+            )
+            assert "TTD" in replayed["result"]["output"]
+        elif not ttd_status["record_ready"]:
             refused = call(
                 "windbg",
                 "record_trace",

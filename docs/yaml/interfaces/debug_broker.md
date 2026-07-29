@@ -48,7 +48,7 @@ invented arguments after a broker update.
 | x64dbg | x86/x64 state, registers, modules, memory, disassembly, breakpoints, execution control, raw commands |
 | Ghidra | headless analysis and bounded JSON program export |
 | Frida | process discovery, spawn/attach, modules, memory, scripts/RPC, resume |
-| WinDbg | CDB commands, crash analysis, TTD readiness and controlled recording |
+| WinDbg | CDB commands, DbgEng/DbgModel/TTDReplay diagnostics, crash analysis, TTD readiness and controlled recording |
 | radare2 | metadata, analysis, functions, strings, disassembly, xrefs, raw commands |
 | Qiling | environment inspection and bounded shellcode emulation |
 | Triton | instruction execution and symbolic register solving |
@@ -68,7 +68,9 @@ JAWL from an elevated terminal.
 TTD recording is invasive and can significantly slow a target. A trace can
 contain process memory, paths, registry data, credentials, and other sensitive
 information. Broker-created traces are restricted to
-`G:/RE/Artifacts/broker/ttd`.
+`G:/RE/Artifacts/broker/ttd`. Existing `.run` traces can be opened through
+`windbg.replay_trace`; indexing remains bounded by the configured timeout and
+may create a sibling `.idx` artifact.
 
 ## External MCP facade
 
@@ -79,7 +81,11 @@ G:\AI\JAWL-Coding\venv\Scripts\python.exe -m src.l2_interfaces.debug_broker.mcp_
 ```
 
 Run it with `G:\AI\JAWL-Coding` as the working directory. The server exposes the
-same seven discovery/session skills; provider processes remain lazy.
+same seven discovery/session skills; provider processes remain lazy. Its MCP
+lifespan owns the broker and closes workers and broker-started debugger processes
+when the client disconnects or the server exits normally. Each external MCP
+process gets an isolated session/event store, so it cannot invalidate live
+native JAWL sessions.
 
 ## Verification
 
@@ -99,3 +105,12 @@ venv\Scripts\python.exe -m pytest tests/integration/src/l2/debug_broker/test_liv
 The live test intentionally excludes TTD recording until its legal and
 elevation prerequisites are satisfied. It still verifies TTD discovery and the
 fail-closed readiness gate.
+
+After explicit EULA acceptance, run JAWL elevated and opt in to the destructive
+trace test:
+
+```powershell
+$env:JAWL_DEBUG_BROKER_JAWL_LIVE = "1"
+$env:JAWL_DEBUG_BROKER_TTD_RECORD = "1"
+venv\Scripts\python.exe -m pytest tests/integration/src/l2/debug_broker/test_live_jawl_registry.py -q
+```

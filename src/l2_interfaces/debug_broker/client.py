@@ -147,7 +147,13 @@ class DebugBrokerClient:
 
     _ACTIVE = {"ready", "running", "paused", "attached", "suspended"}
 
-    def __init__(self, config: DebugBrokerConfig, framework_root: Path) -> None:
+    def __init__(
+        self,
+        config: DebugBrokerConfig,
+        framework_root: Path,
+        *,
+        state_namespace: str | None = None,
+    ) -> None:
         self.config = config
         self.framework_root = framework_root.resolve()
         self.re_root = Path(config.re_root).expanduser().resolve()
@@ -155,8 +161,13 @@ class DebugBrokerClient:
         self.artifacts_dir = self.re_root / "Artifacts" / "broker"
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
-        self.sessions_path = self.state_dir / "sessions.json"
-        self.events_path = self.state_dir / "events.jsonl"
+        if state_namespace is not None and not re.fullmatch(
+            r"[A-Za-z0-9_.-]{1,80}", state_namespace
+        ):
+            raise ValueError("Invalid Debug Broker state namespace")
+        suffix = f"-{state_namespace}" if state_namespace else ""
+        self.sessions_path = self.state_dir / f"sessions{suffix}.json"
+        self.events_path = self.state_dir / f"events{suffix}.jsonl"
         self.catalog = {
             key: spec
             for key, spec in build_catalog().items()
@@ -324,6 +335,21 @@ class DebugBrokerClient:
             "x32dbg": x32dbg if x32dbg.is_file() else None,
             "x64dbg": x64dbg if x64dbg.is_file() else None,
             "windbg": self._windbg_path,
+            "dbgeng": self._existing(
+                self._windbg_path.parent / "dbgeng.dll"
+                if self._windbg_path is not None
+                else Path("__unavailable__")
+            ),
+            "dbgmodel": self._existing(
+                self._windbg_path.parent / "dbgmodel.dll"
+                if self._windbg_path is not None
+                else Path("__unavailable__")
+            ),
+            "ttdreplay": self._existing(
+                self._windbg_path.parent / "ttd" / "TTDReplay.dll"
+                if self._windbg_path is not None
+                else Path("__unavailable__")
+            ),
             "ttd": self._existing(
                 self.re_root / "Tools" / "ttd" / "current" / "TTD.exe"
             ),
@@ -351,7 +377,13 @@ class DebugBrokerClient:
             "x64dbg": [paths["x32dbg"], paths["x64dbg"]],
             "ghidra": [paths["ghidra"]],
             "frida": [paths["frida_python"], paths["frida_worker"]],
-            "windbg": [paths["windbg"], paths["ttd"]],
+            "windbg": [
+                paths["windbg"],
+                paths["dbgeng"],
+                paths["dbgmodel"],
+                paths["ttdreplay"],
+                paths["ttd"],
+            ],
             "radare2": [paths["radare2"]],
             "qiling": [paths["qiling_python"], paths["qiling_worker"]],
             "triton": [paths["triton_python"], paths["triton_worker"]],
@@ -567,8 +599,11 @@ class DebugBrokerClient:
         arguments: dict[str, Any],
         session: DebugSession | None,
     ) -> Any:
-        if provider == "windbg" and operation == "ttd_status":
-            return self._ttd_status()
+        if provider == "windbg":
+            if operation == "dbgeng_status":
+                return await self._dbgeng_status()
+            if operation == "ttd_status":
+                return self._ttd_status()
         if provider in {"frida", "qiling", "triton"}:
             if session is None:
                 worker = await self._make_worker(provider)
@@ -790,6 +825,8 @@ class DebugBrokerClient:
         timeout = float(arguments.get("timeout_sec", self.config.request_timeout_sec))
         if operation == "record_trace":
             return await self._record_ttd_trace(session, arguments, timeout)
+        if operation == "replay_trace":
+            return await self._replay_ttd_trace(session, arguments, timeout)
         if operation == "analyze_crash":
             commands = [
                 ".symfix",
@@ -888,6 +925,36 @@ class DebugBrokerClient:
             ),
         }
 
+    async def _dbgeng_status(self) -> dict[str, Any]:
+        paths = self._tool_paths()
+        executable = paths["windbg"]
+        if not isinstance(executable, Path):
+            raise DebugBrokerError("CDB/DbgEng is unavailable")
+        result = await self._run([str(executable), "-version"], timeout=30)
+        version_text = result["stdout"].strip()
+        version_match = re.search(r"cdb version\s+([0-9.]+)", version_text, re.I)
+        components = {
+            "dbgeng": paths["dbgeng"],
+            "dbgmodel": paths["dbgmodel"],
+            "ttd_replay": paths["ttdreplay"],
+        }
+        return {
+            "engine_probe": "cdb -version",
+            "engine_version": version_match.group(1) if version_match else None,
+            "output": version_text,
+            "cdb_path": str(executable),
+            "components": {
+                name: {
+                    "installed": isinstance(path, Path),
+                    "path": str(path) if isinstance(path, Path) else None,
+                }
+                for name, path in components.items()
+            },
+            "all_components_installed": all(
+                isinstance(path, Path) for path in components.values()
+            ),
+        }
+
     async def _record_ttd_trace(
         self,
         session: DebugSession,
@@ -957,6 +1024,51 @@ class DebugBrokerClient:
             "output": result["stdout"],
             "stderr": result["stderr"],
             "privacy_warning": status["warning"],
+        }
+
+    async def _replay_ttd_trace(
+        self,
+        session: DebugSession,
+        arguments: dict[str, Any],
+        timeout: float,
+    ) -> dict[str, Any]:
+        if not session.target:
+            raise DebugBrokerError("TTD replay requires a trace target")
+        trace = Path(session.target).resolve()
+        if not trace.is_file() or trace.suffix.lower() != ".run":
+            raise DebugBrokerError("TTD replay target must be an existing .run file")
+        executable = self._tool_paths()["windbg"]
+        if not isinstance(executable, Path):
+            raise DebugBrokerError("CDB/DbgEng is unavailable")
+        commands = [
+            str(item)
+            for item in arguments.get(
+                "commands",
+                ["!index", "dx @$curprocess.TTD.Position", "r", "k"],
+            )
+        ]
+        if not any(item.strip().lower() in {"q", "qd"} for item in commands):
+            commands.append("q")
+        result = await self._run(
+            [
+                str(executable),
+                "-z",
+                str(trace),
+                "-c",
+                ";".join(commands),
+            ],
+            cwd=trace.parent,
+            timeout=timeout,
+        )
+        index = trace.with_suffix(".idx")
+        session.metadata["ttd_trace"] = str(trace)
+        session.metadata["ttd_index"] = str(index) if index.is_file() else None
+        return {
+            "trace": str(trace),
+            "index": str(index) if index.is_file() else None,
+            "commands": commands,
+            "output": result["stdout"],
+            "stderr": result["stderr"],
         }
 
     @staticmethod
@@ -1116,16 +1228,46 @@ class DebugBrokerClient:
                 result = json.loads(result)
             except json.JSONDecodeError:
                 pass
+        result = self._repair_x64dbg_text(result)
         if isinstance(result, dict) and (
             result.get("success") is False or result.get("error")
         ):
             raise DebugBrokerError(f"x64dbg operation failed: {result}")
         if isinstance(result, str) and re.search(
-            r"(?i)(?:error|failed|invalid|not found|недопуст|ошибк)",
+            r"(?i)(?:error|failed|invalid|not found|недопуст|ошибк|не существует)",
             result,
         ):
             raise DebugBrokerError(f"x64dbg operation failed: {result}")
         return result
+
+    @classmethod
+    def _repair_x64dbg_text(cls, value: Any) -> Any:
+        """Repair UTF-8 text accidentally decoded as Windows-1251 by x64dbg."""
+        if isinstance(value, dict):
+            return {
+                key: cls._repair_x64dbg_text(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._repair_x64dbg_text(item) for item in value]
+        if not isinstance(value, str):
+            return value
+
+        suspicious = re.compile(
+            r"(?:Р[°±²µ¶·ё№»јЅѕї]|С[ЂЃ‚ѓ„…†‡€‰Љ‹ЊЌЋЏђ‘’“”•–—™љ›њќћџ])"
+        )
+        before_score = len(suspicious.findall(value))
+        if before_score < 2:
+            return value
+        try:
+            repaired = value.encode("cp1251").decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            return value
+        return (
+            repaired
+            if len(suspicious.findall(repaired)) < before_score
+            else value
+        )
 
     async def _call_x64dbg(
         self, session: DebugSession, operation: str, arguments: dict[str, Any]

@@ -8,6 +8,8 @@ catalog and durable session semantics over MCP.
 from __future__ import annotations
 
 import asyncio
+import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +21,30 @@ from src.utils.settings import load_config
 
 FRAMEWORK_ROOT = Path(__file__).resolve().parents[3]
 _, _interfaces = load_config()
-client = DebugBrokerClient(_interfaces.debug_broker, FRAMEWORK_ROOT)
-server = FastMCP("jawl-debug-broker")
+client = DebugBrokerClient(
+    _interfaces.debug_broker,
+    FRAMEWORK_ROOT,
+    state_namespace=f"mcp-{os.getpid()}",
+)
 _start_lock = asyncio.Lock()
 _started = False
+
+
+@asynccontextmanager
+async def _broker_lifespan(_: FastMCP):
+    """Bind provider ownership to the external MCP server process lifetime."""
+
+    global _started
+    await client.start()
+    _started = True
+    try:
+        yield {"client": client}
+    finally:
+        await client.stop()
+        _started = False
+
+
+server = FastMCP("jawl-debug-broker", lifespan=_broker_lifespan)
 
 
 async def _ensure_started() -> None:

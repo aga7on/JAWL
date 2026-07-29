@@ -265,6 +265,16 @@ def build_catalog() -> dict[tuple[str, str], OperationSpec]:
         ),
         OperationSpec(
             "windbg",
+            "dbgeng_status",
+            (
+                "Verify the installed Microsoft debugging engine through CDB's "
+                "version probe and report DbgEng, DbgModel, and TTD replay components."
+            ),
+            _object(),
+            session_required=False,
+        ),
+        OperationSpec(
+            "windbg",
             "ttd_status",
             (
                 "Inspect standalone Time Travel Debugging recorder readiness. "
@@ -303,6 +313,28 @@ def build_catalog() -> dict[tuple[str, str], OperationSpec]:
                     ),
                     "timeout_sec": _integer(
                         "Recording timeout.", minimum=1, maximum=1800
+                    ),
+                }
+            ),
+            mutating=True,
+        ),
+        OperationSpec(
+            "windbg",
+            "replay_trace",
+            (
+                "Open a .run Time Travel Debugging trace with CDB/DbgEng and "
+                "execute bounded replay commands. Indexing may create a sibling .idx."
+            ),
+            _object(
+                {
+                    "commands": {
+                        "type": "array",
+                        "items": _string("One WinDbg/TTD replay command."),
+                        "minItems": 1,
+                        "maxItems": 64,
+                    },
+                    "timeout_sec": _integer(
+                        "Replay/indexing timeout.", minimum=1, maximum=1800
                     ),
                 }
             ),
