@@ -17,6 +17,7 @@ from aiogram.types import Message
 from src.utils.event.bus import EventBus
 from src.utils.event.registry import Events
 from src.utils.logger import main_logger
+from src.instances.paths import get_instance_paths
 from src.utils._tools import get_project_root
 from src.utils.settings import AiogramConfig
 
@@ -94,7 +95,12 @@ class AiogramEvents:
         if int(getattr(attachment, "file_size", 0) or 0) > max_bytes:
             main_logger.warning("[Aiogram] Skipped oversized visual media.")
             return []
-        media_dir = get_project_root() / "sandbox" / "telegram_media"
+        instance_paths = get_instance_paths()
+        media_dir = (
+            get_project_root() / "sandbox" / "telegram_media"
+            if instance_paths.legacy_default
+            else instance_paths.telegram_media_dir
+        )
         media_dir.mkdir(parents=True, exist_ok=True)
         target = media_dir / (
             f"bot_{message.message_id}_{uuid.uuid4().hex[:8]}{suffix.lower()}"

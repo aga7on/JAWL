@@ -17,14 +17,16 @@ from mcp.server.fastmcp import FastMCP
 
 from src.l2_interfaces.debug_broker.client import DebugBrokerClient
 from src.utils.settings import load_config
+from src.instances.paths import get_instance_paths
 
 
-FRAMEWORK_ROOT = Path(__file__).resolve().parents[3]
+INSTANCE_PATHS = get_instance_paths()
+FRAMEWORK_ROOT = INSTANCE_PATHS.project_root
 _, _interfaces = load_config()
 client = DebugBrokerClient(
     _interfaces.debug_broker,
     FRAMEWORK_ROOT,
-    state_namespace=f"mcp-{os.getpid()}",
+    state_namespace=f"mcp-{INSTANCE_PATHS.instance_id}-{os.getpid()}",
 )
 _start_lock = asyncio.Lock()
 _started = False

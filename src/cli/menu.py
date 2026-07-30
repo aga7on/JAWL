@@ -26,6 +26,7 @@ from src.cli.screens.terminal_chat import terminal_chat_screen
 from src.cli.screens.goals import goals_screen
 from src.cli.screens.runtime import runtime_screen
 from src.cli.screens.debug_broker import debug_broker_screen
+from src.cli.screens.instances import instances_screen
 
 
 def _bridge_processes() -> list[psutil.Process]:
@@ -58,6 +59,7 @@ def main_menu() -> None:
         questionary.Choice("[=] Runtime & Modes", "runtime"),
         questionary.Choice("[G] Durable Goals", "goals"),
         questionary.Choice("[D] Debug Broker", "debug_broker"),
+        questionary.Choice("[M] Multi-Instance Manager", "instances"),
         questionary.Choice("[@] Chat", "terminal"),
         questionary.Choice("[i] Logs", "logs"),
         questionary.Choice("[*] Setup Wizard", "setup"),
@@ -104,6 +106,9 @@ def main_menu() -> None:
 
         elif result == "debug_broker":
             debug_broker_screen()
+
+        elif result == "instances":
+            instances_screen()
 
         elif result == "logs":
             log_choice = questionary.select(

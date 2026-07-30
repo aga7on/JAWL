@@ -47,11 +47,14 @@ from src.l3_agent.hooks.lifecycle import LifecycleHooks
 from src.l3_agent.hooks.commands import DeclarativeCommandHooks
 from src.l3_agent.swarm.skills.report import SubagentReport
 from src.l3_agent.swarm.spawn import SwarmManager
+from src.l3_agent.swarm.registry import DelegationRegistry
 from src.l3_agent.tot.generator import ToTGenerator
 from src.l3_agent.tot.skills import DeepThinkSkill
 from src.l3_agent.subconscious.orchestrator import SubconsciousOrchestrator
 from src.l3_agent.goals.manager import GoalManager
 from src.l3_agent.goals.skills import GoalSkills
+from src.instances.mesh import InstanceMesh
+from src.instances.registry import InstanceRegistry
 
 
 class SystemBuilder:
@@ -268,6 +271,34 @@ class SystemBuilder:
                 self.container.event_bus,
             )
         )
+        instance_registry_path = (
+            self.container.instance_paths.instances_root / "registry.json"
+        )
+        if (
+            not self.container.instance_paths.legacy_default
+            or instance_registry_path.is_file()
+        ):
+            try:
+                instance_registry = InstanceRegistry(instance_registry_path)
+                instance_mesh = InstanceMesh(
+                    self.container.instance_id,
+                    instance_registry,
+                    self.container.sandbox_dir
+                    / "_system"
+                    / "instance_mesh"
+                    / "mesh.json",
+                )
+                register_instance(instance_mesh)
+                self.container.context_registry.register_provider(
+                    "instance_mesh",
+                    instance_mesh.get_context_block,
+                    section=ContextSection.INTERFACES,
+                )
+                self.container.instance_mesh = instance_mesh
+            except (OSError, ValueError) as exc:
+                main_logger.error(
+                    f"[Instance Mesh] Coordination plane unavailable: {exc}"
+                )
 
         llm_api_keys = env_vars.get("LLM_API_KEYS", [])
         llm_api_url = env_vars.get("LLM_API_URL", "")
@@ -292,7 +323,7 @@ class SystemBuilder:
             self.container.sub_llm_client = self.container.llm_client
 
         prompt_builder = PromptBuilder(
-            prompt_dir=self.container.root_dir / "src" / "l3_agent" / "prompt",
+            prompt_dir=self.container.prompt_dir,
             drives_enabled=self.system_config.db.sql.drives.enabled,
             tasks_enabled=self.system_config.db.sql.tasks.enabled,
             traits_enabled=self.system_config.db.sql.personality_traits.enabled,
@@ -422,7 +453,7 @@ class SystemBuilder:
         if self.system_config.swarm.enabled:
             report_skill = SubagentReport(
                 event_bus=self.container.event_bus,
-                sandbox_dir=self.container.root_dir / "sandbox",
+                sandbox_dir=self.container.sandbox_dir,
                 notify_on_submit=False,
             )
             register_instance(report_skill)
@@ -432,6 +463,11 @@ class SystemBuilder:
                 swarm_config=self.system_config.swarm,
                 root_dir=self.container.root_dir,
                 hooks=self.container.lifecycle_hooks,
+                registry=DelegationRegistry(
+                    self.container.local_data_dir
+                    / "agent"
+                    / "swarm_delegations.json"
+                ),
                 coding_plans=self.container.coding_plans,
                 event_bus=self.container.event_bus,
             )

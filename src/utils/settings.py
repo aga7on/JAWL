@@ -23,6 +23,7 @@ from pydantic import (
 from yaml.constructor import ConstructorError
 
 from src.utils.logger import main_logger
+from src.instances.paths import get_instance_paths
 
 # ==========================================
 # Models for interfaces.yaml
@@ -1048,7 +1049,12 @@ def load_config() -> tuple[SettingsConfig, InterfacesConfig]:
     Loads, validates, and automatically heals settings from YAML files if necessary.
     """
 
-    base_dir = Path.cwd() / "config"
+    instance_paths = get_instance_paths()
+    base_dir = (
+        Path.cwd() / "config"
+        if instance_paths.legacy_default
+        else instance_paths.config_dir
+    )
 
     settings_file = base_dir / "settings.yaml"
     settings_example = base_dir / "settings.example.yaml"

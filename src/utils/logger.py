@@ -13,6 +13,8 @@ from typing import List
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
+from src.instances.paths import get_instance_paths
+
 # Registry of all created file handlers for dynamic configuration updates
 _file_handlers_registry: List[RotatingFileHandler] = []
 
@@ -116,8 +118,8 @@ def setup_subsystem_logger(name: str, log_file: str, propagate: bool = True) -> 
         propagate: If True, forwards entries to the parent logger (JAWL -> main.log).
     """
 
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir = get_instance_paths().log_dir
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     if "pytest" in sys.modules:
         log_file = "pytest.log"

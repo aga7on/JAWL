@@ -14,6 +14,7 @@ import re
 import html
 
 from src.utils.logger import main_logger
+from src.instances.paths import get_instance_paths
 
 
 _SENSITIVE_TEXT_PATTERNS = (
@@ -81,7 +82,7 @@ def validate_sandbox_path(filepath: str | Path) -> Path:
         PermissionError: If the requested path escapes the sandbox directory.
     """
 
-    sandbox_dir = (Path.cwd() / "sandbox").resolve()
+    sandbox_dir = get_instance_paths().sandbox_dir
     sandbox_dir.mkdir(parents=True, exist_ok=True)
 
     path_str = str(filepath).replace("\\", "/")
@@ -153,7 +154,7 @@ def get_project_root() -> Path:
         Path: Absolute path of the framework directory.
     """
 
-    return Path(__file__).resolve().parent.parent.parent
+    return get_instance_paths().project_root
 
 
 def get_pid_file_path() -> Path:
@@ -164,7 +165,7 @@ def get_pid_file_path() -> Path:
         Path: Path to the agent.pid file.
     """
 
-    return get_project_root() / "src" / "utils" / "local" / "data" / "agent.pid"
+    return get_instance_paths().pid_file
 
 
 def get_lock_file_path() -> Path:
@@ -175,7 +176,7 @@ def get_lock_file_path() -> Path:
         Path: Path to the agent.lock file.
     """
 
-    return get_project_root() / "src" / "utils" / "local" / "data" / "agent.lock"
+    return get_instance_paths().lock_file
 
 
 def clean_html(raw_html: str) -> str:
@@ -431,7 +432,7 @@ def get_system_uptime_path() -> Path:
     Returns:
         Path: Path to system_uptime.json.
     """
-    return get_project_root() / "src" / "utils" / "local" / "data" / "system_uptime.json"
+    return get_instance_paths().uptime_file
 
 
 def update_last_active_time() -> None:

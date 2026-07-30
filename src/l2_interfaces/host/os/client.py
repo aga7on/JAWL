@@ -40,6 +40,11 @@ class HostOSClient:
         config: HostOSConfig,
         state: HostOSState,
         timezone: int,
+        *,
+        data_dir: Union[Path, str, None] = None,
+        log_dir: Union[Path, str, None] = None,
+        sandbox_dir: Union[Path, str, None] = None,
+        private_system_dir: Union[Path, str, None] = None,
     ) -> None:
         """
         Initializes the OS client and prepares system folders.
@@ -65,8 +70,19 @@ class HostOSClient:
         self.os_platform = sys.platform
 
         self.framework_dir = Path(base_dir).resolve()
-        self.sandbox_dir = self.framework_dir / "sandbox"
-        self.system_dir = self.sandbox_dir / "_system"
+        self.data_dir = Path(
+            data_dir
+            or self.framework_dir / "src" / "utils" / "local" / "data"
+        ).resolve()
+        self.log_dir = Path(
+            log_dir or self.framework_dir / "logs"
+        ).resolve()
+        self.sandbox_dir = Path(
+            sandbox_dir or self.framework_dir / "sandbox"
+        ).resolve()
+        self.system_dir = Path(
+            private_system_dir or self.sandbox_dir / "_system"
+        ).resolve()
         self.download_dir = self.system_dir / "download"
         self.events_dir = self.system_dir / ".jawl_events"
 
@@ -82,11 +98,7 @@ class HostOSClient:
 
         # File metadata registry file
         self.metadata_file = (
-            self.framework_dir
-            / "src"
-            / "utils"
-            / "local"
-            / "data"
+            self.data_dir
             / "interfaces"
             / "host"
             / "os"
@@ -98,11 +110,7 @@ class HostOSClient:
 
         # Daemon registry file
         self.daemons_file = (
-            self.framework_dir
-            / "src"
-            / "utils"
-            / "local"
-            / "data"
+            self.data_dir
             / "interfaces"
             / "host"
             / "os"
@@ -116,7 +124,9 @@ class HostOSClient:
 
         # Deploy manager initialization
         self.deploy_manager = HostOSDeployManager(
-            self.framework_dir, max_retries=self.config.deploy_max_retries
+            self.framework_dir,
+            max_retries=self.config.deploy_max_retries,
+            backup_dir=self.data_dir / "deploy_backup",
         )
 
     # =================================================================================
@@ -199,7 +209,10 @@ class HostOSClient:
         if self.access_level == HostOSAccessLevel.ROOT:
             pass
         elif self.access_level == HostOSAccessLevel.OPERATOR:
-            if not resolved_path.is_relative_to(self.framework_dir):
+            if not (
+                resolved_path.is_relative_to(self.framework_dir)
+                or resolved_path.is_relative_to(self.sandbox_dir)
+            ):
                 raise PermissionError(
                     "OPERATOR: Access (read and write) is permitted strictly within the JAWL directory."
                 )
@@ -208,7 +221,10 @@ class HostOSClient:
                 raise PermissionError(
                     "OBSERVER: Writing is permitted strictly inside the sandbox/ folder."
                 )
-            if not is_write and not resolved_path.is_relative_to(self.framework_dir):
+            if not is_write and not (
+                resolved_path.is_relative_to(self.framework_dir)
+                or resolved_path.is_relative_to(self.sandbox_dir)
+            ):
                 raise PermissionError(
                     "OBSERVER: Reading is permitted strictly within JAWL limits."
                 )
@@ -221,10 +237,8 @@ class HostOSClient:
         is_framework_code = (
             resolved_path.is_relative_to(self.framework_dir)
             and not resolved_path.is_relative_to(self.sandbox_dir)
-            and not resolved_path.is_relative_to(self.framework_dir / "logs")
-            and not resolved_path.is_relative_to(
-                self.framework_dir / "src" / "utils" / "local" / "data"
-            )
+            and not resolved_path.is_relative_to(self.log_dir)
+            and not resolved_path.is_relative_to(self.data_dir)
         )
 
         if is_write and is_framework_code and self.config.require_deploy_sessions:

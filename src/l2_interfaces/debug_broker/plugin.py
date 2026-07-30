@@ -32,6 +32,11 @@ class DebugBrokerPlugin(BaseInterface):
         client = DebugBrokerClient(
             container.interfaces_config.debug_broker,
             container.root_dir,
+            state_namespace=(
+                None
+                if container.instance_paths.legacy_default
+                else container.instance_id
+            ),
         )
         container.l2_clients["debug_broker"] = client
         register_instance(DebugBroker(client))

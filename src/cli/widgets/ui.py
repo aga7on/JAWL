@@ -23,6 +23,7 @@ from rich.align import Align
 import questionary
 
 from src.__init__ import __version__
+from src.instances.paths import get_instance_paths
 
 console = Console()
 
@@ -37,9 +38,10 @@ LOGO = "\n".join(
     ]
 )
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-PID_FILE = ROOT_DIR / "src" / "utils" / "local" / "data" / "agent.pid"
-SETTINGS_FILE = ROOT_DIR / "config" / "settings.yaml"
+INSTANCE_PATHS = get_instance_paths()
+ROOT_DIR = INSTANCE_PATHS.project_root
+PID_FILE = INSTANCE_PATHS.pid_file
+SETTINGS_FILE = INSTANCE_PATHS.config_dir / "settings.yaml"
 
 
 def set_window_title(title: str) -> None:
@@ -109,19 +111,30 @@ def draw_header(version: str = __version__) -> None:
     console.print(_build_header_panel(version))
 
 
-def launch_in_new_window(arg: str) -> None:
+def launch_in_new_window(
+    arg: str,
+    *,
+    environment: dict[str, str] | None = None,
+) -> None:
     script_path = ROOT_DIR / "jawl.py"
     cmd = [sys.executable, str(script_path), arg]
     system = platform.system()
+    child_env = os.environ.copy()
+    if environment:
+        child_env.update(environment)
 
     try:
         if system == "Windows":
-            subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+            subprocess.Popen(
+                cmd,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                env=child_env,
+            )
         elif system == "Darwin":
             cmd_str = f'"{sys.executable}" "{script_path}" {arg}'
             cmd_str_escaped = cmd_str.replace('"', '\\"')
             script = f'tell application "Terminal" to do script "{cmd_str_escaped}"'
-            subprocess.Popen(["osascript", "-e", script])
+            subprocess.Popen(["osascript", "-e", script], env=child_env)
         else:
             terminals = [
                 ("gnome-terminal", ["--"]),
@@ -132,7 +145,7 @@ def launch_in_new_window(arg: str) -> None:
             ]
             for term, args in terminals:
                 if shutil.which(term):
-                    subprocess.Popen([term] + args + cmd)
+                    subprocess.Popen([term] + args + cmd, env=child_env)
                     return
 
             print_error("Could not find a graphical terminal. Opening in the current window.")
@@ -143,7 +156,7 @@ def launch_in_new_window(arg: str) -> None:
 
             time.sleep(2)
             try:
-                subprocess.call(cmd)
+                subprocess.call(cmd, env=child_env)
             except KeyboardInterrupt:
                 pass
             return

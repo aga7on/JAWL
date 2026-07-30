@@ -18,9 +18,21 @@ class HostOSDeployManager:
     Manages deploy sessions, backups (Copy-on-Write), and test verifications.
     """
 
-    def __init__(self, framework_dir: Path, max_retries: int = 5) -> None:
+    def __init__(
+        self,
+        framework_dir: Path,
+        max_retries: int = 5,
+        backup_dir: Path | None = None,
+    ) -> None:
         self.framework_dir = framework_dir
-        self.backup_dir = framework_dir / "src" / "utils" / "local" / "data" / "deploy_backup"
+        self.backup_dir = backup_dir or (
+            framework_dir
+            / "src"
+            / "utils"
+            / "local"
+            / "data"
+            / "deploy_backup"
+        )
         self.active_flag = self.backup_dir / ".deploy_active"
         self.manifest_file = self.backup_dir / ".newfiles_manifest"
 

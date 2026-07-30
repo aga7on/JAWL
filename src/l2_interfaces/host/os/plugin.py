@@ -69,6 +69,10 @@ class HostOsPlugin(BaseInterface):
             config=config,
             state=state,
             timezone=container.settings.system.timezone,
+            data_dir=container.local_data_dir,
+            log_dir=container.log_dir,
+            sandbox_dir=container.sandbox_dir,
+            private_system_dir=container.private_sandbox_system_dir,
         )
 
         events = HostOSEvents(

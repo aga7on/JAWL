@@ -20,12 +20,14 @@ from src.cli.widgets.ui import (
     print_success,
     set_window_title,
 )
+from src.instances.paths import get_instance_paths
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-ENV_FILE = ROOT_DIR / ".env"
+INSTANCE_PATHS = get_instance_paths()
+ROOT_DIR = INSTANCE_PATHS.project_root
+ENV_FILE = INSTANCE_PATHS.env_file
 ENV_EXAMPLE = ROOT_DIR / ".env.example"
-SETTINGS_FILE = ROOT_DIR / "config" / "settings.yaml"
-SETTINGS_EXAMPLE = ROOT_DIR / "config" / "settings.example.yaml"
+SETTINGS_FILE = INSTANCE_PATHS.config_dir / "settings.yaml"
+SETTINGS_EXAMPLE = INSTANCE_PATHS.config_dir / "settings.example.yaml"
 
 
 def _ensure_base_files_exist() -> bool:
@@ -34,8 +36,8 @@ def _ensure_base_files_exist() -> bool:
         (ENV_FILE, ENV_EXAMPLE),
         (SETTINGS_FILE, SETTINGS_EXAMPLE),
         (
-            ROOT_DIR / "config" / "interfaces.yaml",
-            ROOT_DIR / "config" / "interfaces.example.yaml",
+            INSTANCE_PATHS.config_dir / "interfaces.yaml",
+            INSTANCE_PATHS.config_dir / "interfaces.example.yaml",
         ),
     ]
 

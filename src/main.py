@@ -15,6 +15,7 @@ from src import __version__
 from src.system.container import SystemContainer
 from src.builder import SystemBuilder
 from src.system.orchestrator import SystemOrchestrator
+from src.instances.paths import bootstrap_instance_layout, get_instance_paths
 
 
 async def main() -> int:
@@ -25,7 +26,12 @@ async def main() -> int:
     Returns the exit code (0 - shutdown, 1 - reboot).
     """
 
-    load_dotenv(override=True)
+    instance_paths = get_instance_paths()
+    bootstrap_instance_layout(instance_paths)
+    shared_env = instance_paths.project_root / ".env"
+    load_dotenv(shared_env, override=True)
+    if instance_paths.env_file != shared_env and instance_paths.env_file.is_file():
+        load_dotenv(instance_paths.env_file, override=True)
     clear_registry()
 
     event_bus = EventBus()
@@ -52,7 +58,10 @@ async def main() -> int:
     pid_file.parent.mkdir(parents=True, exist_ok=True)
     pid_file.write_text(str(os.getpid()))
 
-    main_logger.info(f"[System] Initializing JAWL v{__version__} (PID: {os.getpid()}).")
+    main_logger.info(
+        f"[System] Initializing JAWL v{__version__} "
+        f"(instance: {instance_paths.instance_id}, PID: {os.getpid()})."
+    )
 
     orchestrator = None
 

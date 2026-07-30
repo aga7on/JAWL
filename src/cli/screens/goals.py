@@ -28,12 +28,11 @@ from src.l0_state.agent.state import AgentState
 from src.l3_agent.goals.ledger import TaskLedgerPatch
 from src.l3_agent.goals.manager import GoalManager
 from src.utils.settings import load_config
+from src.instances.paths import get_instance_paths
 
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-GOAL_STORE = (
-    ROOT_DIR / "src" / "utils" / "local" / "data" / "agent" / "goals.json"
-)
+ROOT_DIR = get_instance_paths().project_root
+GOAL_STORE = get_instance_paths().data_dir / "agent" / "goals.json"
 
 
 def _offline_manager() -> GoalManager:

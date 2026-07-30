@@ -22,9 +22,10 @@ from src.cli.widgets.ui import (
 )
 from src.cli.screens.agent_control import _is_agent_running
 from src.cli.widgets.yaml_editor import YamlEditor
+from src.instances.paths import get_instance_paths
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-CONFIG_DIR = ROOT_DIR / "config"
+ROOT_DIR = get_instance_paths().project_root
+CONFIG_DIR = get_instance_paths().config_dir
 
 
 def _ensure_yaml_exists(file_name: str) -> Optional[Path]:

@@ -20,6 +20,7 @@ from src.l1_databases.graph.manager import GraphManager
 from src.l3_agent.llm.client import LLMClient
 from src.l3_agent.heartbeat import Heartbeat
 from src.l3_agent.context.registry import ContextRegistry
+from src.instances.paths import get_instance_paths
 
 
 class SystemContainer:
@@ -36,8 +37,17 @@ class SystemContainer:
         self.interfaces_config = interfaces_config
         self.event_bus = event_bus
 
-        self.root_dir = Path.cwd()
-        self.local_data_dir = self.root_dir / "src" / "utils" / "local" / "data"
+        instance_paths = get_instance_paths()
+        self.instance_id = instance_paths.instance_id
+        self.instance_paths = instance_paths
+        self.root_dir = instance_paths.project_root
+        self.local_data_dir = instance_paths.data_dir
+        self.sandbox_dir = instance_paths.sandbox_dir
+        self.private_sandbox_system_dir = (
+            instance_paths.private_sandbox_system_dir
+        )
+        self.prompt_dir = instance_paths.prompt_dir
+        self.log_dir = instance_paths.log_dir
         self.exit_code: int = 0
 
         # L0 State
@@ -67,3 +77,4 @@ class SystemContainer:
         self.coding_lsp: Optional[Any] = None
         self.action_journal: Optional[Any] = None
         self.goal_manager: Optional[Any] = None
+        self.instance_mesh: Optional[Any] = None

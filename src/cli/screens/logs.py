@@ -11,9 +11,10 @@ from collections import deque
 from rich.panel import Panel
 from rich.text import Text
 from src.cli.widgets.ui import console, print_error, print_info, clear_screen, set_window_title
+from src.instances.paths import get_instance_paths
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-LOG_DIR = ROOT_DIR / "logs"
+ROOT_DIR = get_instance_paths().project_root
+LOG_DIR = get_instance_paths().log_dir
 
 LOG_FILES = {
     "main": "main.log",

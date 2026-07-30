@@ -28,9 +28,11 @@ from src.cli.widgets.ui import (
     set_window_title,
 )
 from src.cli.screens.agent_control import _is_agent_running
+from src.instances.paths import get_instance_paths
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-LOCAL_DATA_DIR = ROOT_DIR / "src" / "utils" / "local" / "data"
+INSTANCE_PATHS = get_instance_paths()
+ROOT_DIR = INSTANCE_PATHS.project_root
+LOCAL_DATA_DIR = INSTANCE_PATHS.data_dir
 
 SQL_DB_FILE = LOCAL_DATA_DIR / "sql" / "db" / "agent.db"
 VECTOR_DB_DIR = LOCAL_DATA_DIR / "vector" / "db"
@@ -38,8 +40,8 @@ GRAPH_DB_DIR = LOCAL_DATA_DIR / "graph"
 
 INTERFACES_DIR = LOCAL_DATA_DIR / "interfaces"
 
-SETTINGS_FILE = ROOT_DIR / "config" / "settings.yaml"
-SETTINGS_EXAMPLE = ROOT_DIR / "config" / "settings.example.yaml"
+SETTINGS_FILE = INSTANCE_PATHS.config_dir / "settings.yaml"
+SETTINGS_EXAMPLE = INSTANCE_PATHS.config_dir / "settings.example.yaml"
 
 yaml = YAML()
 yaml.preserve_quotes = True

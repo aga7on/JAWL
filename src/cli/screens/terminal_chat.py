@@ -31,6 +31,7 @@ from src.cli.widgets.ui import (
 )
 from src.utils.settings import load_config
 from src.cli.screens.agent_control import _is_agent_running
+from src.instances.paths import get_instance_paths
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -252,7 +253,7 @@ def _open_terminal_chat() -> None:
         return
 
     base_dir = (
-        ROOT_DIR / "src" / "utils" / "local" / "data" / "interfaces" / "host" / "terminal"
+        get_instance_paths().data_dir / "interfaces" / "host" / "terminal"
     )
     history_file = base_dir / "history.json"
     port_file = base_dir / "terminal.port"
@@ -276,7 +277,7 @@ def _open_terminal_chat() -> None:
 
 def _clear_terminal_history() -> None:
     base_dir = (
-        ROOT_DIR / "src" / "utils" / "local" / "data" / "interfaces" / "host" / "terminal"
+        get_instance_paths().data_dir / "interfaces" / "host" / "terminal"
     )
     history_file = base_dir / "history.json"
     if history_file.exists():

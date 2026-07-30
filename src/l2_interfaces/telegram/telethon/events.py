@@ -19,6 +19,7 @@ from telethon.errors import FloodWaitError
 
 import uuid
 from src.utils._tools import get_project_root, truncate_text
+from src.instances.paths import get_instance_paths
 from src.utils.logger import main_logger, agent_logger
 from src.utils.event.bus import EventBus
 from src.utils.event.registry import Events
@@ -335,7 +336,12 @@ class TelethonEvents:
             )
             return []
 
-        media_dir = get_project_root() / "sandbox" / "telegram_media"
+        instance_paths = get_instance_paths()
+        media_dir = (
+            get_project_root() / "sandbox" / "telegram_media"
+            if instance_paths.legacy_default
+            else instance_paths.telegram_media_dir
+        )
         media_dir.mkdir(parents=True, exist_ok=True)
         file_name = (
             f"tg_{getattr(message, 'id', 'unknown')}_"

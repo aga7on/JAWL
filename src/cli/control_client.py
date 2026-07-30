@@ -8,19 +8,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict
 
+from src.instances.paths import get_instance_paths
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
-PORT_FILE = (
-    ROOT_DIR
-    / "src"
-    / "utils"
-    / "local"
-    / "data"
-    / "interfaces"
-    / "host"
-    / "terminal"
-    / "terminal.port"
-)
+ROOT_DIR = get_instance_paths().project_root
+PORT_FILE = get_instance_paths().terminal_port_file
 
 
 async def request_control_async(

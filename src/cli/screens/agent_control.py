@@ -27,13 +27,15 @@ from src.utils.settings import load_config
 from src.utils._tools import is_agent_running
 from src.cli.widgets.ui import print_success, print_error, print_info, wait_for_enter
 from src.cli.screens.onboarding import run_onboarding_if_needed
+from src.instances.paths import get_instance_paths
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-PID_FILE = ROOT_DIR / "src" / "utils" / "local" / "data" / "agent.pid"
-ENV_FILE = ROOT_DIR / ".env"
+INSTANCE_PATHS = get_instance_paths()
+ROOT_DIR = INSTANCE_PATHS.project_root
+PID_FILE = INSTANCE_PATHS.pid_file
+ENV_FILE = INSTANCE_PATHS.env_file
 MAIN_SCRIPT = ROOT_DIR / "src" / "main.py"
-STOP_FILE = ROOT_DIR / "src" / "utils" / "local" / "data" / "agent.stop"
-PROMPTS_DIR = ROOT_DIR / "src" / "l3_agent" / "prompt" / "personality"
+STOP_FILE = INSTANCE_PATHS.stop_file
+PROMPTS_DIR = INSTANCE_PATHS.prompt_dir / "personality"
 
 
 def _is_agent_running() -> bool:
@@ -84,7 +86,11 @@ def _telethon_auth_flow() -> bool:
     if not interfaces.telegram.telethon.enabled:
         return True
 
-    env_dict = dotenv_values(ENV_FILE, encoding="utf-8-sig")
+    env_dict = dict(
+        dotenv_values(ROOT_DIR / ".env", encoding="utf-8-sig")
+    )
+    if ENV_FILE != ROOT_DIR / ".env":
+        env_dict.update(dotenv_values(ENV_FILE, encoding="utf-8-sig"))
     api_id = env_dict.get("TELETHON_API_ID")
     api_hash = env_dict.get("TELETHON_API_HASH")
     proxy_url = env_dict.get("TELETHON_PROXY_URL") or env_dict.get("PROXY_URL")
@@ -110,7 +116,10 @@ def _telethon_auth_flow() -> bool:
 
     session_name = interfaces.telegram.telethon.session_name
     session_dir = (
-        ROOT_DIR / "src" / "utils" / "local" / "data" / "interfaces" / "telegram" / "telethon"
+        INSTANCE_PATHS.data_dir
+        / "interfaces"
+        / "telegram"
+        / "telethon"
     )
     session_dir.mkdir(parents=True, exist_ok=True)
     session_path = session_dir / session_name
@@ -221,6 +230,7 @@ def start_agent_screen() -> None:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT_DIR)
     env["PYTHONIOENCODING"] = "utf-8"
+    env.update(INSTANCE_PATHS.child_environment())
 
     kwargs = {"close_fds": True}
     if os.name == "nt":
@@ -228,7 +238,7 @@ def start_agent_screen() -> None:
     else:
         kwargs["start_new_session"] = True
 
-    crash_log_path = ROOT_DIR / "logs" / "startup" / "startup_error.log"
+    crash_log_path = INSTANCE_PATHS.log_dir / "startup" / "startup_error.log"
     crash_log_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:

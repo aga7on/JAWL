@@ -26,9 +26,10 @@ from src.cli.widgets.ui import (
 from src.cli.widgets.yaml_editor import YamlEditor
 from src.l2_interfaces.debug_broker.client import DebugBrokerClient
 from src.utils.settings import load_config
+from src.instances.paths import get_instance_paths
 
 
-ROOT_DIR = Path(__file__).resolve().parents[3]
+ROOT_DIR = get_instance_paths().project_root
 
 
 def _offline_client() -> DebugBrokerClient:
@@ -268,6 +269,6 @@ def debug_broker_screen() -> None:
                 wait_for_enter()
             else:
                 YamlEditor(
-                    ROOT_DIR / "config" / "interfaces.yaml",
+                    get_instance_paths().config_dir / "interfaces.yaml",
                     title="Debug Broker · interfaces.yaml",
                 ).run()
