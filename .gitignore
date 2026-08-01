@@ -28,6 +28,12 @@ src/utils/local/
 
 # Логи
 logs/
+*.log
+*.log.*
+
+# Private per-instance state (databases, sessions, goals, proxy cache)
+runtime/
+rockey_log.txt
 
 # Sandbox
 sandbox/*

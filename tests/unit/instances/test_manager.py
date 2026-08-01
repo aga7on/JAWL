@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 
 import psutil
+import pytest
 
 from src.instances.manager import InstanceManager
 from src.instances.supervisor import run_supervisor
@@ -139,3 +140,95 @@ def test_supervisor_once_owns_and_cleans_its_pid_file(tmp_path: Path) -> None:
     assert not (
         tmp_path / "runtime" / "instances" / "supervisor.pid"
     ).exists()
+
+
+def test_crashed_instance_without_auto_restart_is_idempotent(tmp_path: Path) -> None:
+    manager = make_manager(tmp_path)
+    manager.create_profile(
+        "Manual", "Manual", visible_console=False, auto_restart=False
+    )
+    manager.request_start("Manual")
+    manager.reconcile_once()
+    wait_until(lambda: manager.status("Manual")["runtime"]["alive"])
+    pid = manager.status("Manual")["runtime"]["pid"]
+    psutil.Process(pid).kill()
+    psutil.Process(pid).wait(timeout=5)
+
+    manager.reconcile_once()
+    assert manager.registry.get_runtime("Manual").state == "crashed"
+    revision = manager.registry.snapshot()["revision"]
+    manager.reconcile_once()
+
+    assert manager.registry.get_runtime("Manual").state == "crashed"
+    assert manager.registry.snapshot()["revision"] == revision
+
+
+def test_quarantine_remains_stable_until_explicit_start(tmp_path: Path) -> None:
+    manager = make_manager(tmp_path)
+    manager.create_profile(
+        "Boom",
+        "Boom",
+        visible_console=False,
+        auto_restart=True,
+        restart_limit=1,
+        restart_window_sec=60,
+    )
+    manager.request_start("Boom")
+    manager.reconcile_once()
+    wait_until(lambda: manager.status("Boom")["runtime"]["alive"])
+
+    first_pid = manager.status("Boom")["runtime"]["pid"]
+    psutil.Process(first_pid).kill()
+    psutil.Process(first_pid).wait(timeout=5)
+    manager.reconcile_once()
+    wait_until(
+        lambda: manager.status("Boom")["runtime"]["alive"]
+        and manager.status("Boom")["runtime"]["pid"] != first_pid
+    )
+
+    second_pid = manager.status("Boom")["runtime"]["pid"]
+    psutil.Process(second_pid).kill()
+    psutil.Process(second_pid).wait(timeout=5)
+    manager.reconcile_once()
+    assert manager.registry.get_runtime("Boom").state == "quarantined"
+    revision = manager.registry.snapshot()["revision"]
+
+    manager.reconcile_once()
+    assert manager.registry.get_runtime("Boom").state == "quarantined"
+    assert manager.status("Boom")["runtime"]["alive"] is False
+    assert manager.registry.snapshot()["revision"] == revision
+
+
+def test_delete_profile_removes_stopped_data_and_registry(tmp_path: Path) -> None:
+    manager = make_manager(tmp_path)
+    manager.create_profile("Disposable", "Disposable", visible_console=False)
+    home = manager.paths_for("Disposable").instance_home
+    marker = home / "private.txt"
+    marker.write_text("private", encoding="utf-8")
+
+    manager.delete_profile("Disposable")
+
+    assert not home.exists()
+    with pytest.raises(KeyError, match="not found"):
+        manager.registry.get_profile("Disposable")
+
+
+def test_delete_profile_restores_data_if_registry_mutation_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = make_manager(tmp_path)
+    manager.create_profile("KeepMe", "KeepMe", visible_console=False)
+    home = manager.paths_for("KeepMe").instance_home
+    marker = home / "private.txt"
+    marker.write_text("private", encoding="utf-8")
+
+    def fail_delete(_: str) -> None:
+        raise OSError("registry unavailable")
+
+    monkeypatch.setattr(manager.registry, "delete_profile", fail_delete)
+
+    with pytest.raises(OSError, match="registry unavailable"):
+        manager.delete_profile("KeepMe")
+
+    assert marker.read_text(encoding="utf-8") == "private"
+    assert manager.registry.get_profile("KeepMe").instance_id == "KeepMe"

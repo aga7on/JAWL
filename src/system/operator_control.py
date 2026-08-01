@@ -37,7 +37,9 @@ class OperatorControl:
         heartbeat = self.container.heartbeat
         return {
             "agent": {
-                "instance_id": self.container.instance_id,
+                "instance_id": getattr(
+                    self.container, "instance_id", "default"
+                ),
                 "state": (
                     getattr(getattr(state, "state", None), "value", None)
                     if state is not None

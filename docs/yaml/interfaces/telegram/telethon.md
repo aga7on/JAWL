@@ -7,7 +7,19 @@ To use this interface, you must obtain an `API_ID` and `API_HASH` at [my.telegra
 * `TELETHON_API_ID="1234567"`
 * `TELETHON_API_HASH="your_hash_here"`
 
-Upon the first launch, the terminal will prompt you to enter a phone number and verification code. After successful authorization, the session is saved locally in `sandbox/_system/...` and will not require verification again. Never share your session files with third parties.
+If Telegram is unreachable directly, JAWL first checks the configured or cached
+route and then discovers recent MTProxy links from the public `@mtp4tg` channel.
+Candidates are verified with parallel MTProto handshakes against the account's
+Telegram data center. The selected proxy is cached locally only after the full
+authorized session starts successfully. Proxy secrets are not written to logs.
+
+Optional `.env` settings:
+
+* `TELETHON_PROXY_URL="tg://proxy?..."` — preferred static route.
+* `TELETHON_PROXY_FALLBACKS="tg://proxy?...;tg://proxy?..."` — static fallbacks.
+* `TELETHON_PROXY_CHANNEL_URL="https://t.me/s/mtp4tg"` — public discovery page.
+
+Upon the first launch, the terminal will prompt you to enter a phone number and verification code. After successful authorization, the session is saved under the instance's private `data/interfaces/telegram/telethon/` directory and will not require verification again. Never share session files with third parties.
 
 ## Parameters (`telegram.telethon`)
 

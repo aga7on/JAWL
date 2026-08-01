@@ -8,8 +8,9 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import psutil
 from ruamel.yaml import YAML
@@ -21,6 +22,7 @@ from src.instances.paths import (
     validate_instance_id,
 )
 from src.instances.registry import InstanceRegistry
+from src.utils._tools import SystemInstanceLock
 from src.utils.logger import main_logger
 
 
@@ -339,6 +341,21 @@ class InstanceManager:
     def request_stop(self, instance_id: str) -> InstanceProfile:
         return self.registry.set_desired_state(instance_id, "stopped")
 
+    @contextmanager
+    def _operation_lock(self, timeout_sec: float = 10) -> Iterator[None]:
+        """Serialize reconciliation with destructive profile operations."""
+
+        lock = SystemInstanceLock(self.instances_root / "operations.lock")
+        deadline = time.monotonic() + timeout_sec
+        while not lock.acquire():
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Instance operation lock timed out")
+            time.sleep(0.05)
+        try:
+            yield
+        finally:
+            lock.release()
+
     def _launch(
         self, profile: InstanceProfile, *, restart: bool = False
     ) -> InstanceRuntime:
@@ -366,21 +383,23 @@ class InstanceManager:
             )
 
         creationflags = 0
-        stdout: Any = subprocess.DEVNULL
-        stderr: Any = subprocess.DEVNULL
         log_stream = None
         if os.name == "nt":
             if profile.visible_console:
                 creationflags |= subprocess.CREATE_NEW_CONSOLE
+                stdout = None
+                stderr = None
             else:
                 creationflags |= subprocess.CREATE_NO_WINDOW
-        if not profile.visible_console:
-            paths.log_dir.mkdir(parents=True, exist_ok=True)
-            log_stream = (
-                paths.log_dir / "instance-console.log"
-            ).open("a", encoding="utf-8")
-            stdout = log_stream
-            stderr = log_stream
+                paths.log_dir.mkdir(parents=True, exist_ok=True)
+                log_stream = (
+                    paths.log_dir / "instance-console.log"
+                ).open("a", encoding="utf-8")
+                stdout = log_stream
+                stderr = log_stream
+        else:
+            stdout = subprocess.DEVNULL
+            stderr = subprocess.DEVNULL
         try:
             process = subprocess.Popen(
                 [str(self.python_executable), str(self.entrypoint)],
@@ -473,6 +492,10 @@ class InstanceManager:
         )
 
     def reconcile_once(self) -> list[dict[str, Any]]:
+        with self._operation_lock():
+            return self._reconcile_once_locked()
+
+    def _reconcile_once_locked(self) -> list[dict[str, Any]]:
         outcomes = []
         now = time.time()
         for profile in self.registry.list_profiles():
@@ -492,7 +515,11 @@ class InstanceManager:
                             "state": stopped.state,
                         }
                     )
-                elif runtime.state != "running" or runtime.pid != process.pid:
+                elif (
+                    runtime.state != "running"
+                    or runtime.pid != process.pid
+                    or runtime.supervisor_pid != os.getpid()
+                ):
                     self.registry.update_runtime(
                         profile.instance_id,
                         state="running",
@@ -502,12 +529,6 @@ class InstanceManager:
                     )
                 continue
 
-            was_active = runtime.state in {
-                "starting",
-                "running",
-                "stopping",
-                "crashed",
-            }
             if profile.desired_state != "running" or not profile.enabled:
                 if runtime.state != "stopped" or runtime.pid is not None:
                     self.registry.update_runtime(
@@ -518,12 +539,28 @@ class InstanceManager:
                     )
                 continue
 
+            # These states require an explicit operator transition. Rewriting
+            # them on every tick caused thousands of atomic registry writes;
+            # treating quarantine as a launch candidate also defeated it on
+            # the very next supervisor iteration. request_start() clears both.
+            if runtime.state == "quarantined":
+                continue
+            if runtime.state == "crashed" and not profile.auto_restart:
+                continue
+
+            unexpected_exit = runtime.state in {
+                "starting",
+                "running",
+                "stopping",
+            }
+            restarting = unexpected_exit or runtime.state == "crashed"
+
             recent = [
                 item
                 for item in runtime.restart_timestamps
                 if now - item <= profile.restart_window_sec
             ]
-            if was_active and not profile.auto_restart:
+            if unexpected_exit and not profile.auto_restart:
                 self.registry.update_runtime(
                     profile.instance_id,
                     state="crashed",
@@ -531,7 +568,7 @@ class InstanceManager:
                     last_error="Process exited; automatic restart is disabled",
                 )
                 continue
-            if was_active and len(recent) >= profile.restart_limit:
+            if restarting and len(recent) >= profile.restart_limit:
                 self.registry.update_runtime(
                     profile.instance_id,
                     state="quarantined",
@@ -550,11 +587,11 @@ class InstanceManager:
                 )
                 continue
             try:
-                launched = self._launch(profile, restart=was_active)
+                launched = self._launch(profile, restart=restarting)
                 outcomes.append(
                     {
                         "instance_id": profile.instance_id,
-                        "action": "restarted" if was_active else "started",
+                        "action": "restarted" if restarting else "started",
                         "state": launched.state,
                         "pid": launched.pid,
                     }
@@ -576,20 +613,47 @@ class InstanceManager:
                 )
         return outcomes
 
+    def delete_profile(self, instance_id: str) -> None:
+        """Permanently delete a stopped profile without orphaning registry state."""
+
+        instance_id = validate_instance_id(instance_id)
+        with self._operation_lock():
+            if self._process(instance_id) is not None:
+                raise RuntimeError("Stop the instance before deleting it")
+            # Resolve the durable record before touching data and stage the home
+            # with an atomic same-volume rename. If registry mutation fails, the
+            # original layout can be restored intact.
+            self.registry.get_profile(instance_id)
+            paths = self.paths_for(instance_id)
+            staged = self.instances_root / (
+                f".deleting-{instance_id}-{time.time_ns()}"
+            )
+            if paths.instance_home.exists():
+                paths.instance_home.replace(staged)
+            try:
+                self.registry.delete_profile(instance_id)
+            except Exception:
+                if staged.exists() and not paths.instance_home.exists():
+                    staged.replace(paths.instance_home)
+                raise
+            if staged.exists():
+                shutil.rmtree(staged)
+
     def archive_profile(self, instance_id: str) -> Path:
         """Recoverably archive a stopped profile; registry deletion is omitted."""
         instance_id = validate_instance_id(instance_id)
-        if self._process(instance_id) is not None:
-            raise RuntimeError("Stop the instance before archiving it")
-        self.registry.update_profile(
-            instance_id, enabled=False, desired_state="stopped"
-        )
-        paths = self.paths_for(instance_id)
-        archive_root = self.instances_root / "_archive"
-        archive_root.mkdir(parents=True, exist_ok=True)
-        destination = archive_root / (
-            f"{instance_id}-{time.strftime('%Y%m%d-%H%M%S')}"
-        )
-        if paths.instance_home.exists():
-            shutil.move(str(paths.instance_home), str(destination))
-        return destination
+        with self._operation_lock():
+            if self._process(instance_id) is not None:
+                raise RuntimeError("Stop the instance before archiving it")
+            self.registry.update_profile(
+                instance_id, enabled=False, desired_state="stopped"
+            )
+            paths = self.paths_for(instance_id)
+            archive_root = self.instances_root / "_archive"
+            archive_root.mkdir(parents=True, exist_ok=True)
+            destination = archive_root / (
+                f"{instance_id}-{time.strftime('%Y%m%d-%H%M%S')}"
+            )
+            if paths.instance_home.exists():
+                shutil.move(str(paths.instance_home), str(destination))
+            return destination

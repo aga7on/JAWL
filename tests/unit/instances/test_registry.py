@@ -97,3 +97,17 @@ def test_profile_update_is_validated_atomically(tmp_path: Path) -> None:
         registry.update_profile("Donkey", static_ports=[8100])
 
     assert registry.get_profile("Donkey").static_ports == [8200]
+
+
+def test_noop_updates_do_not_rewrite_registry(tmp_path: Path) -> None:
+    registry = InstanceRegistry(tmp_path / "registry.json")
+    registry.create_profile(profile("Quiet"))
+    registry.update_runtime("Quiet", state="crashed", last_error="stopped")
+    revision = registry.snapshot()["revision"]
+    modified = registry.path.stat().st_mtime_ns
+
+    registry.update_runtime("Quiet", state="crashed", last_error="stopped")
+    registry.update_profile("Quiet", desired_state="stopped")
+
+    assert registry.snapshot()["revision"] == revision
+    assert registry.path.stat().st_mtime_ns == modified

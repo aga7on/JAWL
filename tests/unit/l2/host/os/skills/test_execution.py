@@ -4,7 +4,10 @@ import pytest
 from unittest.mock import patch
 
 from src.l2_interfaces.host.os.client import HostOSAccessLevel
-from src.l2_interfaces.host.os.skills.execution import HostOSExecution
+from src.l2_interfaces.host.os.skills.execution import (
+    HostOSExecution,
+    decode_process_output,
+)
 from src.l2_interfaces.host.os.decorators import require_access
 from src.l3_agent.skills.registry import SkillResult
 from src.utils._tools import get_project_root
@@ -30,6 +33,18 @@ async def test_execute_shell_command_safe(os_client):
     assert "Agent Online" in res.message
     # FIXED: Expected English exit report
     assert "Command exited with code 0" in res.message
+
+
+def test_decode_process_output_handles_windows_utf16_without_bom() -> None:
+    text = "Windows PowerShell: ошибка запуска"
+
+    assert decode_process_output(text.encode("utf-16-le")) == text
+
+
+def test_decode_process_output_preserves_utf8() -> None:
+    text = "Привет от UTF-8"
+
+    assert decode_process_output(text.encode("utf-8")) == text
 
 
 @pytest.mark.asyncio

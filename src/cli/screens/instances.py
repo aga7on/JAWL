@@ -270,6 +270,7 @@ def _profile_actions(manager: InstanceManager, instance_id: str) -> None:
                 questionary.Choice("📁 Open profile directory", "folder"),
                 questionary.Choice("Tune lifecycle/profile", "edit"),
                 questionary.Choice("Archive stopped profile", "archive"),
+                questionary.Choice("✕ Delete profile permanently", "delete"),
                 questionary.Choice("← Back", "back"),
             ],
             style=get_custom_style(),
@@ -351,6 +352,18 @@ def _profile_actions(manager: InstanceManager, instance_id: str) -> None:
                     continue
                 destination = manager.archive_profile(instance_id)
                 print_success(f"Profile data moved to {destination}")
+                wait_for_enter()
+                return
+            elif action == "delete":
+                confirmation = questionary.text(
+                    "Permanent deletion cannot be undone. "
+                    f"Type '{instance_id}' to continue:"
+                ).ask()
+                if confirmation != instance_id:
+                    print_info(" Permanent deletion cancelled.")
+                    continue
+                manager.delete_profile(instance_id)
+                print_success(f"Profile {instance_id} deleted.")
                 wait_for_enter()
                 return
         except Exception as exc:

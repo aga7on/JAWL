@@ -6,12 +6,17 @@ import json
 import os
 import tempfile
 import time
+from copy import deepcopy
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from src.instances.models import InstanceProfile, InstanceRuntime
 from src.instances.paths import validate_instance_id
+
+
+def _without_updated_at(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if key != "updated_at"}
 
 
 class InstanceRegistry:
@@ -150,8 +155,11 @@ class InstanceRegistry:
     ) -> tuple[Any, dict[str, Any]]:
         with self._lock():
             payload = self._read_unlocked()
+            original = deepcopy(payload)
             result = callback(payload)
             self._validate_conflicts(payload["profiles"])
+            if payload == original:
+                return result, payload
             payload["revision"] += 1
             self._write_unlocked(payload)
             return result, payload
@@ -197,18 +205,30 @@ class InstanceRegistry:
                 raise KeyError(f"Instance profile not found: {instance_id}")
             if "instance_id" in changes and changes["instance_id"] != instance_id:
                 raise ValueError("Instance ID cannot be changed")
-            updated = {
+            candidate = {
                 **current,
                 **changes,
                 "instance_id": instance_id,
-                "updated_at": time.time(),
             }
-            payload["profiles"][instance_id] = InstanceProfile.from_dict(
-                updated
-            ).public()
+            normalized = InstanceProfile.from_dict(candidate).public()
+            if _without_updated_at(normalized) == _without_updated_at(current):
+                return
+            normalized["updated_at"] = time.time()
+            payload["profiles"][instance_id] = normalized
 
         self._mutate(mutate)
         return self.get_profile(instance_id)
+
+    def delete_profile(self, instance_id: str) -> None:
+        instance_id = validate_instance_id(instance_id)
+
+        def mutate(payload: dict[str, Any]) -> None:
+            if instance_id not in payload["profiles"]:
+                raise KeyError(f"Instance profile not found: {instance_id}")
+            del payload["profiles"][instance_id]
+            payload["runtime"].pop(instance_id, None)
+
+        self._mutate(mutate)
 
     def set_desired_state(
         self, instance_id: str, desired_state: str
@@ -233,15 +253,16 @@ class InstanceRegistry:
             current = payload["runtime"].get(
                 instance_id, InstanceRuntime(instance_id).public()
             )
-            updated = {
+            candidate = {
                 **current,
                 **changes,
                 "instance_id": instance_id,
-                "updated_at": time.time(),
             }
-            payload["runtime"][instance_id] = InstanceRuntime.from_dict(
-                updated
-            ).public()
+            normalized = InstanceRuntime.from_dict(candidate).public()
+            if _without_updated_at(normalized) == _without_updated_at(current):
+                return
+            normalized["updated_at"] = time.time()
+            payload["runtime"][instance_id] = normalized
 
         self._mutate(mutate)
         return self.get_runtime(instance_id)

@@ -12,13 +12,9 @@ import shutil
 import time
 import subprocess
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
 import asyncio
 
 import psutil
-from telethon import TelegramClient
-from telethon.network.connection import ConnectionTcpMTProxyAbridged
-from python_socks import parse_proxy_url
 from dotenv import dotenv_values
 import questionary
 from pydantic import ValidationError
@@ -28,6 +24,9 @@ from src.utils._tools import is_agent_running
 from src.cli.widgets.ui import print_success, print_error, print_info, wait_for_enter
 from src.cli.screens.onboarding import run_onboarding_if_needed
 from src.instances.paths import get_instance_paths
+from src.l2_interfaces.telegram.telethon.client import TelethonClient
+from src.l2_interfaces.telegram.telethon.proxy_manager import MTProxyManager
+from src.l2_interfaces.telegram.telethon.state import TelethonState
 
 INSTANCE_PATHS = get_instance_paths()
 ROOT_DIR = INSTANCE_PATHS.project_root
@@ -125,50 +124,34 @@ def _telethon_auth_flow() -> bool:
     session_path = session_dir / session_name
 
     async def _auth() -> bool:
-        client = None
+        client: TelethonClient | None = None
         try:
             clean_api_id = int(api_id) if str(api_id).isdigit() else api_id
-            proxy = None
-            connection_cls = None
-
-            if proxy_url:
-                if proxy_url.startswith("tg://proxy"):
-                    parsed = urlparse(proxy_url)
-                    params = parse_qs(parsed.query)
-                    host = params.get("server", [None])[0]
-                    port = int(params.get("port", [0])[0])
-                    secret = params.get("secret", [None])[0]
-                    if not (host and port and secret):
-                        raise ValueError("Invalid TELETHON_PROXY_URL for MTProxy")
-                    proxy = (host, port, secret)
-                    connection_cls = ConnectionTcpMTProxyAbridged
-                    print_info(f" Using Telegram MTProxy: {host}:{port}")
-                else:
-                    proxy = parse_proxy_url(proxy_url)
-                    print_info(" Using configured SOCKS/HTTP proxy for Telegram.")
-
-            kwargs = {"proxy": proxy}
-            if connection_cls:
-                kwargs["connection"] = connection_cls
-
-            client = TelegramClient(
-                str(session_path),
-                clean_api_id,
-                api_hash,
-                connection_retries=2,
-                retry_delay=1,
-                timeout=10,
-                **kwargs,
+            manager = MTProxyManager(
+                cache_dir=session_dir,
+                fallback_proxies=[
+                    item.strip()
+                    for item in (
+                        env_dict.get("TELETHON_PROXY_FALLBACKS") or ""
+                    ).split(";")
+                    if item.strip()
+                ],
+                channel_url=(
+                    env_dict.get("TELETHON_PROXY_CHANNEL_URL")
+                    or MTProxyManager.DEFAULT_CHANNEL_URL
+                ),
             )
-
-            await asyncio.wait_for(client.connect(), timeout=25)
-            if not await asyncio.wait_for(
-                client.is_user_authorized(), timeout=10
-            ):
-                print_info(" Telegram session not found. Authorization required.")
-                await client.start()
-
-            me = await asyncio.wait_for(client.get_me(), timeout=15)
+            client = TelethonClient(
+                state=TelethonState(),
+                api_id=clean_api_id,
+                api_hash=str(api_hash),
+                session_path=str(session_path),
+                timezone=settings.system.timezone,
+                proxy_url=proxy_url,
+                proxy_manager=manager,
+            )
+            await client.start()
+            me = await client.client().get_me()
             name = me.first_name or "Unknown"
             if getattr(me, "last_name", None):
                 name += f" {me.last_name}"
@@ -176,27 +159,29 @@ def _telethon_auth_flow() -> bool:
             print_success(f"Telegram session active (User: {name}).")
             return True
 
-        except asyncio.TimeoutError:
+        except Exception as exc:
             if session_path.with_suffix(".session").exists():
                 print_info(
-                    " Telegram pre-flight timed out, but an authorized session "
-                    "file exists. Startup will continue and the runtime "
-                    "Telethon client will reconnect independently."
+                    " Telegram is temporarily unavailable "
+                    f"({type(exc).__name__}). An authorized session exists, "
+                    "so JAWL startup will continue and runtime reconnection "
+                    "will be retried independently."
                 )
                 return True
             print_error(
-                "Telegram pre-flight timed out and no saved session exists."
+                "Telegram authorization failed and no saved session exists: "
+                f"{type(exc).__name__}: {exc}"
             )
             return False
-        except Exception as e:
-            print_error(f"Error authorizing Telethon: {e}")
-            return False
         finally:
-            if client and client.is_connected():
+            if client is not None:
                 try:
-                    await asyncio.wait_for(client.disconnect(), timeout=5)
-                except asyncio.TimeoutError:
-                    pass
+                    await client.stop()
+                except Exception as exc:
+                    print_info(
+                        " Telegram pre-flight cleanup warning: "
+                        f"{type(exc).__name__}."
+                    )
 
     print_info(" Verifying Telegram (Telethon) session...")
     return asyncio.run(_auth())

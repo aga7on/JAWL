@@ -55,6 +55,11 @@ The project is divided into 4 areas of responsibility:
 
 
 ## 🐝 Swarm (Multi-Agent Subsystem)
+
+For several independent long-lived main agents with separate memory, goals,
+Telegram sessions and logs, use the **Multi-Instance Manager** from the main
+menu. It keeps one shared repository/sandbox while isolating each agent's
+private runtime. See [the operator guide](docs/MULTI_INSTANCE_MANAGER_RU.md).
 JAWL supports scaling via delegation. The Main Agent (Orchestrator) can spawn background **subagents** for the parallel execution of resource-intensive tasks.
 
 ### Why is this needed?

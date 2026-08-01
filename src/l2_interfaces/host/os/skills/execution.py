@@ -25,6 +25,37 @@ from src.l3_agent.swarm.roles import Subagents
 from src.l3_agent.skills.registry import SkillResult, skill
 
 
+def decode_process_output(data: bytes) -> str:
+    """Decode Windows child output without leaking UTF-16 NUL noise to the LLM.
+
+    Windows PowerShell may switch redirected native output to UTF-16LE even
+    without a BOM. Treating that byte stream as UTF-8 produced the NUL-filled
+    and replacement-character-heavy diagnostics seen in live JAWL logs.
+    """
+
+    if not data:
+        return ""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16", errors="replace")
+    nul_ratio = data.count(b"\x00") / len(data)
+    if nul_ratio >= 0.15:
+        odd_nuls = data[1::2].count(0)
+        even_nuls = data[0::2].count(0)
+        encoding = "utf-16-le" if odd_nuls >= even_nuls else "utf-16-be"
+        return data.decode(encoding, errors="replace")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        # cmd.exe commonly emits the active OEM code page. cp866 is the
+        # relevant deterministic fallback for Russian Windows hosts.
+        for encoding in ("cp866", "cp1251"):
+            try:
+                return data.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+    return data.decode("utf-8", errors="replace")
+
+
 class HostOSExecution:
     """
     Agent skills for executing code and process orchestration.
@@ -220,10 +251,10 @@ class HostOSExecution:
                 )
 
             stdout_str = truncate_text(
-                stdout.decode("utf-8", errors="replace").strip(), max_chars=5000
+                decode_process_output(stdout).strip(), max_chars=5000
             )
             stderr_str = truncate_text(
-                stderr.decode("utf-8", errors="replace").strip(), max_chars=5000
+                decode_process_output(stderr).strip(), max_chars=5000
             )
 
             exit_code = process.returncode
@@ -287,10 +318,10 @@ class HostOSExecution:
                 )
 
             stdout_str = truncate_text(
-                stdout.decode("utf-8", errors="replace").strip(), max_chars=5000
+                decode_process_output(stdout).strip(), max_chars=5000
             )
             stderr_str = truncate_text(
-                stderr.decode("utf-8", errors="replace").strip(), max_chars=5000
+                decode_process_output(stderr).strip(), max_chars=5000
             )
 
             exit_code = process.returncode
@@ -340,8 +371,8 @@ class HostOSExecution:
                     "Tests ran longer than 120 seconds and were aborted (Timeout)."
                 )
 
-            out_str = stdout.decode("utf-8", errors="replace").strip()
-            err_str = stderr.decode("utf-8", errors="replace").strip()
+            out_str = decode_process_output(stdout).strip()
+            err_str = decode_process_output(stderr).strip()
 
             full_log = f"{out_str}\n{err_str}".strip()
             clean_log = full_log[-4000:] if len(full_log) > 4000 else full_log
@@ -591,8 +622,8 @@ class HostOSExecution:
 
             wrapper_path.unlink(missing_ok=True)
 
-            out_str = stdout.decode("utf-8", errors="replace").strip()
-            err_str = stderr.decode("utf-8", errors="replace").strip()
+            out_str = decode_process_output(stdout).strip()
+            err_str = decode_process_output(stderr).strip()
 
             rpc_prefix = "---RPC_RESULT---"
             if rpc_prefix in out_str:

@@ -25,6 +25,7 @@ from src.l3_agent.skills.registry import register_instance
 from src.l3_agent.context.registry import ContextSection
 from src.system.container import SystemContainer
 from src.utils.settings import InterfacesConfig
+from src.l2_interfaces.telegram.telethon.proxy_manager import MTProxyManager
 
 
 class TelethonPlugin(BaseInterface):
@@ -67,6 +68,25 @@ class TelethonPlugin(BaseInterface):
             / config.session_name
         )
         clean_api_id = int(api_id) if str(api_id).isdigit() else api_id
+        proxy_manager = MTProxyManager(
+            cache_dir=(
+                container.local_data_dir
+                / "interfaces"
+                / "telegram"
+                / "telethon"
+            ),
+            fallback_proxies=[
+                item.strip()
+                for item in (
+                    env_vars.get("TELETHON_PROXY_FALLBACKS") or ""
+                ).split(";")
+                if item.strip()
+            ],
+            channel_url=(
+                env_vars.get("TELETHON_PROXY_CHANNEL_URL")
+                or MTProxyManager.DEFAULT_CHANNEL_URL
+            ),
+        )
 
         client = TelethonClient(
             state=state,
@@ -75,6 +95,7 @@ class TelethonPlugin(BaseInterface):
             session_path=session_path,
             timezone=container.settings.system.timezone,
             proxy_url=env_vars.get("TELETHON_PROXY_URL") or env_vars.get("PROXY_URL"),
+            proxy_manager=proxy_manager,
         )
         approval_control = (
             TelegramCodingApprovalControl(
