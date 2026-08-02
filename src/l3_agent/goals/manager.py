@@ -115,6 +115,7 @@ class GoalManager:
         task_ledger_enabled: bool = True,
         task_ledger_max_chars: int = 10000,
         provider_rebase_prompt_tokens: int = 65000,
+        server_side_conversation: bool = True,
         recover_on_start: bool = True,
     ) -> None:
         self.path = Path(path)
@@ -128,6 +129,7 @@ class GoalManager:
         self.provider_rebase_prompt_tokens = int(
             provider_rebase_prompt_tokens
         )
+        self.server_side_conversation = bool(server_side_conversation)
         self._lock = asyncio.Lock()
         self._records: list[GoalRecord] = []
         self._load_error = ""
@@ -350,8 +352,8 @@ class GoalManager:
         if active is None:
             self._sync_agent_state(None)
             return
-        # A framework restart must reconstruct state from JAWL's durable
-        # projection instead of silently trusting an old QWB parent chain.
+        # A framework restart reconstructs state from JAWL's durable
+        # projection instead of trusting an optional provider conversation.
         active.lane_epoch += 1
         active.revision += 1
         active.pending_work = True
@@ -393,6 +395,13 @@ class GoalManager:
         goal.last_activity_at = now
         goal.revision += 1
         self._sync_agent_state(goal if goal.status == "active" else None)
+
+    def set_provider_capabilities(
+        self, *, server_side_conversation: bool
+    ) -> None:
+        """Configure optional provider-session optimization without persistence."""
+
+        self.server_side_conversation = bool(server_side_conversation)
 
     @property
     def active_goal(self) -> Optional[GoalRecord]:
@@ -829,6 +838,8 @@ class GoalManager:
             goal.accounted_tokens += provider or estimated
             goal.last_provider_prompt_tokens = provider_prompt
             if (
+                self.server_side_conversation
+                and
                 self.provider_rebase_prompt_tokens > 0
                 and provider_prompt >= self.provider_rebase_prompt_tokens
                 and goal.last_rebased_lane_epoch != goal.lane_epoch
@@ -843,7 +854,7 @@ class GoalManager:
                     (
                         "Provider context reached "
                         f"{provider_prompt} prompt tokens; continuing from the "
-                        "local Task Ledger in a fresh Qwen lane."
+                        "local Task Ledger in a fresh provider session."
                     ),
                 )
             if (
@@ -1004,7 +1015,7 @@ A passing narrow test is evidence, not proof that the full goal is complete.
         # Optional sections are admitted in priority order, so truncation never
         # removes both the exact next action and the newest tool outcomes.
         projection = f"""
-### Local Task Ledger (authoritative after Qwen chat reset)
+### Local Task Ledger (authoritative after provider session reset)
 * Ledger revision: {ledger.revision}
 * Current phase: {self._bounded(ledger.current_phase, 160)}
 * Checkpoint: {self._bounded(ledger.checkpoint_summary, 350) or "none"}

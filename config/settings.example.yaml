@@ -20,9 +20,23 @@ llm:
   # provider_default, always, never, or first_step. QWB understands the
   # enable_thinking extension; provider_default sends no extra field.
   thinking_policy: provider_default
-  # wrapper keeps maximum compatibility (including QWB/Qwen).
-  # native exposes selected skills directly; hybrid keeps both transports.
-  tool_transport: wrapper
+  # Select qwb for the Qwen Web bridge or openai_compatible for a standard
+  # Chat Completions endpoint. Secrets and base_url stay in .env.
+  provider:
+    kind: openai_compatible
+    display_name: ""
+    health_url: ""
+    request_timeout_seconds:
+    retry:
+      transport_retries: 1
+      provider_retries: 2
+      invalid_response_retries: 1
+      tool_protocol_retries: 1
+      base_delay_seconds: 1.0
+      max_delay_seconds: 8.0
+  # auto chooses from declared capabilities; json_envelope preserves JAWL's
+  # provider-independent action plan; native exposes selected skills directly.
+  tool_transport: auto
   native_tool_prefixes:
     - HostOSCoding
     - HostOSReader

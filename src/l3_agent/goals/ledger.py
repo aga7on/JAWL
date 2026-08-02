@@ -98,7 +98,7 @@ class TaskLedgerPatch(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _repair_bounded_collections(cls, value: Any) -> Any:
-        """Repair common Qwen shorthands without letting a patch kill a cycle.
+        """Repair common model shorthands without letting a patch kill a cycle.
 
         The JSON schema advertises finite collection sizes, but web-model output
         and automatic MCP catalog checkpointing can still exceed them. Ledger

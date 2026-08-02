@@ -21,7 +21,15 @@ class LLMClient:
     """
 
     def __init__(
-        self, api_url: str, api_keys_rotator: APIKeyRotator, proxy_url: str = None
+        self,
+        api_url: str,
+        api_keys_rotator: APIKeyRotator,
+        proxy_url: str = None,
+        *,
+        connect_timeout: float = 15.0,
+        read_timeout: float | None = None,
+        write_timeout: float = 120.0,
+        pool_timeout: float = 30.0,
     ) -> None:
         """
         Initializes the client.
@@ -35,6 +43,12 @@ class LLMClient:
         self.api_url = api_url
         self.rotator = api_keys_rotator
         self.proxy_url = proxy_url
+        self.connect_timeout = float(connect_timeout)
+        self.read_timeout = (
+            None if read_timeout is None else float(read_timeout)
+        )
+        self.write_timeout = float(write_timeout)
+        self.pool_timeout = float(pool_timeout)
 
         self._sessions: dict[str, AsyncOpenAI] = {}
 
@@ -71,19 +85,19 @@ class LLMClient:
             raise RuntimeError("[LLM] No API keys available. Limits exhausted.")
 
         if api_key not in self._sessions:
-            # Qwen can legitimately think for several minutes. Keep connection,
-            # write and pool acquisition bounded, but let QWB own generation
-            # inactivity/total watchdogs instead of imposing a JAWL read deadline.
+            # Reasoning providers can legitimately run for several minutes.
+            # Keep connection, write and pool acquisition bounded while allowing
+            # the configured adapter to own any generation watchdog.
             timeout = httpx.Timeout(
-                connect=15.0,
-                read=None,
-                write=120.0,
-                pool=30.0,
+                connect=self.connect_timeout,
+                read=self.read_timeout,
+                write=self.write_timeout,
+                pool=self.pool_timeout,
             )
             if self._is_local_api():
                 # Ignore HTTP(S)_PROXY/ALL_PROXY from the environment too.
                 # Otherwise a cancelled local request can stay alive inside the
-                # proxy and continue consuming a Qwen account in QWB.
+                # proxy and continue consuming an upstream provider request.
                 http_client = httpx.AsyncClient(trust_env=False)
             elif self.proxy_url:
                 http_client = httpx.AsyncClient(proxy=self.proxy_url)

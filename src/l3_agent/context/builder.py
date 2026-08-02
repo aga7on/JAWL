@@ -10,7 +10,7 @@ import asyncio
 import json
 import re
 import uuid
-from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from src.l0_state.agent.state import AgentState
 from src.utils.logger import agent_logger
@@ -19,6 +19,7 @@ from src.utils.settings import ContextBudgetConfig, SubconsciousConfig
 from src.l3_agent.context.registry import ContextRegistry, ContextSection
 from src.l3_agent.hooks.lifecycle import HookContext, HookPhase, LifecycleHooks
 from src.l3_agent.skills.registry import get_skills_library
+from src.l3_agent.llm.providers.contracts import normalize_tool_transport
 
 if TYPE_CHECKING:
     from src.l3_agent.goals.manager import GoalManager
@@ -35,7 +36,7 @@ class ContextBuilder:
         agent_state: AgentState,
         registry: ContextRegistry,
         subconscious_config: SubconsciousConfig = None,
-        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
+        tool_transport: str = "json_envelope",
         budget_config: ContextBudgetConfig = None,
         hooks: LifecycleHooks = None,
         goal_manager: Optional["GoalManager"] = None,
@@ -50,7 +51,7 @@ class ContextBuilder:
         self.agent_state = agent_state
         self.registry = registry
         self.subconscious_config = subconscious_config
-        self.tool_transport = tool_transport
+        self.tool_transport = normalize_tool_transport(tool_transport)
         self.budget = budget_config or ContextBudgetConfig()
         self.hooks = hooks or LifecycleHooks()
         self.goal_manager = goal_manager
@@ -188,9 +189,9 @@ class ContextBuilder:
     ) -> tuple[Dict[str, str], Dict[str, Dict[str, int]]]:
         """Keep only live-command state for explicit `/quick` requests.
 
-        This is a local projection, not the sole memory source. QWB assigns the
-        request a separate warm lane, while normal/Goal lanes retain their full
-        authoritative snapshots for recovery.
+        This is a local projection, not the sole memory source. A provider may
+        optionally cache a separate warm lane, while normal and Goal requests
+        retain their full authoritative snapshots for recovery.
         """
 
         bounded = dict(blocks)

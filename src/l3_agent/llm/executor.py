@@ -12,16 +12,26 @@ Adheres strictly to Single Responsibility Principle (SRP): agent reasoning loops
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
 import uuid
-from typing import Dict, Any, List, Literal, Optional
-
-import openai
+from typing import Dict, Any, List, Optional
 
 from src.l3_agent.llm.client import LLMClient
 from src.l3_agent.llm.exceptions import AllKeysExhaustedError
+from src.l3_agent.llm.providers import (
+    LLMMessage,
+    LLMProvider,
+    LLMRequest,
+    LLMResult,
+    LLMToolDefinition,
+    ProviderError,
+    QWBProvider,
+    RetryPolicy,
+    normalize_tool_transport,
+)
 from src.utils._tools import redact_sensitive_text
 from src.utils.token_tracker import TokenTracker
 from src.utils.tracing import current_trace
@@ -33,16 +43,33 @@ class LLMExecutor:
     Hides all complexity of handling network and API errors.
     """
 
-    def __init__(self, llm_client: LLMClient, token_tracker: TokenTracker) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient | LLMProvider,
+        token_tracker: TokenTracker,
+        retry_policy: RetryPolicy | None = None,
+    ) -> None:
         """
         Args:
             llm_client: Client for retrieving HTTP sessions (AsyncOpenAI).
             token_tracker: Tool for tracking input and output tokens.
         """
 
-        self.llm = llm_client
+        if isinstance(llm_client, LLMProvider):
+            self.provider = llm_client
+            self.llm = getattr(llm_client, "client", llm_client)
+        else:
+            # Compatibility for existing embedders/tests. New construction
+            # always supplies an explicit provider from the factory.
+            self.provider = QWBProvider(
+                llm_client,
+                bridge_managed_accounts=False,
+            )
+            self.llm = llm_client
         self.tracker = token_tracker
+        self.retry_policy = retry_policy or RetryPolicy()
         self.last_call_metrics: Dict[str, Any] = {}
+        self.last_result: LLMResult | None = None
 
     async def execute(
         self,
@@ -53,12 +80,14 @@ class LLMExecutor:
         log_prefix: str,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = None, 
-        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
+        tool_transport: str = "json_envelope",
         enable_thinking: Optional[bool] = None,
         max_retries: int = 1,
         max_timeout_retries: int = 1,
         max_invalid_request_retries: int = 1,
         session_id: str = "",
+        stream: bool = False,
+        retry_policy: RetryPolicy | None = None,
     ) -> Optional[str]:
         """
         Executes a request to the LLM with a robust retry system.
@@ -99,209 +128,224 @@ class LLMExecutor:
             "estimated_input_tokens": self._plain_metric(estimated_input_tokens),
             "session_mode": "goal" if session_id else "trace",
         }
-        timeout_count = 0
-        invalid_request_count = 0
-
-        for attempt in range(max_retries):
-            self.last_call_metrics["attempts"] = attempt + 1
-            try:
-                # Retrieve an active authenticated session
-                session = self.llm.get_session()
-
-                # Execute request
-                kwargs = {
-                    "model": model_name,
-                    "messages": messages,
-                    "temperature": temperature,
+        trace_id = str(current_trace().get("trace_id") or "").strip()
+        lane = str(session_id or "").strip()
+        effective_lane = lane or (f"jawl-{trace_id}" if trace_id else "")
+        try:
+            requested_transport = normalize_tool_transport(tool_transport)
+            effective_transport = self.provider.resolve_tool_transport(
+                requested_transport
+            )
+            typed_messages = tuple(
+                LLMMessage.from_openai_dict(item) for item in messages
+            )
+            static_projection = json.dumps(
+                [
+                    message.as_openai_dict()
+                    for message in typed_messages
+                    if message.role in {"system", "developer"}
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            static_context_hash = hashlib.sha256(
+                static_projection.encode("utf-8")
+            ).hexdigest()
+            request = LLMRequest(
+                model=model_name,
+                messages=typed_messages,
+                temperature=temperature,
+                tools=tuple(
+                    LLMToolDefinition.from_openai_dict(item)
+                    for item in (tools or [])
+                ),
+                tool_choice=tool_choice,
+                tool_transport=effective_transport,
+                stream=stream,
+                enable_reasoning=enable_thinking,
+                session_id=effective_lane,
+                metadata={
+                    "trace": current_trace(),
+                    "static_context_hash": static_context_hash,
+                    "static_context_chars": len(static_projection),
+                },
+            )
+        except (TypeError, ValueError) as exc:
+            self._finish_error_metrics(
+                request_id,
+                model_name,
+                0,
+                started,
+                "invalid_request",
+                str(exc),
+            )
+            self.last_call_metrics.update(
+                {
+                    "provider": self.provider.name,
+                    "error_kind": "configuration",
+                    "retryable": False,
                 }
-                if tools:
-                    kwargs["tools"] = tools
-                if tool_choice is not None:
-                    kwargs["tool_choice"] = tool_choice
-                if enable_thinking is not None:
-                    kwargs["extra_body"] = {"enable_thinking": enable_thinking}
-                trace_id = str(current_trace().get("trace_id") or "").strip()
-                lane = str(session_id or "").strip()
-                if lane and (
-                    len(lane) > 200
-                    or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._" for ch in lane)
-                ):
-                    raise ValueError("session_id contains unsupported characters")
-                effective_lane = lane or (f"jawl-{trace_id}" if trace_id else "")
-                if effective_lane:
-                    # QWB uses this stable per-cycle lane to keep one Qwen
-                    # parent_id chain without mixing main/sub-agent contexts.
-                    kwargs["extra_headers"] = {
-                        "X-Session-Id": effective_lane
-                    }
+            )
+            logger.error(f"{log_prefix} Invalid provider request: {exc}")
+            return None
 
-                response = await session.chat.completions.create(**kwargs)
+        policy = retry_policy or self.retry_policy
+        limits = {
+            "transport": min(
+                policy.transport_retries,
+                max(0, int(max_timeout_retries) - 1),
+            ),
+            "provider": min(
+                policy.provider_retries,
+                max(0, int(max_retries) - 1),
+            ),
+            "invalid_request": max(0, int(max_invalid_request_retries)),
+            "invalid_response": policy.invalid_response_retries,
+            "tool_protocol": policy.tool_protocol_retries,
+        }
+        counters = {key: 0 for key in limits}
+        max_attempts = 1 + sum(limits.values())
+        attempt = 0
 
-                # Extract content and count tokens
-                raw_answer = self._extract_response_text(response, tool_transport)
-
+        while attempt < max_attempts:
+            attempt += 1
+            self.last_call_metrics["attempts"] = attempt
+            try:
+                result = await self.provider.complete(request)
+                self.last_result = result
+                raw_answer = self._result_to_jawl_text(
+                    result,
+                    effective_transport,
+                )
                 estimated_output_tokens = self.tracker.add_output_record(
                     raw_answer, log_prefix=log_prefix, logger=logger
                 )
-
-                self.last_call_metrics = self._response_metrics(
-                    response=response,
+                self.last_call_metrics = self._result_metrics(
+                    result=result,
                     request_id=request_id,
                     model_name=model_name,
-                    attempts=attempt + 1,
+                    attempts=attempt,
                     duration_ms=(time.perf_counter() - started) * 1000,
                     output_chars=len(raw_answer),
                     estimated_input_tokens=estimated_input_tokens,
                     estimated_output_tokens=estimated_output_tokens,
+                    retry_counters=counters,
+                    effective_transport=effective_transport,
+                )
+                self.last_call_metrics["static_context_hash"] = (
+                    static_context_hash
+                )
+                self.last_call_metrics["static_context_chars"] = len(
+                    static_projection
                 )
                 self.last_call_metrics["thinking_enabled"] = enable_thinking
                 self.last_call_metrics["session_mode"] = (
                     "goal" if lane else "trace"
                 )
                 self._log_usage_summary(logger, log_prefix)
-
                 return raw_answer
 
             except asyncio.CancelledError:
                 self._finish_error_metrics(
                     request_id,
                     model_name,
-                    attempt + 1,
+                    attempt,
                     started,
                     "cancelled",
                     "LLM request cancelled by downstream cycle",
                 )
+                self.last_call_metrics["provider"] = self.provider.name
+                self.last_call_metrics["retry_counters"] = dict(counters)
                 raise
+            except ProviderError as exc:
+                bucket = self._retry_bucket(exc.category)
+                if exc.category == "rate_limit" and not isinstance(
+                    exc.cause, AllKeysExhaustedError
+                ):
+                    self.provider.on_rate_limit(exc)
+                elif exc.category == "authentication":
+                    self.provider.on_authentication_error(exc)
 
-            except AllKeysExhaustedError as e:
-                logger.warning(
-                    f"{log_prefix} All keys in cooldown. Waiting {e.wait_time} sec."
-                )
-                await asyncio.sleep(e.wait_time + 1)
-                continue
-
-            except openai.RateLimitError as e:
-                wait_time = self._calculate_rate_limit_cooldown(e)
-                logger.warning(
-                    f"{log_prefix} Rate Limit (429). Key {session.api_key[:8]} cooled down for {wait_time}s."
-                )
-
-                self.llm.rotator.cooldown_key(session.api_key, wait_time)
-
-                if self.llm.rotator.total_keys() == 1:
-                    await asyncio.sleep(wait_time + 1)
-                else:
-                    await asyncio.sleep(1)  # Fast transition to the next key
-                continue
-
-            except openai.AuthenticationError:
-                logger.warning(
-                    f"{log_prefix} Invalid API key (401). Removing from pool ({session.api_key[:10]})."
-                )
-                self.llm.rotator.ban_key(session.api_key)
-                continue
-
-            except openai.BadRequestError as e:
-                error_kind, retryable = self._classify_bad_request(e)
-                invalid_request_count += 1
                 can_retry = (
-                    retryable
-                    and invalid_request_count <= max_invalid_request_retries
-                    and attempt < max_retries - 1
+                    exc.retryable
+                    and counters[bucket] < limits[bucket]
+                    and attempt < max_attempts
                 )
                 if can_retry:
-                    delay = min(2 ** invalid_request_count, 4)
+                    counters[bucket] += 1
+                    delay = self._retry_delay(exc, policy, counters[bucket])
                     logger.warning(
-                        f"{log_prefix} Upstream rejected the request "
-                        f"({error_kind}). Retrying in {delay}s "
-                        f"({invalid_request_count}/"
-                        f"{max_invalid_request_retries})."
+                        f"{log_prefix} {self.provider.name} {exc.category} "
+                        f"failure. Retrying in {delay:g}s "
+                        f"({counters[bucket]}/{limits[bucket]} {bucket})."
                     )
-                    await asyncio.sleep(delay)
+                    if delay:
+                        await asyncio.sleep(delay)
                     continue
+
+                status = self._metric_status_for_error(exc)
+                safe_error = redact_sensitive_text(str(exc))[:1000]
+                prefix = (
+                    "Invalid upstream request"
+                    if status == "invalid_request"
+                    else f"{self.provider.name} request failed"
+                )
                 logger.error(
-                    f"{log_prefix} Invalid upstream request (400, "
-                    f"{error_kind}, retryable={retryable}): {e}"
+                    f"{log_prefix} {prefix} "
+                    f"({exc.category}, retryable={exc.retryable}): {safe_error}"
                 )
                 self._finish_error_metrics(
                     request_id,
                     model_name,
-                    attempt + 1,
+                    attempt,
                     started,
-                    "invalid_request",
-                    str(e),
+                    status,
+                    safe_error,
                 )
-                self.last_call_metrics["error_kind"] = error_kind
-                self.last_call_metrics["retryable"] = retryable
+                self.last_call_metrics.update(
+                    {
+                        "provider": self.provider.name,
+                        "error_kind": exc.category,
+                        "error_code": exc.code,
+                        "status_code": exc.status_code,
+                        "retryable": exc.retryable,
+                        "retry_counters": dict(counters),
+                        "tool_transport": effective_transport,
+                    }
+                )
                 return None
-
-            except (openai.APITimeoutError, asyncio.TimeoutError):
-                timeout_count += 1
-                if timeout_count >= max_timeout_retries:
-                    logger.error(
-                        f"{log_prefix} API unavailable after {max_timeout_retries} timeouts. Aborting."
-                    )
-                    self._finish_error_metrics(
-                        request_id,
-                        model_name,
-                        attempt + 1,
-                        started,
-                        "timeout",
-                        "API request timeout",
-                    )
-                    return None
-
-                logger.warning(
-                    f"{log_prefix} API request timed out. Retrying ({timeout_count}/{max_timeout_retries})."
+            except Exception as exc:
+                safe_error = redact_sensitive_text(str(exc))[:1000]
+                logger.error(f"{log_prefix} Provider boundary failure: {safe_error}")
+                self._finish_error_metrics(
+                    request_id,
+                    model_name,
+                    attempt,
+                    started,
+                    "error",
+                    safe_error,
                 )
-                continue
-
-            except (openai.InternalServerError, openai.APIConnectionError) as e:
-                if attempt == max_retries - 1:
-                    logger.error(f"{log_prefix} Upstream unavailable: {e}")
-                    self._finish_error_metrics(
-                        request_id,
-                        model_name,
-                        attempt + 1,
-                        started,
-                        "upstream_unavailable",
-                        str(e),
-                    )
-                    return None
-                delay = min(2 ** (attempt + 1), 8)
-                logger.warning(
-                    f"{log_prefix} Transient upstream failure. Retrying in "
-                    f"{delay}s ({attempt + 1}/{max_retries})."
+                self.last_call_metrics.update(
+                    {
+                        "provider": self.provider.name,
+                        "error_kind": "provider_boundary",
+                        "retryable": False,
+                        "retry_counters": dict(counters),
+                    }
                 )
-                await asyncio.sleep(delay)
-                continue
-
-            except Exception as e:
-                # Pause briefly before retry on unexpected system/network errors
-                if attempt == max_retries - 1:
-                    logger.error(f"{log_prefix} Fatal API error: {e}")
-                    self._finish_error_metrics(
-                        request_id,
-                        model_name,
-                        attempt + 1,
-                        started,
-                        "error",
-                        str(e),
-                    )
-                    return None
-
-                logger.error(f"{log_prefix} Internal API error: {e}. Retrying request.")
-                await asyncio.sleep(2)
-                continue
+                return None
 
         self._finish_error_metrics(
             request_id,
             model_name,
-            max_retries,
+            attempt,
             started,
             "exhausted",
-            "LLM retries exhausted",
+            "provider retries exhausted",
         )
+        self.last_call_metrics["provider"] = self.provider.name
+        self.last_call_metrics["retry_counters"] = dict(counters)
         return None
 
     # -------------------------------------------------------------------------
@@ -309,103 +353,96 @@ class LLMExecutor:
     # -------------------------------------------------------------------------
 
     @staticmethod
-    def _classify_bad_request(error: Exception) -> tuple[str, bool]:
-        """Separate stale/provider input failures from static configuration."""
+    def _retry_bucket(category: str) -> str:
+        """Map a provider error to its independently budgeted retry lane."""
 
-        text = str(error).lower()
-        if (
-            "chat_not_found" in text
-            or (
-                ("chat" in text or "chat_id" in text)
-                and ("not exist" in text or "not found" in text)
-            )
-        ):
-            return "session_state", True
-        if any(
-            marker in text
-            for marker in (
-                "unsupported model",
-                "unknown model",
-                "model_not_found",
-                "unknown parameter",
-                "unsupported parameter",
-                "missing required",
-                "maximum context length",
-                "context_length_exceeded",
-            )
-        ):
-            return "configuration", False
-        if any(
-            marker in text
-            for marker in (
-                "invalid_input",
-                "invalid input",
-                "invalid attachment",
-                "attachment",
-            )
-        ):
-            return "input_rejected", True
-        # Provider-compatible gateways sometimes collapse recoverable request
-        # state into an otherwise untyped 400. Allow one bounded retry.
-        return "unclassified_rejection", True
+        if category in {"transport", "timeout"}:
+            return "transport"
+        if category == "invalid_response":
+            return "invalid_response"
+        if category == "tool_protocol":
+            return "tool_protocol"
+        if category in {"configuration", "input_rejected", "session_state"}:
+            return "invalid_request"
+        return "provider"
 
-    def _extract_response_text(
+    def _retry_delay(
         self,
-        response: Any,
-        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
-    ) -> str:
-        """
-        Extracts raw text content or tool JSON arguments from the OpenAI response.
-        """
+        error: ProviderError,
+        policy: RetryPolicy,
+        retry_number: int,
+    ) -> float:
+        """Return a bounded delay without leaking provider-specific policy."""
 
-        message_obj = response.choices[0].message
+        if isinstance(error.cause, AllKeysExhaustedError):
+            return float(error.retry_after or error.cause.wait_time + 1)
+        if error.category == "rate_limit":
+            rotator = getattr(getattr(self.provider, "client", None), "rotator", None)
+            total_keys = getattr(rotator, "total_keys", lambda: 1)()
+            # Rotate immediately when another local credential is available.
+            if isinstance(total_keys, int) and total_keys > 1:
+                return 1.0
+            if error.retry_after is not None:
+                return max(0.0, float(error.retry_after))
+        return min(
+            policy.base_delay_seconds * (2 ** max(1, retry_number)),
+            policy.max_delay_seconds,
+        )
 
-        if message_obj.tool_calls:
-            calls = list(message_obj.tool_calls)
+    @staticmethod
+    def _metric_status_for_error(error: ProviderError) -> str:
+        if error.category in {"configuration", "input_rejected", "session_state"}:
+            return "invalid_request"
+        if error.category == "timeout":
+            return "timeout"
+        if error.category in {"transport", "provider", "rate_limit"}:
+            return "upstream_unavailable"
+        if error.category in {"authentication", "authorization"}:
+            return error.category
+        return error.category
+
+    @staticmethod
+    def _result_to_jawl_text(result: LLMResult, tool_transport: str) -> str:
+        """Project a provider-neutral result into JAWL's action envelope."""
+
+        calls = list(result.tool_calls)
+        if calls:
             if len(calls) == 1 and (
-                tool_transport == "wrapper"
-                or calls[0].function.name == "execute_skill"
+                tool_transport == "json_envelope"
+                or calls[0].name == "execute_skill"
             ):
-                return str(calls[0].function.arguments)
-            merged = {
+                return calls[0].arguments
+
+            merged: dict[str, list[Any]] = {
                 "observation": [],
                 "reasoning": [],
                 "reflection": [],
                 "actions": [],
             }
-            if isinstance(message_obj.content, str) and message_obj.content.strip():
-                merged["reflection"].append(message_obj.content.strip())
-            raw_arguments = []
+            if result.content.strip():
+                merged["reflection"].append(result.content.strip())
+            raw_arguments: list[str] = []
             for call in calls:
-                argument = str(call.function.arguments)
-                raw_arguments.append(argument)
+                raw_arguments.append(call.arguments)
                 try:
-                    payload = json.loads(argument)
+                    payload = json.loads(call.arguments)
                 except (TypeError, json.JSONDecodeError):
-                    # Preserve all provider output so the protocol parser can
-                    # reject it visibly instead of silently dropping calls.
                     return "\n".join(raw_arguments)
                 if not isinstance(payload, dict):
                     return "\n".join(raw_arguments)
-                if (
-                    tool_transport == "wrapper"
-                    or call.function.name == "execute_skill"
-                ):
-                    if not isinstance(payload.get("actions", []), list):
+                if tool_transport == "json_envelope" or call.name == "execute_skill":
+                    actions = payload.get("actions", [])
+                    if not isinstance(actions, list):
                         return "\n".join(raw_arguments)
                     for field in ("observation", "reasoning", "reflection"):
                         value = payload.get(field)
                         if isinstance(value, str) and value.strip():
                             merged[field].append(value.strip())
-                    merged["actions"].extend(payload.get("actions", []))
+                    merged["actions"].extend(actions)
                 else:
                     merged["actions"].append(
-                        {
-                            "tool_name": call.function.name,
-                            "parameters": payload,
-                        }
+                        {"tool_name": call.name, "parameters": payload}
                     )
-
             return json.dumps(
                 {
                     "observation": "\n".join(merged["observation"]),
@@ -416,8 +453,8 @@ class LLMExecutor:
                 ensure_ascii=False,
             )
 
-        content = message_obj.content or ""
-        if tool_transport in {"native", "hybrid"}:
+        content = result.content or ""
+        if tool_transport == "native":
             try:
                 existing = json.loads(content)
             except (TypeError, json.JSONDecodeError):
@@ -435,15 +472,10 @@ class LLMExecutor:
             )
         return content
 
-    @staticmethod
-    def _plain_metric(value: Any) -> Optional[Any]:
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            return value
-        return None
-
-    def _response_metrics(
+    def _result_metrics(
         self,
-        response: Any,
+        *,
+        result: LLMResult,
         request_id: str,
         model_name: str,
         attempts: int,
@@ -451,18 +483,11 @@ class LLMExecutor:
         output_chars: int,
         estimated_input_tokens: Any,
         estimated_output_tokens: Any,
+        retry_counters: dict[str, int],
+        effective_transport: str,
     ) -> Dict[str, Any]:
-        choice = response.choices[0]
-        message = choice.message
-        usage = getattr(response, "usage", None)
-        prompt_details = getattr(usage, "prompt_tokens_details", None)
-        completion_details = getattr(usage, "completion_tokens_details", None)
-        provider_prompt = self._plain_metric(
-            getattr(usage, "prompt_tokens", None)
-        )
-        provider_completion = self._plain_metric(
-            getattr(usage, "completion_tokens", None)
-        )
+        usage = result.usage
+        provider_prompt = self._plain_metric(usage.prompt_tokens)
         estimated_input = self._plain_metric(estimated_input_tokens)
         prompt_savings = None
         prompt_ratio = None
@@ -474,33 +499,42 @@ class LLMExecutor:
                 prompt_ratio = round(provider_prompt / estimated_input, 4)
         return {
             "request_id": request_id,
-            "response_id": self._plain_metric(getattr(response, "id", None)),
+            "response_id": self._plain_metric(result.response_id),
             "model": model_name,
+            "provider_model": self._plain_metric(result.model),
+            "provider": self.provider.name,
+            "capabilities": self.provider.capabilities.public(),
             "status": "completed",
             "attempts": attempts,
+            "retry_counters": dict(retry_counters),
             "duration_ms": round(duration_ms, 1),
-            "finish_reason": self._plain_metric(
-                getattr(choice, "finish_reason", None)
-            ),
-            "tool_call_count": len(getattr(message, "tool_calls", None) or []),
+            "finish_reason": self._plain_metric(result.finish_reason),
+            "tool_transport": effective_transport,
+            "tool_call_count": len(result.tool_calls),
             "output_chars": output_chars,
             "estimated_input_tokens": estimated_input,
             "estimated_output_tokens": self._plain_metric(estimated_output_tokens),
             "provider_prompt_tokens": provider_prompt,
-            "provider_completion_tokens": provider_completion,
-            "provider_total_tokens": self._plain_metric(
-                getattr(usage, "total_tokens", None)
+            "provider_completion_tokens": self._plain_metric(
+                usage.completion_tokens
             ),
+            "provider_total_tokens": self._plain_metric(usage.total_tokens),
             "provider_reasoning_tokens": self._plain_metric(
-                getattr(completion_details, "reasoning_tokens", None)
+                usage.reasoning_tokens
             ),
-            "provider_cached_tokens": self._plain_metric(
-                getattr(prompt_details, "cached_tokens", None)
-            ),
+            "provider_cached_tokens": self._plain_metric(usage.cached_tokens),
             "provider_prompt_savings_tokens": prompt_savings,
             "provider_prompt_ratio": prompt_ratio,
+            "reasoning_chars": len(result.reasoning),
+            "provider_metadata": dict(result.provider_metadata),
             "trace": current_trace(),
         }
+
+    @staticmethod
+    def _plain_metric(value: Any) -> Optional[Any]:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return None
 
     def _log_usage_summary(
         self, logger: logging.Logger, log_prefix: str
@@ -545,39 +579,3 @@ class LLMExecutor:
             "trace": current_trace(),
         }
 
-    def _calculate_rate_limit_cooldown(self, error: openai.RateLimitError) -> int:
-        """
-        Calculates key freeze time based on the provider's response headers.
-        """
-
-        # If the provider explicitly reports insufficient funds
-        err_code = getattr(error.body, "get", lambda x: None)("code")
-        if err_code == "insufficient_quota" or "billing" in str(error).lower():
-            return 86400  # Freeze for 24 hours
-
-        wait_time = 30  # Default fallback
-
-        if error.response is not None:
-            headers = error.response.headers
-            # Attempt to extract common rate limit reset headers
-            retry_after = (
-                headers.get("retry-after")
-                or headers.get("x-ratelimit-reset")
-                or headers.get("retry-after-ms")
-            )
-
-            if retry_after:
-                try:
-                    if headers.get("retry-after-ms"):
-                        wait_time = max(1, int(int(retry_after) / 1000))
-                    else:
-                        wait_time = int(float(retry_after))
-
-                    # If the timestamp represents a future epoch (e.g. OpenAI)
-                    if wait_time > time.time():
-                        wait_time = int(wait_time - time.time())
-                except ValueError:
-                    pass
-
-        # Clamp boundaries: no less than 2s (avoid spam) and no more than 5 minutes
-        return max(2, min(wait_time, 300))

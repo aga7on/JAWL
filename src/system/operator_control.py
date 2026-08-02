@@ -55,6 +55,18 @@ class OperatorControl:
                 )[:1000],
             },
             "modes": {
+                "provider": {
+                    "kind": self.container.settings.llm.provider.kind,
+                    "name": (
+                        self.container.settings.llm.provider.display_name
+                        or self.container.settings.llm.provider.kind
+                    ),
+                    "capabilities": (
+                        getattr(self.container, "llm_provider").capabilities.public()
+                        if getattr(self.container, "llm_provider", None) is not None
+                        else self.container.settings.llm.provider.resolved_capabilities()
+                    ),
+                },
                 "thinking_policy": self.container.settings.llm.thinking_policy,
                 "tool_transport": self.container.settings.llm.tool_transport,
                 "continuous_cycle": (

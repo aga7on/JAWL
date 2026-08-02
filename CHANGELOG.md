@@ -3,6 +3,29 @@
 Все значимые изменения в проекте JAWL фиксируются в этом файле. Формат базируется на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/).
 
 
+## [Unreleased] - 2026-08-02
+
+### Added
+- **Provider-neutral LLM-контракт**: введены типизированные `LLMRequest`, `LLMMessage`, `LLMToolDefinition`, `LLMResult`, `LLMToolCall`, `LLMUsage` и классифицированный `ProviderError`. Ядро агента (ReAct, Durable Goal, ToT, Subconscious, Swarm) больше не видит HTTP-поверхность конкретного вендора.
+- **`OpenAICompatibleProvider`**: адаптер стандартного Chat Completions API с настраиваемыми `base_url`/`api_key`/`model`, ролями system/user/assistant/tool, `stream=true/false`, нативными `tools`/`tool_choice`, учётом usage, таймаутами, отменой, обработкой `Retry-After` и классификацией 400/401/403/408/409/429/5xx. Не зависит ни от одного QWB-эндпоинта.
+- **Capability profile**: `native_tools`, `json_schema`, `vision`, `video`, `image_generation`, `reasoning`, `context_window`, `streaming`, `server_side_conversation`. Критические возможности никогда не выводятся из имени модели: незаявленная возможность считается отсутствующей.
+- **Автопоиск локальных рантаймов**: `src/l3_agent/llm/providers/discovery.py` сканирует Ollama и LM Studio, читает реальные метаданные (`/api/show`, `/api/v0/models`), определяет заявленные возможности, размер, квантизацию и контекст, предлагает лучшую модель для кодинга и подбирает совместимый tool transport.
+- **CLI-выбор модели**: для любого эндпоинта и ключа список моделей подтягивается из настоящего `/v1/models` с ручным вводом как запасным вариантом; профиль сохраняет весь список и заявленные возможности.
+- **Provider contract suite**: общий контракт для детерминированного fake-провайдера, QWB и стандартного адаптера, плюс отдельный набор поверх настоящего OpenAI-совместимого HTTP-сервера (реальные сокеты, SSE, коды ответов) на текст, tool call, JSON-план, стриминг, отмену, ретраи, битые ответы, бюджет контекста и usage.
+- **Живые smoke-тесты**: `test_live_provider_goal.py` и `test_live_qwb_goal.py` прогоняют один и тот же сценарий Durable Goal — правка реального проекта, запуск его тестов, checkpoint, потеря provider-сессии и завершение только при наличии verification evidence.
+
+### Changed
+- **QWB стал опциональным адаптером**: lane continuity, provider rebase, thinking transport, обработка пустых ответов, диагностика ротации аккаунтов, `CHAT_NOT_FOUND` и медиа-расширения полностью изолированы в `QWBProvider`. Формат памяти и философия ReAct/Goal/личности не изменены.
+- **Раздельные бюджеты ретраев**: `transport`, `provider`, `invalid_response` и `tool_protocol` считаются независимо, с собственными лимитами и телеметрией в `retry_counters`. Детерминированные ошибки конфигурации не ретраятся.
+- **Provider session — только оптимизация**: источником истины остаётся JAWL. Потеря provider-сессии не теряет прогресс Goal; статический контекст хешируется, динамический строго бюджетируется.
+- **Tool transport**: `wrapper`/`hybrid` мигрируют в `json_envelope`/`auto`. JSON action parser остаётся полноценным независимым режимом.
+- **CLI**: экран LLM Providers показывает провайдер, возможности, health и латентность, позволяет безопасно переключаться без ручной правки YAML; секреты пишутся только в `.env`.
+
+### Fixed
+- **`tool_protocol_error` от QWB** больше не попадает в общий бюджет `provider`, а расходует отдельный бюджет починки tool-протокола, как и задумано политикой ретраев.
+- **Разбор имён моделей** выполняется по границам токенов, поэтому `gemma-4-12b-coder-fable5-composer2.5-v1` больше не принимается за семейство эмбеддингов `e5`.
+
+
 ## [0.16.1.1-beta] - 2026-05-21
 
 ### Added

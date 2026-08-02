@@ -25,6 +25,7 @@ from src.cli.widgets.ui import (
 )
 from src.instances.manager import InstanceManager
 from src.instances.paths import get_instance_paths
+from src.utils.settings import load_config
 
 
 ROOT_DIR = get_instance_paths().project_root
@@ -55,23 +56,38 @@ def _render(manager: InstanceManager) -> None:
     table.add_column("Recovery")
 
     default_paths = get_instance_paths()
-    default_pid = None
-    if default_paths.pid_file.is_file():
+    if default_paths.legacy_default:
+        default_pid = None
+        if default_paths.pid_file.is_file():
+            try:
+                candidate = int(default_paths.pid_file.read_text().strip())
+                if psutil.pid_exists(candidate):
+                    default_pid = candidate
+            except (OSError, ValueError):
+                pass
         try:
-            candidate = int(default_paths.pid_file.read_text().strip())
-            if psutil.pid_exists(candidate):
-                default_pid = candidate
-        except (OSError, ValueError):
-            pass
-    table.add_row(
-        "default",
-        "legacy",
-        "[green]running[/green]" if default_pid else "stopped",
-        str(default_pid or "—"),
-        "profile config",
-        "profile config",
-        "legacy control",
-    )
+            settings, interfaces = load_config()
+            default_name = settings.identity.agent_name
+            default_model = settings.llm.main_model
+            if interfaces.telegram.telethon.enabled:
+                default_telegram = "telethon"
+            elif interfaces.telegram.aiogram.enabled:
+                default_telegram = "aiogram"
+            else:
+                default_telegram = "disabled"
+        except Exception:
+            default_name = "Primary"
+            default_model = "unknown"
+            default_telegram = "unknown"
+        table.add_row(
+            f"{default_name} [default] · Primary",
+            "running" if default_pid else "stopped",
+            "[green]running[/green]" if default_pid else "stopped",
+            str(default_pid or "—"),
+            default_model,
+            default_telegram,
+            "manual",
+        )
 
     for item in manager.list_status():
         profile = item["profile"]
@@ -259,21 +275,46 @@ def _profile_actions(manager: InstanceManager, instance_id: str) -> None:
         action = questionary.select(
             "Instance action:",
             choices=[
-                questionary.Choice("▶ Start / clear quarantine", "start"),
-                questionary.Choice("■ Graceful stop", "stop"),
-                questionary.Choice("↻ Restart", "restart"),
-                questionary.Choice("💬 Open this agent's chat", "chat"),
-                questionary.Choice("📋 Open this agent's logs", "logs"),
                 questionary.Choice(
-                    "⚙ Open scoped JAWL menu/config/goals", "menu"
+                    "▶ Start / clear quarantine",
+                    "start",
+                    shortcut_key="s",
                 ),
-                questionary.Choice("📁 Open profile directory", "folder"),
-                questionary.Choice("Tune lifecycle/profile", "edit"),
-                questionary.Choice("Archive stopped profile", "archive"),
-                questionary.Choice("✕ Delete profile permanently", "delete"),
-                questionary.Choice("← Back", "back"),
+                questionary.Choice(
+                    "■ Graceful stop", "stop", shortcut_key="x"
+                ),
+                questionary.Choice("↻ Restart", "restart", shortcut_key="r"),
+                questionary.Choice(
+                    "💬 Open this agent's chat", "chat", shortcut_key="c"
+                ),
+                questionary.Choice(
+                    "📋 Open this agent's logs", "logs", shortcut_key="l"
+                ),
+                questionary.Choice(
+                    "⚙ Open scoped JAWL menu/config/goals",
+                    "menu",
+                    shortcut_key="m",
+                ),
+                questionary.Choice(
+                    "📁 Open profile directory", "folder", shortcut_key="f"
+                ),
+                questionary.Choice(
+                    "Tune lifecycle/profile", "edit", shortcut_key="t"
+                ),
+                questionary.Choice(
+                    "Archive stopped profile", "archive", shortcut_key="a"
+                ),
+                questionary.Choice(
+                    "✕ Delete profile permanently",
+                    "delete",
+                    shortcut_key="d",
+                ),
+                questionary.Choice("← Back", "back", shortcut_key="b"),
             ],
             style=get_custom_style(),
+            use_shortcuts=True,
+            use_jk_keys=False,
+            qmark="",
         ).ask()
         if not action or action == "back":
             return
@@ -371,8 +412,141 @@ def _profile_actions(manager: InstanceManager, instance_id: str) -> None:
             wait_for_enter()
 
 
+def _local_agent_actions() -> None:
+    """Present the current console's agent with one consistent mental model."""
+
+    from src.cli.screens.agent_control import (
+        _is_agent_running,
+        start_agent_screen,
+        stop_agent_screen,
+    )
+
+    paths = get_instance_paths()
+    while True:
+        draw_header()
+        running = _is_agent_running()
+        pid = None
+        if running and paths.pid_file.is_file():
+            try:
+                candidate = int(paths.pid_file.read_text().strip())
+                if psutil.pid_exists(candidate):
+                    pid = candidate
+            except (OSError, ValueError):
+                pass
+        try:
+            settings, interfaces = load_config()
+            name = settings.identity.agent_name
+            model = settings.llm.main_model
+            telegram = (
+                "telethon"
+                if interfaces.telegram.telethon.enabled
+                else "aiogram"
+                if interfaces.telegram.aiogram.enabled
+                else "disabled"
+            )
+        except Exception:
+            name, model, telegram = "Primary", "unknown", "unknown"
+
+        role = "Primary" if paths.legacy_default else "Current"
+        console.print(
+            Panel(
+                f"State: {'[green]running[/green]' if running else '[dim]stopped[/dim]'}"
+                f" | PID: {pid or '—'}\n"
+                f"Model: {model} | Telegram: {telegram}\n"
+                f"Private data: {paths.data_dir}\n"
+                f"Shared sandbox: {paths.sandbox_dir}",
+                title=f"{name} [{paths.instance_id}] · {role}",
+                border_style="cyan",
+            )
+        )
+
+        choices = []
+        if running:
+            choices.extend(
+                [
+                    questionary.Choice(
+                        "■ Graceful stop", "stop", shortcut_key="s"
+                    ),
+                    questionary.Choice(
+                        "↻ Restart", "restart", shortcut_key="r"
+                    ),
+                ]
+            )
+        else:
+            choices.append(
+                questionary.Choice("▶ Start", "start", shortcut_key="s")
+            )
+        choices.extend(
+            [
+                questionary.Choice(
+                    "💬 Open chat", "chat", shortcut_key="c"
+                ),
+                questionary.Choice(
+                    "◎ Work & Goals", "goals", shortcut_key="g"
+                ),
+                questionary.Choice(
+                    "📋 Open logs", "logs", shortcut_key="l"
+                ),
+                questionary.Choice(
+                    "≡ Runtime diagnostics", "runtime", shortcut_key="d"
+                ),
+                questionary.Choice(
+                    "⚙ Configure", "setup", shortcut_key="o"
+                ),
+                questionary.Choice(
+                    "📁 Open profile directory", "folder", shortcut_key="f"
+                ),
+                questionary.Choice("← Back", "back", shortcut_key="b"),
+            ]
+        )
+        action = questionary.select(
+            f"{role} agent action:",
+            choices=choices,
+            style=get_custom_style(),
+            use_shortcuts=True,
+            use_jk_keys=False,
+            qmark="",
+        ).ask()
+        if action in {None, "back"}:
+            return
+        if action == "start":
+            start_agent_screen()
+        elif action == "stop":
+            stop_agent_screen()
+        elif action == "restart":
+            stop_agent_screen()
+            if not _is_agent_running():
+                start_agent_screen()
+        elif action == "chat":
+            if running:
+                launch_in_new_window("--terminal")
+            else:
+                print_error("Start the primary agent before opening chat.")
+                wait_for_enter()
+        elif action == "logs":
+            launch_in_new_window("--logs-main")
+        elif action == "goals":
+            from src.cli.screens.goals import goals_screen
+
+            goals_screen()
+        elif action == "runtime":
+            from src.cli.screens.runtime import runtime_screen
+
+            runtime_screen()
+        elif action == "setup":
+            from src.cli.screens.setup_wizard import setup_wizard_screen
+
+            setup_wizard_screen()
+        elif action == "folder":
+            if os.name == "nt":
+                os.startfile(paths.instance_home)  # type: ignore[attr-defined]
+            else:
+                print_info(f" {paths.instance_home}")
+
+
 def instances_screen() -> None:
     manager = _manager()
+    local_paths = get_instance_paths()
     try:
         manager.ensure_supervisor()
     except Exception as exc:
@@ -383,19 +557,35 @@ def instances_screen() -> None:
         draw_header()
         _render(manager)
         action = questionary.select(
-            "Multi-instance action:",
+            "Agents:",
             choices=[
-                questionary.Choice("＋ Create named agent", "create"),
-                questionary.Choice("Manage existing agent", "manage"),
-                questionary.Choice("Combined log tails", "logs"),
-                questionary.Choice("Refresh", "refresh"),
-                questionary.Choice("← Back", "back"),
+                questionary.Choice(
+                    "Primary agent" if local_paths.legacy_default else "Current agent",
+                    "local",
+                    shortcut_key="p",
+                ),
+                questionary.Choice(
+                    "Manage named agent", "manage", shortcut_key="a"
+                ),
+                questionary.Choice(
+                    "＋ Create named agent", "create", shortcut_key="n"
+                ),
+                questionary.Choice(
+                    "Combined log tails", "logs", shortcut_key="l"
+                ),
+                questionary.Choice("Refresh", "refresh", shortcut_key="r"),
+                questionary.Choice("← Back", "back", shortcut_key="b"),
             ],
             style=get_custom_style(),
+            use_shortcuts=True,
+            use_jk_keys=False,
+            qmark="",
         ).ask()
         if not action or action == "back":
             return
-        if action == "create":
+        if action == "local":
+            _local_agent_actions()
+        elif action == "create":
             _create(manager)
         elif action == "manage":
             selected = _choose_profile(manager)

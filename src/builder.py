@@ -23,6 +23,11 @@ from src.l2_interfaces.initializer import initialize_l2_interfaces
 from src.l3_agent.llm.client import LLMClient
 from src.l3_agent.llm.api_keys.rotator import APIKeyRotator
 from src.l3_agent.llm.executor import LLMExecutor
+from src.l3_agent.llm.providers.factory import (
+    build_llm_provider,
+    retry_policy_from_config,
+    validate_provider_startup,
+)
 from src.l3_agent.prompt.builder import PromptBuilder
 from src.l3_agent.context.builder import ContextBuilder
 from src.l3_agent.context.registry import ContextRegistry, ContextSection
@@ -305,11 +310,35 @@ class SystemBuilder:
         sub_llm_api_keys = env_vars.get("SUB_LLM_API_KEYS", [])
         sub_llm_api_url = env_vars.get("SUB_LLM_API_URL", "")
         proxy_url = env_vars.get("PROXY_URL")
+        provider_config = self.container.settings.llm.provider
+        validate_provider_startup(
+            provider_config,
+            api_url=str(llm_api_url or ""),
+            api_keys=list(llm_api_keys or []),
+            model=self.container.settings.llm.main_model,
+            tool_transport=self.container.settings.llm.tool_transport,
+        )
 
         rotator = APIKeyRotator(keys=llm_api_keys)
         self.container.llm_client = LLMClient(
-            api_url=llm_api_url, api_keys_rotator=rotator, proxy_url=proxy_url
+            api_url=llm_api_url,
+            api_keys_rotator=rotator,
+            proxy_url=proxy_url,
+            connect_timeout=provider_config.connect_timeout_seconds,
+            read_timeout=provider_config.read_timeout_seconds,
+            write_timeout=provider_config.write_timeout_seconds,
+            pool_timeout=provider_config.pool_timeout_seconds,
         )
+        self.container.llm_provider = build_llm_provider(
+            provider_config,
+            self.container.llm_client,
+        )
+        if self.container.goal_manager is not None:
+            self.container.goal_manager.set_provider_capabilities(
+                server_side_conversation=(
+                    self.container.llm_provider.capabilities.server_side_conversation
+                )
+            )
 
         if sub_llm_api_keys:
             main_logger.info("[System] Found dedicated keys for subagents (Swarm).")
@@ -318,9 +347,27 @@ class SystemBuilder:
                 api_url=sub_llm_api_url or "",
                 api_keys_rotator=sub_rotator,
                 proxy_url=proxy_url,
+                connect_timeout=provider_config.connect_timeout_seconds,
+                read_timeout=provider_config.read_timeout_seconds,
+                write_timeout=provider_config.write_timeout_seconds,
+                pool_timeout=provider_config.pool_timeout_seconds,
+            )
+            self.container.sub_llm_provider = build_llm_provider(
+                provider_config,
+                self.container.sub_llm_client,
             )
         else:
             self.container.sub_llm_client = self.container.llm_client
+            self.container.sub_llm_provider = self.container.llm_provider
+
+        effective_tool_transport = self.container.llm_provider.resolve_tool_transport(
+            self.container.settings.llm.tool_transport
+        )
+        main_logger.info(
+            f"[LLM] Provider: {self.container.llm_provider.name}; "
+            f"tool transport: {effective_tool_transport}; "
+            f"capabilities: {self.container.llm_provider.capabilities.public()}."
+        )
 
         prompt_builder = PromptBuilder(
             prompt_dir=self.container.prompt_dir,
@@ -333,7 +380,7 @@ class SystemBuilder:
             tot_enabled=self.system_config.tree_of_thoughts.enabled,
             subconscious_enabled=self.system_config.subconscious.enabled,
             hypotheses_enabled=self.system_config.db.sql.hypotheses.enabled,
-            tool_transport=self.container.settings.llm.tool_transport,
+            tool_transport=effective_tool_transport,
         )
 
         rag_memories = RAGMemories(
@@ -361,15 +408,24 @@ class SystemBuilder:
             agent_state=self.container.agent_state,
             registry=self.container.context_registry,
             subconscious_config=self.system_config.subconscious,
-            tool_transport=self.container.settings.llm.tool_transport,
+            tool_transport=effective_tool_transport,
             budget_config=self.system_config.context_depth.budget,
             hooks=self.container.lifecycle_hooks,
             goal_manager=self.container.goal_manager,
         )
 
         token_tracker = TokenTracker()
-        main_llm_executor = LLMExecutor(self.container.llm_client, token_tracker)
-        sub_llm_executor = LLMExecutor(self.container.sub_llm_client, token_tracker)
+        retry_policy = retry_policy_from_config(provider_config)
+        main_llm_executor = LLMExecutor(
+            self.container.llm_provider,
+            token_tracker,
+            retry_policy=retry_policy,
+        )
+        sub_llm_executor = LLMExecutor(
+            self.container.sub_llm_provider,
+            token_tracker,
+            retry_policy=retry_policy,
+        )
 
         tot_generator = None
         if self.system_config.tree_of_thoughts.enabled:
@@ -411,12 +467,12 @@ class SystemBuilder:
             sql_ticks=self.container.sql.ticks,
             vector_manager=self.container.vector,
             tools=lambda: build_tools_schema(
-                transport=self.container.settings.llm.tool_transport,
+                transport=effective_tool_transport,
                 native_prefixes=self.container.settings.llm.native_tool_prefixes,
                 native_limit=self.container.settings.llm.native_tool_limit,
                 subconscious_config=self.system_config.subconscious,
             ),
-            tool_transport=self.container.settings.llm.tool_transport,
+            tool_transport=effective_tool_transport,
             thinking_policy=self.container.settings.llm.thinking_policy,
             llm_invalid_request_retries=(
                 self.container.settings.llm.invalid_request_retries

@@ -9,6 +9,8 @@ is added separately in the 'context/builder.py' module.
 from pathlib import Path
 from typing import Literal
 
+from src.l3_agent.llm.providers.contracts import normalize_tool_transport
+
 
 class PromptBuilder:
     """
@@ -28,7 +30,7 @@ class PromptBuilder:
         tot_enabled: bool = False,
         subconscious_enabled: bool = False,
         hypotheses_enabled: bool = False,
-        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
+        tool_transport: str = "json_envelope",
     ) -> None:
         """
         Initializes the builder.
@@ -59,7 +61,7 @@ class PromptBuilder:
         self.tot_enabled = tot_enabled
         self.subconscious_enabled = subconscious_enabled
         self.hypotheses_enabled = hypotheses_enabled
-        self.tool_transport = tool_transport
+        self.tool_transport = normalize_tool_transport(tool_transport)
 
     def _gather_markdown(self, sub_folder: Literal["personality", "system", "custom"]) -> str:
         """
@@ -84,9 +86,11 @@ class PromptBuilder:
             f for f in target_dir.rglob("*.md") if not f.name.endswith(".example.md")
         ]
         protocol_files = {
-            "wrapper": "FUNCTION_CALL.md",
+            "json_envelope": "FUNCTION_CALL.md",
             "native": "FUNCTION_CALL_NATIVE.md",
-            "hybrid": "FUNCTION_CALL_HYBRID.md",
+            # ``auto`` is normally resolved by the selected provider before
+            # prompt construction. Keep a safe mixed fallback for embedders.
+            "auto": "FUNCTION_CALL_HYBRID.md",
         }
         selected_protocol = protocol_files[self.tool_transport]
         valid_files = [

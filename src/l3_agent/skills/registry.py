@@ -50,7 +50,7 @@ _REGISTRY: Dict[str, Dict[str, Any]] = {}
 _NATIVE_TOOL_INDEX: Dict[str, str] = {}
 _ACTION_ENGINE = ActionExecutionEngine()
 _SKILL_PARAMETER_ALIASES: Dict[str, Dict[str, str]] = {
-    # Qwen frequently uses the generic chat field name even after discovering
+    # Models frequently use the generic chat field name even after discovering
     # the exact terminal signature. Keep the public schema canonical while
     # repairing this one unambiguous transport-level synonym.
     "HostTerminalMessages.send_message_to_terminal": {"message": "text"},
@@ -377,25 +377,25 @@ def resolve_native_tool_name(name: str) -> str:
 
 
 def build_tools_schema(
-    transport: str = "wrapper",
+    transport: str = "json_envelope",
     native_prefixes: Optional[List[str]] = None,
     native_limit: int = 64,
     subconscious_config: Optional[SubconsciousConfig] = None,
 ) -> List[Dict[str, Any]]:
-    """Build wrapper, native, or hybrid provider schemas on demand."""
+    """Build JSON-envelope or native provider schemas on demand."""
 
     from src.l3_agent.skills.schema import ACTION_SCHEMA
+    from src.l3_agent.llm.providers.contracts import normalize_tool_transport
 
-    if transport not in {"wrapper", "native", "hybrid"}:
-        raise ValueError("tool transport must be wrapper, native, or hybrid")
-    wrapper = list(ACTION_SCHEMA) if transport in {"wrapper", "hybrid"} else []
+    transport = normalize_tool_transport(transport)
+    wrapper = list(ACTION_SCHEMA) if transport in {"json_envelope", "auto"} else []
     native = (
         get_native_tools_schema(
             prefixes=native_prefixes,
             limit=native_limit,
             subconscious_config=subconscious_config,
         )
-        if transport in {"native", "hybrid"}
+        if transport in {"native", "auto"}
         else []
     )
     return wrapper + native

@@ -57,9 +57,11 @@ The project is divided into 4 areas of responsibility:
 ## 🐝 Swarm (Multi-Agent Subsystem)
 
 For several independent long-lived main agents with separate memory, goals,
-Telegram sessions and logs, use the **Multi-Instance Manager** from the main
-menu. It keeps one shared repository/sandbox while isolating each agent's
-private runtime. See [the operator guide](docs/MULTI_INSTANCE_MANAGER_RU.md).
+Telegram sessions and logs, open **Agents** from the state-first control
+center. The dashboard shows every agent, QWB account health, active Goals,
+managed process sessions, and conditions that need operator attention. It
+keeps one shared repository/sandbox while isolating each agent's private
+runtime. See [the operator guide](docs/MULTI_INSTANCE_MANAGER_RU.md).
 JAWL supports scaling via delegation. The Main Agent (Orchestrator) can spawn background **subagents** for the parallel execution of resource-intensive tasks.
 
 ### Why is this needed?
@@ -79,6 +81,8 @@ Each role has its own narrow system prompt and strictly limited access to interf
 
 ## ⚙️ Key Features
 
+* **Provider-Neutral LLM Layer:** JAWL talks to any OpenAI-compatible Chat Completions endpoint — Ollama, LM Studio, vLLM, llama.cpp or a cloud vendor — through one typed contract (`LLMRequest`/`LLMResult`). The Qwen Web bridge (QWB) is kept as an optional adapter with its own extensions (lane continuity, thinking transport, account rotation), but nothing QWB-specific leaks into the agent core. Switch providers from **CLI → LLM Providers** without hand-editing YAML; secrets stay in `.env`. See [providers.md](docs/providers.md).
+* **Local Model Auto-Discovery:** The provider screen scans Ollama and LM Studio, reads each model's *declared* capabilities (tools, vision, reasoning, context window), suggests the best local coding model and saves a matching capability profile. Capabilities are never inferred from a model name: anything a runtime does not declare stays off, so JAWL falls back to its own JSON action plan instead of sending native tools to a model that cannot honour them. Any endpoint or API key also gets a **model picker** populated from its real `/v1/models` list.
 * **Total Access Control:** Agent permissions are managed in a few clicks via the CLI menu. You configure in detail what the agent has access to: from enabling specific interfaces (Telegram, GitHub) to the depth of intervention. Host OS privileges range from a locked `SANDBOX` to full `ROOT` access. Meta-privileges for configuring the system itself range from a safe minimum (`SAFE`) to self-modification rights (`CREATOR`). Automatic protection of `.env` files is built in at the code level.
 * **Fractal Tree of Thoughts Generation:** You can configure the geometry of the simulation tree (e.g., 3 macro-strategies, each with 2 nested scenarios and 2 event simulations). The model will generate this tree, weigh all the pros and cons for each node, and only then will the main agent choose the ideal path. Supports automatic generation every N steps, manual triggering (`deep_think`) by the agent, or a hybrid mode.
 * **Background Subconscious:** The agent is freed from the need to spend expensive time (and powerful model tokens) on routine database management. A dedicated subsystem running on fast and cheap LLMs quietly wakes up on a schedule in the background. It performs memory consolidation (moving important facts from temporary logs to long-term Vector DB), behavior reflection, and information hygiene (deleting duplicates and trash).

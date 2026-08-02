@@ -66,6 +66,8 @@ class SystemContainer:
         # L3 Agent
         self.llm_client: Optional[LLMClient] = None
         self.sub_llm_client: Optional[LLMClient] = None
+        self.llm_provider = None
+        self.sub_llm_provider = None
         self.heartbeat: Optional[Heartbeat] = None
         self.context_registry: Optional[ContextRegistry] = None
         self.subconscious_orchestrator: Optional[Any] = None

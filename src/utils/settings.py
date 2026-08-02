@@ -613,6 +613,71 @@ class IdentityConfig(BaseModel):
     agent_name: str = "Agent"
 
 
+class ProviderCapabilitiesConfig(BaseModel):
+    native_tools: bool
+    json_schema: bool
+    vision: bool
+    video: bool
+    image_generation: bool
+    reasoning: bool
+    context_window: int = Field(default=0, ge=0, le=10_000_000)
+    streaming: bool
+    server_side_conversation: bool
+
+
+class ProviderRetryConfig(BaseModel):
+    transport_retries: int = Field(default=1, ge=0, le=10)
+    provider_retries: int = Field(default=2, ge=0, le=10)
+    invalid_response_retries: int = Field(default=1, ge=0, le=10)
+    tool_protocol_retries: int = Field(default=1, ge=0, le=10)
+    base_delay_seconds: float = Field(default=1.0, ge=0, le=60)
+    max_delay_seconds: float = Field(default=8.0, ge=0, le=300)
+
+
+class LLMProviderConfig(BaseModel):
+    """Public non-secret provider selection and capability declaration."""
+
+    kind: Literal["qwb", "openai_compatible"] = "qwb"
+    display_name: str = Field(default="", max_length=100)
+    health_url: str = Field(default="", max_length=2000)
+    request_timeout_seconds: float | None = Field(
+        default=None, ge=1, le=7200
+    )
+    connect_timeout_seconds: float = Field(default=15, ge=1, le=300)
+    read_timeout_seconds: float | None = Field(default=None, ge=1, le=7200)
+    write_timeout_seconds: float = Field(default=120, ge=1, le=7200)
+    pool_timeout_seconds: float = Field(default=30, ge=1, le=300)
+    capabilities: ProviderCapabilitiesConfig | None = None
+    retry: ProviderRetryConfig = Field(default_factory=ProviderRetryConfig)
+
+    def resolved_capabilities(self) -> dict[str, object]:
+        if self.capabilities is not None:
+            return self.capabilities.model_dump()
+        if self.kind == "qwb":
+            return {
+                "native_tools": True,
+                "json_schema": True,
+                "vision": True,
+                "video": True,
+                "image_generation": True,
+                "reasoning": True,
+                "context_window": 262144,
+                "streaming": True,
+                "server_side_conversation": True,
+            }
+        return {
+            "native_tools": True,
+            "json_schema": True,
+            "vision": False,
+            "video": False,
+            "image_generation": False,
+            "reasoning": False,
+            "context_window": 0,
+            "streaming": True,
+            "server_side_conversation": False,
+        }
+
+
 class LLMConfig(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     main_model: str = "unknown"
@@ -624,7 +689,10 @@ class LLMConfig(BaseModel):
     thinking_policy: Literal[
         "provider_default", "always", "never", "first_step"
     ] = "provider_default"
-    tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper"
+    tool_transport: Literal[
+        "native", "json_envelope", "auto"
+    ] = "json_envelope"
+    provider: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
     native_tool_prefixes: list[str] = Field(
         default_factory=lambda: [
             "HostOSCoding",
@@ -634,6 +702,12 @@ class LLMConfig(BaseModel):
         ]
     )
     native_tool_limit: int = Field(default=64, ge=1, le=128)
+
+    @field_validator("tool_transport", mode="before")
+    @classmethod
+    def migrate_tool_transport(cls, value: object) -> object:
+        aliases = {"wrapper": "json_envelope", "hybrid": "auto"}
+        return aliases.get(str(value), value)
 
 
 class LoggingConfig(BaseModel):

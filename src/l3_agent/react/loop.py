@@ -31,6 +31,7 @@ from src.l1_databases.sql.management.ticks import SQLTicks
 from src.l1_databases.vector.manager import VectorManager
 
 from src.l3_agent.llm.executor import LLMExecutor
+from src.l3_agent.llm.providers.contracts import normalize_tool_transport
 from src.l3_agent.prompt.builder import PromptBuilder
 from src.l3_agent.context.builder import ContextBuilder
 
@@ -73,7 +74,7 @@ class ReactLoop:
         vector_manager: VectorManager,
         tools: Union[list, Callable[[], list]],
         event_bus: EventBus,
-        tool_transport: Literal["wrapper", "native", "hybrid"] = "wrapper",
+        tool_transport: str = "json_envelope",
         thinking_policy: Literal[
             "provider_default", "always", "never", "first_step"
         ] = "provider_default",
@@ -117,7 +118,7 @@ class ReactLoop:
         self.vector_manager = vector_manager
 
         self.tools = tools
-        self.tool_transport = tool_transport
+        self.tool_transport = normalize_tool_transport(tool_transport)
         self.thinking_policy = thinking_policy
         self.cooldown_sec = cooldown_sec
         self.llm_max_retries = max(1, llm_max_retries)
@@ -192,7 +193,15 @@ class ReactLoop:
         *,
         fast_profile: bool,
     ) -> str:
-        """Return a durable Goal lane or an isolated short-command lane."""
+        """Return an optional provider-session lane used only as a cache."""
+
+        provider = getattr(self.executor, "provider", None)
+        capabilities = getattr(provider, "capabilities", None)
+        server_side = getattr(
+            capabilities, "server_side_conversation", True
+        )
+        if server_side is False:
+            return ""
 
         goal_lane = self.goal_manager.lane_id if self.goal_manager is not None else ""
         if not fast_profile:
@@ -229,7 +238,11 @@ class ReactLoop:
         if fast_profile:
             agent_logger.info(
                 "[Context] Explicit fast command profile enabled; "
-                "using an isolated warm provider lane."
+                + (
+                    "using an isolated warm provider lane."
+                    if provider_session_id
+                    else "provider has no server-side conversation state."
+                )
             )
 
         self._realtime_events.clear()
@@ -258,6 +271,16 @@ class ReactLoop:
 
             prompt = self.prompt_builder.build()
             cycle_concluded = False
+            tool_protocol_repairs = 0
+            retry_policy = getattr(self.executor, "retry_policy", None)
+            configured_repair_limit = getattr(
+                retry_policy, "tool_protocol_retries", 1
+            )
+            tool_protocol_repair_limit = (
+                configured_repair_limit
+                if isinstance(configured_repair_limit, int)
+                else 1
+            )
 
             # ==================================================================
             # MAIN LOOP
@@ -392,7 +415,32 @@ class ReactLoop:
                 parsed_response, error_msg = self._parse_response(raw_answer)
                 if error_msg:
                     await self._handle_protocol_error(raw_answer, error_msg)
+                    tool_protocol_repairs += 1
+                    repair_metrics = getattr(
+                        self.executor, "last_call_metrics", None
+                    )
+                    if isinstance(repair_metrics, dict):
+                        repair_metrics["tool_protocol_repairs"] = (
+                            tool_protocol_repairs
+                        )
+                        repair_metrics["tool_protocol_repair_limit"] = (
+                            tool_protocol_repair_limit
+                        )
                     if budget_blocked:
+                        cycle_concluded = True
+                        break
+                    if tool_protocol_repairs > tool_protocol_repair_limit:
+                        self.last_cycle_outcome["status"] = "tool_protocol_error"
+                        if self.goal_manager is not None:
+                            await self.goal_manager.finish_cycle(
+                                state="failed",
+                                summary=(
+                                    "Provider output exceeded the bounded tool "
+                                    "protocol repair budget; Goal remains active "
+                                    "for a fresh continuation."
+                                ),
+                                wake_after_seconds=30,
+                            )
                         cycle_concluded = True
                         break
                     self.agent_state.next_step()

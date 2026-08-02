@@ -25,7 +25,7 @@ class ActionCall(BaseModel):
     @field_validator("depends_on", "resources", mode="before")
     @classmethod
     def _coerce_string_list(cls, value: Any) -> Any:
-        """Repair Qwen's common single-string form for list-valued fields."""
+        """Repair a common single-string form for list-valued fields."""
 
         if value is None:
             return []
@@ -525,7 +525,7 @@ def parse_llm_json(
             parsed_response = None
             error_msg = "Embedded empty-actions example is not a terminal response."
 
-    # Attempt 2.5: Qwen web may leak format deliberation before emitting a
+    # Attempt 2.5: a provider may leak format deliberation before emitting a
     # valid bare JAWL payload inside <tool_call>. Decode every bounded object and
     # prefer the last structurally complete action payload. Embedded empty
     # actions are not accepted because a hypothetical example must not end a
