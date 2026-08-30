@@ -45,6 +45,7 @@ class ActionOutcome:
     is_success: bool
     message: str
     duration_ms: float = 0.0
+    terminate_loop: bool = False
 
 
 class ActionExecutionEngine:
@@ -285,6 +286,7 @@ class ActionExecutionEngine:
             "is_success": outcome.is_success,
             "message": outcome.message,
             "duration_ms": outcome.duration_ms,
+            "terminate_loop": outcome.terminate_loop,
         }
 
     def _ensure_loop_state(self) -> None:
@@ -378,6 +380,9 @@ class ActionExecutionEngine:
                         message=str(getattr(result, "message", result)),
                         duration_ms=round(
                             (time.perf_counter() - started) * 1000, 1
+                        ),
+                        terminate_loop=bool(
+                            getattr(result, "terminate_loop", False)
                         ),
                     )
                     result_phase = (

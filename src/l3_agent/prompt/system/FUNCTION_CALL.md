@@ -49,7 +49,6 @@ observation/reasoning/reflection. Legacy payloads remain valid outside Goal Mode
 
 ### Arguments Example for `execute_skill` tool:
 
-```json
 {
   "observation": "The user requested a server status check. I do not have recent ping data in my context.",
   "reasoning": "I need to verify network availability before attempting database diagnostics.",
@@ -64,7 +63,6 @@ observation/reasoning/reflection. Legacy payloads remain valid outside Goal Mode
     }
   ]
 }
-```
 
 * This example serves strictly as a structural reference for JSON payload formatting. 
 * While the structure is mandatory, the linguistic style, tone, and specific logic within these fields must be governed by your core personality and current environmental data.

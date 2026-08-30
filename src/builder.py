@@ -371,6 +371,7 @@ class SystemBuilder:
 
         prompt_builder = PromptBuilder(
             prompt_dir=self.container.prompt_dir,
+            language=self.container.settings.llm.language,
             drives_enabled=self.system_config.db.sql.drives.enabled,
             tasks_enabled=self.system_config.db.sql.tasks.enabled,
             traits_enabled=self.system_config.db.sql.personality_traits.enabled,
@@ -420,11 +421,13 @@ class SystemBuilder:
             self.container.llm_provider,
             token_tracker,
             retry_policy=retry_policy,
+            min_call_interval_sec=self.container.settings.llm.min_call_interval_sec,
         )
         sub_llm_executor = LLMExecutor(
             self.container.sub_llm_provider,
             token_tracker,
             retry_policy=retry_policy,
+            min_call_interval_sec=self.container.settings.llm.min_call_interval_sec,
         )
 
         tot_generator = None

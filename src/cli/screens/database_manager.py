@@ -39,12 +39,42 @@ VECTOR_DB_DIR = LOCAL_DATA_DIR / "vector" / "db"
 GRAPH_DB_DIR = LOCAL_DATA_DIR / "graph"
 
 INTERFACES_DIR = LOCAL_DATA_DIR / "interfaces"
+SANDBOX_DIR = ROOT_DIR / "sandbox"
 
 SETTINGS_FILE = INSTANCE_PATHS.config_dir / "settings.yaml"
 SETTINGS_EXAMPLE = INSTANCE_PATHS.config_dir / "settings.example.yaml"
 
 yaml = YAML()
 yaml.preserve_quotes = True
+
+
+def _clear_sandbox() -> None:
+    """
+    Cleans all files and user directories inside the sandbox/ folder.
+    Re-initializes required system subdirectories (_system/download, _system/.jawl_events)
+    and restores framework_api.py from templates.
+    """
+    if SANDBOX_DIR.exists():
+        for item in SANDBOX_DIR.iterdir():
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    # Recreate essential system subdirectories for sandbox
+    sys_dir = SANDBOX_DIR / "_system"
+    download_dir = sys_dir / "download"
+    events_dir = sys_dir / ".jawl_events"
+
+    download_dir.mkdir(parents=True, exist_ok=True)
+    events_dir.mkdir(parents=True, exist_ok=True)
+
+    template_api = ROOT_DIR / "src" / "utils" / "templates" / "framework_api.py"
+    if template_api.exists():
+        shutil.copy2(template_api, sys_dir / "framework_api.py")
 
 
 def _get_settings() -> dict:
@@ -672,9 +702,10 @@ def database_manager_screen() -> None:
             ),
             questionary.Choice(" ● Erase Database", "clean_graph"),
             questionary.Separator(" "),
-            questionary.Separator("[#] Interfaces Cache"),
+            questionary.Separator("[#] Interfaces & Sandbox Cache"),
             questionary.Choice(
-                " ● Clear cache (src/utils/local/data/interfaces/)", "clean_interfaces"
+                " ● Clear interfaces cache & sandbox (data/interfaces/ & sandbox/)",
+                "clean_interfaces",
             ),
             questionary.Separator(" "),
             questionary.Choice("[x] Exit to main menu", "exit"),
@@ -690,7 +721,6 @@ def database_manager_screen() -> None:
 
         if choice is None or choice == "exit":
             break
-
         if choice == "drives":
             _manage_drives_screen()
 
@@ -775,4 +805,21 @@ def database_manager_screen() -> None:
                     )
                 else:
                     print_info("Interfaces folder is already empty.")
+                wait_for_enter()
+
+
+        elif choice == "clean_interfaces":
+            if questionary.confirm(
+                "⚠️ Are you sure? This will wipe browser history, Telegram sessions, folder tracking configurations, custom dashboards, and all files in the sandbox/ agent directory.",
+                default=False,
+                qmark="",
+            ).ask():
+                if INTERFACES_DIR.exists():
+                    shutil.rmtree(INTERFACES_DIR, ignore_errors=True)
+
+                _clear_sandbox()
+
+                print_success(
+                    "All interfaces cache and sandbox contents were successfully cleared."
+                )
                 wait_for_enter()

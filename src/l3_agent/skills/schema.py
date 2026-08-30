@@ -482,6 +482,11 @@ def parse_llm_json(
     raw_answer: str, _depth: int = 0
 ) -> Tuple[Optional[AgentResponse], Optional[str]]:
     clean_answer = raw_answer.strip()
+    # Repair only a duplicated outer JSON wrapper sometimes emitted by gateways;
+    # escaped data inside the payload remains untouched.
+    if re.match(r"^\{\s*\{", clean_answer):
+        clean_answer = re.sub(r"^\{\s*\{", "{", clean_answer)
+        clean_answer = re.sub(r"\}\s*\}$", "}", clean_answer)
     json_str = ""
     json_start = -1
     json_end = -1
@@ -513,6 +518,10 @@ def parse_llm_json(
                 if parsed_response is None:
                     raise ValueError("Invalid Goal Protocol v2 payload.")
             else:
+                if isinstance(data, dict) and len(data) == 1:
+                    nested = next(iter(data.values()))
+                    if isinstance(nested, dict) and "actions" in nested:
+                        data = nested
                 parsed_response = AgentResponse(**data)
         except Exception as e:
             error_msg = str(e)
@@ -553,12 +562,7 @@ def parse_llm_json(
             if actions_list is None:
                 actions_raw = _extract_json_array(clean_answer)
                 if actions_raw:
-                    clean_actions = (
-                        actions_raw.replace('\\"', '"')
-                        .replace("\\'", "'")
-                        .replace("\\n", "\n")
-                    )
-                    actions_list = json.loads(clean_actions, strict=False)
+                    actions_list = json.loads(actions_raw, strict=False)
             if actions_list:
 
                 parsed_response = AgentResponse(

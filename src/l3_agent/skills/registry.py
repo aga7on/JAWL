@@ -36,14 +36,30 @@ class SkillResult:
 
     is_success: bool
     message: str
+    terminate_loop: bool = False
 
     @classmethod
-    def ok(cls, message: str) -> "SkillResult":
-        return cls(is_success=True, message=message)
+    def ok(cls, message: str, terminate_loop: bool = False) -> "SkillResult":
+        return cls(
+            is_success=True,
+            message=message,
+            terminate_loop=terminate_loop,
+        )
 
     @classmethod
     def fail(cls, message: str) -> "SkillResult":
-        return cls(is_success=False, message=message)
+        return cls(is_success=False, message=message, terminate_loop=False)
+
+
+class ExecutionResult(str):
+    """String-compatible action report with an optional cycle-stop signal."""
+
+    terminate_loop: bool
+
+    def __new__(cls, value: str, terminate_loop: bool = False):
+        result = super().__new__(cls, value)
+        result.terminate_loop = terminate_loop
+        return result
 
 
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
@@ -529,7 +545,7 @@ def get_skills_library(
 
 async def execute_skill(
     actions: List[ActionCall], logger: logging.Logger = agent_logger
-) -> str:
+) -> ExecutionResult:
     """
     Executes actions deterministically, with explicit opt-in parallelism.
 
@@ -538,7 +554,7 @@ async def execute_skill(
         logger: Destination logger (defaults to agent_logger).
     """
     if not actions:
-        return "Cycle completed: no actions provided."
+        return ExecutionResult("Cycle completed: no actions provided.")
 
     async def _runner(action: ActionCall) -> SkillResult:
         return await call_skill(action.tool_name, action.parameters, logger=logger)
@@ -552,7 +568,10 @@ async def execute_skill(
             f"  [action_id={outcome.action_id}; status={status}; "
             f"duration_ms={outcome.duration_ms:g}]"
         )
-    return "\n".join(report)
+    should_terminate = any(
+        getattr(outcome, "terminate_loop", False) for outcome in outcomes
+    )
+    return ExecutionResult("\n".join(report), terminate_loop=should_terminate)
 
 
 async def call_skill(

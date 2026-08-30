@@ -538,6 +538,17 @@ class ReactLoop:
                         continue
                 await self._execute_actions(thoughts, actions)
 
+                if getattr(
+                    self.agent_state.last_actions_result, "terminate_loop", False
+                ):
+                    self.last_cycle_outcome["status"] = "yielded"
+                    self.last_cycle_outcome["had_actions"] = True
+                    agent_logger.info(
+                        "[ReAct] Skill requested early cycle termination."
+                    )
+                    cycle_concluded = True
+                    break
+
                 if cycle_goal_id and self.goal_manager is not None:
                     cycle_goal = self.goal_manager.get(cycle_goal_id)
                     if cycle_goal is not None and cycle_goal.status != "active":

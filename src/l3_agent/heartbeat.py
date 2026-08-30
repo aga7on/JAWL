@@ -7,11 +7,11 @@ from the EventBus, and dynamically adjusting sleep intervals (Event Acceleration
 
 import asyncio
 import time
-from typing import Optional, Dict, Any, TYPE_CHECKING
+from typing import Optional, Dict, Any, Literal, TYPE_CHECKING
 
 from src.utils.logger import main_logger, agent_logger
 from src.utils.event.registry import EventLevel
-from src.utils.dtime import get_now_formatted
+from src.utils.dtime import get_now_formatted, seconds_to_duration_str
 from src.utils._tools import update_last_active_time
 from src.l3_agent.event_buffer import BoundedEventBuffer, EventBufferOutcome
 
@@ -22,6 +22,24 @@ if TYPE_CHECKING:
         EventAccelerationConfig,
         IdleHeartbeatBackoffConfig,
     )
+
+
+DEPTH_MULTIPLIERS: Dict[str, Dict[EventLevel, float]] = {
+    "deep": {
+        EventLevel.CRITICAL: 0.30,
+        EventLevel.HIGH: 0.80,
+        EventLevel.MEDIUM: 0.85,
+        EventLevel.LOW: 0.90,
+        EventLevel.BACKGROUND: 0.95,
+    },
+    "superficially": {
+        EventLevel.CRITICAL: 0.10,
+        EventLevel.HIGH: 0.70,
+        EventLevel.MEDIUM: 0.75,
+        EventLevel.LOW: 0.80,
+        EventLevel.BACKGROUND: 0.85,
+    },
+}
 
 
 class Heartbeat:
@@ -99,6 +117,40 @@ class Heartbeat:
 
         self._is_interrupted: bool = False
         self._deferred_wakeup: bool = False
+        self.active_multipliers: Dict[EventLevel, float] = {}
+        self.current_sleep_depth = "normal"
+        self._custom_sleep_active = False
+        self._reset_multipliers()
+
+    def _reset_multipliers(self) -> None:
+        """Restore configured event sensitivity after a one-shot sleep."""
+
+        self.active_multipliers = {
+            EventLevel.CRITICAL: self.accel_config.critical_multiplier,
+            EventLevel.HIGH: self.accel_config.high_multiplier,
+            EventLevel.MEDIUM: self.accel_config.medium_multiplier,
+            EventLevel.LOW: self.accel_config.low_multiplier,
+            EventLevel.BACKGROUND: self.accel_config.background_multiplier,
+        }
+        self.current_sleep_depth = "normal"
+
+    def set_custom_sleep(
+        self, duration_sec: int, depth: Literal["deep", "superficially"] = "deep"
+    ) -> None:
+        """Schedule one intentional sleep without letting Goal wakeups override it."""
+
+        duration_sec = max(1, int(duration_sec))
+        self._next_tick_time = time.time() + duration_sec
+        self.active_multipliers = DEPTH_MULTIPLIERS.get(
+            depth, DEPTH_MULTIPLIERS["deep"]
+        ).copy()
+        self.current_sleep_depth = depth if depth in DEPTH_MULTIPLIERS else "deep"
+        self._custom_sleep_active = True
+        agent_logger.info(
+            "[Heartbeat] Custom sleep mode engaged for "
+            f"{seconds_to_duration_str(duration_sec)} "
+            f"(depth: '{self.current_sleep_depth}')."
+        )
 
     def _enqueue_event(self, event_data: Dict[str, Any]) -> EventBufferOutcome:
         outcome = self._event_buffer.append(event_data)
@@ -193,7 +245,11 @@ class Heartbeat:
             )
 
     def answer_to_event(
-        self, level: EventLevel, event_name: str, payload: Optional[Dict[str, Any]] = None
+        self,
+        level: EventLevel,
+        event_name: str,
+        payload: Optional[Dict[str, Any]] = None,
+        requires_attention: bool = True,
     ) -> None:
         """
         Analyzes incoming events and schedules/accelerates wakeups.
@@ -216,22 +272,7 @@ class Heartbeat:
             "payload": payload,
         }
 
-        # Determine event level multiplier
-        multiplier = 1.0
-        if level == EventLevel.CRITICAL:
-            multiplier = self.accel_config.critical_multiplier
-
-        elif level == EventLevel.HIGH:
-            multiplier = self.accel_config.high_multiplier
-
-        elif level == EventLevel.MEDIUM:
-            multiplier = self.accel_config.medium_multiplier
-
-        elif level == EventLevel.LOW:
-            multiplier = self.accel_config.low_multiplier
-
-        elif level == EventLevel.BACKGROUND:
-            multiplier = self.accel_config.background_multiplier
+        multiplier = self.active_multipliers.get(level, 1.0)
 
         is_awake = self._active_react_task and not self._active_react_task.done()
 
@@ -246,7 +287,7 @@ class Heartbeat:
 
             # A zero multiplier may interrupt now, defer to a safe boundary, or
             # merely append the event, depending on explicit runtime policy.
-            if multiplier <= 0.01:
+            if multiplier <= 0.01 and requires_attention:
                 if active_policy == "defer":
                     outcome = self._enqueue_event(event_data)
                     queued_event = outcome.event or event_data
@@ -264,11 +305,12 @@ class Heartbeat:
                     )
                     return
 
-                self.react_loop.add_realtime_event(event_data)
-                agent_logger.info(
-                    f"[Heartbeat] Incoming event '{event_name}' ({level.name}) "
-                    "received during agent execution. Data appended to context."
-                )
+                if requires_attention:
+                    self.react_loop.add_realtime_event(event_data)
+                    agent_logger.info(
+                        f"[Heartbeat] Incoming event '{event_name}' ({level.name}) "
+                        "received during agent execution. Data appended to context."
+                    )
                 if active_policy == "append":
                     return
 
@@ -289,18 +331,20 @@ class Heartbeat:
                 return
 
             # Non-immediate events remain available to the next ReAct step.
-            self.react_loop.add_realtime_event(event_data)
-            agent_logger.info(
-                f"[Heartbeat] Incoming event '{event_name}' ({level.name}) "
-                "received during agent execution. Data appended to context."
-            )
+            if requires_attention:
+                self.react_loop.add_realtime_event(event_data)
+                agent_logger.info(
+                    f"[Heartbeat] Incoming event '{event_name}' ({level.name}) "
+                    "received during agent execution. Data appended to context."
+                )
             return
 
         # ---------------------------------------------------------------------
         # Logic for currently sleeping agent
         # ---------------------------------------------------------------------
 
-        self._enqueue_event(event_data)
+        if requires_attention:
+            self._enqueue_event(event_data)
 
         remaining = self._next_tick_time - now
 
@@ -377,6 +421,10 @@ class Heartbeat:
                             missed_events.pop(i)
                             break
 
+                woke_from_custom_sleep = self._custom_sleep_active
+                if woke_from_custom_sleep:
+                    self._custom_sleep_active = False
+                    self._reset_multipliers()
                 self._next_tick_time = time.time() + self.heartbeat_interval
                 self._deferred_wakeup = False
 
@@ -405,7 +453,7 @@ class Heartbeat:
                     )
                     await self._active_react_task
                     self._record_cycle_outcome(self._wake_reason, missed_events)
-                    if self.goal_manager is not None:
+                    if self.goal_manager is not None and not self._custom_sleep_active:
                         goal_delay = self.goal_manager.seconds_until_wakeup()
                         if goal_delay is not None:
                             self._next_tick_time = min(

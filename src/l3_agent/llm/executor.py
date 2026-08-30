@@ -48,6 +48,7 @@ class LLMExecutor:
         llm_client: LLMClient | LLMProvider,
         token_tracker: TokenTracker,
         retry_policy: RetryPolicy | None = None,
+        min_call_interval_sec: float = 0.0,
     ) -> None:
         """
         Args:
@@ -68,6 +69,12 @@ class LLMExecutor:
             self.llm = llm_client
         self.tracker = token_tracker
         self.retry_policy = retry_policy or RetryPolicy()
+        # A cadence can be configured for restrictive providers, but it stays
+        # disabled by default so interactive QWB work is not slowed down.
+        self.min_call_interval_sec = max(0.0, float(min_call_interval_sec))
+        self._last_call_time = 0.0
+        self._throttle_lock: asyncio.Lock | None = None
+        self._throttle_loop: asyncio.AbstractEventLoop | None = None
         self.last_call_metrics: Dict[str, Any] = {}
         self.last_result: LLMResult | None = None
 
@@ -212,6 +219,7 @@ class LLMExecutor:
             attempt += 1
             self.last_call_metrics["attempts"] = attempt
             try:
+                await self._enforce_min_call_interval(logger, log_prefix)
                 result = await self.provider.complete(request)
                 self.last_result = result
                 raw_answer = self._result_to_jawl_text(
@@ -351,6 +359,31 @@ class LLMExecutor:
     # -------------------------------------------------------------------------
     # Private Helpers
     # -------------------------------------------------------------------------
+
+    async def _enforce_min_call_interval(
+        self, logger: logging.Logger, log_prefix: str
+    ) -> None:
+        """Enforce one configured request cadence per executor and event loop."""
+
+        if self.min_call_interval_sec <= 0.0:
+            return
+        loop = asyncio.get_running_loop()
+        if self._throttle_loop is not loop:
+            self._throttle_loop = loop
+            self._throttle_lock = asyncio.Lock()
+            self._last_call_time = 0.0
+        assert self._throttle_lock is not None
+        async with self._throttle_lock:
+            now = time.time()
+            elapsed = now - self._last_call_time
+            if self._last_call_time and elapsed < self.min_call_interval_sec:
+                delay = self.min_call_interval_sec - elapsed
+                logger.info(
+                    f"{log_prefix} Throttling request for {delay:.2f}s "
+                    f"(min_call_interval_sec={self.min_call_interval_sec:g})."
+                )
+                await asyncio.sleep(delay)
+            self._last_call_time = time.time()
 
     @staticmethod
     def _retry_bucket(category: str) -> str:

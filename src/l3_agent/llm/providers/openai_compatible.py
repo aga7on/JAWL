@@ -60,6 +60,8 @@ class OpenAICompatibleProvider(LLMProvider):
             kwargs["tools"] = [tool.as_openai_dict() for tool in request.tools]
         if request.tool_choice is not None and "tools" in kwargs:
             kwargs["tool_choice"] = request.tool_choice
+        if request.tool_transport == "json_envelope" and self.capabilities.json_schema:
+            kwargs["response_format"] = {"type": "json_object"}
         return kwargs
 
     async def complete(self, request: LLMRequest) -> LLMResult:

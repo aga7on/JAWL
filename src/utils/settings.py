@@ -681,6 +681,8 @@ class LLMProviderConfig(BaseModel):
 class LLMConfig(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     main_model: str = "unknown"
+    language: str = "ru" 
+    min_call_interval_sec: float = Field(default=0.0, ge=0, le=3600)
     available_models: list[str] = Field(default_factory=list)
     is_multimodal: bool = False
     temperature: float = 1.0
