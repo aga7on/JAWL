@@ -26,10 +26,14 @@ def source_config(real, example):
     Берём рабочий файл, если он есть, иначе образец. Создавать рабочие файлы
     здесь нельзя: тесты не должны оставлять следов в репозитории.
     """
-    if real.exists():
-        return real
     if example.exists():
         return example
+    # Web tests must be reproducible and must never inherit a developer's
+    # ignored credentials or locally migrated settings.  Runtime configuration
+    # is covered by integration/smoke tests; this suite exercises the tracked
+    # templates and its own temporary copies.
+    if real.exists():
+        return real
     pytest.skip("нет ни %s, ни образца" % real.name)
 
 

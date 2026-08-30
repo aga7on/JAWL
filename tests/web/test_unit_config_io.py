@@ -31,7 +31,7 @@ def test_scalar_changes_only_one_line(sandbox_config):
 def test_scalar_keeps_trailing_comment_and_alignment(sandbox_config):
     """Комментарий и пробелы перед ним — часть строки, их нельзя схлопывать."""
     lines = sandbox_config.settings_lines()
-    original = next(l for l in lines if "mode:" in l and "tree_of_thoughts" not in l)
+    original = next(l for l in lines if l.strip().startswith("mode:") and "#" in l)
     tail = original[original.index("#"):]
     gap = original[:original.index("#")]
     gap = gap[len(gap.rstrip()):]

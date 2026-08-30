@@ -848,9 +848,75 @@
             <div class="body">
               <div class="hint lead">Подмешивает изображения в контекст модели через Base64.</div>
               <div class="hint" id="visionHint"></div>
+              <div class="field"><div class="fl"><div class="fn">Понимание видео</div><div class="fd">Разрешает отправку коротких видео в vision-модель</div></div><div class="fc"><span aria-disabled="true" class="sw" data-cfg="interfaces:multimodality.video_understanding_enabled" role="switch" aria-checked="false"></span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Генерация медиа</div><div class="fd">Изображения и видео через provider adapter</div></div><div class="fc"><span aria-disabled="true" class="sw" data-cfg="interfaces:multimodality.media_generation_enabled" role="switch" aria-checked="false"></span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Таймаут медиа</div></div><div class="fc"><input data-cfg="interfaces:multimodality.media_request_timeout_sec" type="number" min="1" max="3600" disabled><span class="unit">сек</span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Интервал проверки задачи</div></div><div class="fc"><input data-cfg="interfaces:multimodality.media_poll_interval_sec" type="number" min="0.1" max="300" step="0.1" disabled><span class="unit">сек</span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Лимит загрузки / скачивания</div></div><div class="fc"><input data-cfg="interfaces:multimodality.media_max_upload_mb" type="number" min="1" max="4096" disabled><input data-cfg="interfaces:multimodality.media_max_download_mb" type="number" min="1" max="16384" disabled><span class="unit">МБ</span></div></div>
               <div class="divider"></div>
               <div class="kv"><span class="k">Навыков в реестре</span><span class="v dim">2</span></div>
             </div>
+          </div>
+
+          <!-- coding host limits -->
+          <div class="card ifc" data-name="coding host desktop execution approval sandbox container">
+            <header><h3>Кодинг · хост и рабочий стол</h3></header>
+            <div class="body">
+              <div class="hint lead">Лимиты GUI и изолированного выполнения. Они не выдают агенту новые права: доступ по-прежнему контролирует Gatekeeper.</div>
+              <div class="grid g2"><div>
+                <div class="eyebrow">Desktop</div>
+                <div class="field"><div class="fl"><div class="fn">Окон в снимке</div></div><div class="fc"><input data-cfg="interfaces:host.os.desktop_max_windows" type="number" min="1" max="500" disabled></div></div>
+                <div class="field"><div class="fl"><div class="fn">Элементов UI</div></div><div class="fc"><input data-cfg="interfaces:host.os.desktop_max_elements" type="number" min="1" max="10000" disabled></div></div>
+                <div class="field"><div class="fl"><div class="fn">Текста UI</div></div><div class="fc"><input data-cfg="interfaces:host.os.desktop_max_text_chars" type="number" min="1" max="1000000" disabled></div></div>
+                <div class="field"><div class="fl"><div class="fn">Результат действия</div></div><div class="fc"><input data-cfg="interfaces:host.os.desktop_max_result_chars" type="number" min="1" max="1000000" disabled></div></div>
+                <div class="field"><div class="fl"><div class="fn">Таймаут операции</div></div><div class="fc"><input data-cfg="interfaces:host.os.desktop_operation_timeout_sec" type="number" min="1" max="3600" disabled><span class="unit">сек</span></div></div>
+              </div><div>
+                <div class="eyebrow">Выполнение кода</div>
+                <div class="field"><div class="fl"><div class="fn">Backend</div></div><div class="fc"><select data-cfg="interfaces:host.os.coding_execution_backend" disabled><option>disabled</option><option>host</option><option>container</option></select></div></div>
+                <div class="field"><div class="fl"><div class="fn">Подтверждение команд</div></div><div class="fc"><select data-cfg="interfaces:host.os.coding_approval_mode" disabled><option>disabled</option><option>local</option><option>remote</option></select></div></div>
+                <div class="field"><div class="fl"><div class="fn">Срок подтверждения</div></div><div class="fc"><input data-cfg="interfaces:host.os.coding_approval_ttl_sec" type="number" min="1" max="86400" disabled><span class="unit">сек</span></div></div>
+                <div class="field"><div class="fl"><div class="fn">Runtime / image</div></div><div class="fc"><input data-cfg="interfaces:host.os.coding_container_runtime" type="text" disabled><input data-cfg="interfaces:host.os.coding_container_image" type="text" disabled></div></div>
+                <div class="field"><div class="fl"><div class="fn">Сеть контейнера</div></div><div class="fc"><input data-cfg="interfaces:host.os.coding_container_network" type="text" disabled></div></div>
+                <div class="field"><div class="fl"><div class="fn">Memory / CPU / PID</div></div><div class="fc"><input data-cfg="interfaces:host.os.coding_container_memory_mb" type="number" min="1" disabled><input data-cfg="interfaces:host.os.coding_container_cpus" type="number" min="0.1" step="0.1" disabled><input data-cfg="interfaces:host.os.coding_container_pids" type="number" min="1" disabled></div></div>
+              </div></div>
+            </div>
+          </div>
+
+          <!-- Telegram media and approvals -->
+          <div class="card ifc" data-events="true" data-name="telegram telethon aiogram media approval">
+            <header><h3>Telegram · медиа и подтверждения</h3></header>
+            <div class="body"><div class="grid g2"><div>
+              <div class="eyebrow">Telethon</div>
+              <div class="field"><div class="fl"><div class="fn">Скачивать медиа</div></div><div class="fc"><span aria-disabled="true" class="sw" data-cfg="interfaces:telegram.telethon.download_visual_media" role="switch" aria-checked="false"></span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Лимит медиа</div></div><div class="fc"><input data-cfg="interfaces:telegram.telethon.visual_media_max_mb" type="number" min="1" max="4096" disabled><span class="unit">МБ</span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Чат / actor approval</div></div><div class="fc"><input data-cfg="interfaces:telegram.telethon.coding_approval_chat_id" type="number" disabled><input data-cfg="interfaces:telegram.telethon.coding_approval_actor_id" type="number" disabled></div></div>
+              <div class="field"><div class="fl"><div class="fn">Удалённые решения</div></div><div class="fc"><span aria-disabled="true" class="sw" data-cfg="interfaces:telegram.telethon.coding_approval_remote_decisions" role="switch" aria-checked="false"></span></div></div>
+            </div><div>
+              <div class="eyebrow">Aiogram</div>
+              <div class="field"><div class="fl"><div class="fn">Скачивать медиа</div></div><div class="fc"><span aria-disabled="true" class="sw" data-cfg="interfaces:telegram.aiogram.download_visual_media" role="switch" aria-checked="false"></span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Лимит медиа</div></div><div class="fc"><input data-cfg="interfaces:telegram.aiogram.visual_media_max_mb" type="number" min="1" max="4096" disabled><span class="unit">МБ</span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Чат / actor approval</div></div><div class="fc"><input data-cfg="interfaces:telegram.aiogram.coding_approval_chat_id" type="number" disabled><input data-cfg="interfaces:telegram.aiogram.coding_approval_actor_id" type="number" disabled></div></div>
+              <div class="field"><div class="fl"><div class="fn">Удалённые решения</div></div><div class="fc"><span aria-disabled="true" class="sw" data-cfg="interfaces:telegram.aiogram.coding_approval_remote_decisions" role="switch" aria-checked="false"></span></div></div>
+            </div></div></div>
+          </div>
+
+          <!-- MCP and debugger broker -->
+          <div class="card ifc" data-name="mcp debug broker x64dbg ghidra frida debugger">
+            <header><h3>MCP и Debug Broker</h3></header>
+            <div class="body"><div class="grid g2"><div>
+              <div class="eyebrow">MCP</div>
+              <div class="field"><div class="fl"><div class="fn">Включён</div></div><div class="fc"><span aria-disabled="true" class="sw" data-cfg="interfaces:mcp.enabled" role="switch" aria-checked="false"></span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Startup / request timeout</div></div><div class="fc"><input data-cfg="interfaces:mcp.startup_timeout_sec" type="number" min="1" disabled><input data-cfg="interfaces:mcp.request_timeout_sec" type="number" min="1" disabled></div></div>
+              <div class="field"><div class="fl"><div class="fn">Каталог / результат</div></div><div class="fc"><input data-cfg="interfaces:mcp.max_catalog_items" type="number" min="1" disabled><input data-cfg="interfaces:mcp.max_result_chars" type="number" min="1" disabled></div></div>
+              <div class="field"><div class="fl"><div class="fn">Binary payload</div></div><div class="fc"><input data-cfg="interfaces:mcp.max_binary_bytes" type="number" min="1" disabled><span class="unit">байт</span></div></div>
+            </div><div>
+              <div class="eyebrow">Debug Broker</div>
+              <div class="field"><div class="fl"><div class="fn">Включён / автозапуск</div></div><div class="fc"><span aria-disabled="true" class="sw" data-cfg="interfaces:debug_broker.enabled" role="switch" aria-checked="false"></span><span aria-disabled="true" class="sw" data-cfg="interfaces:debug_broker.auto_start" role="switch" aria-checked="false"></span></div></div>
+              <div class="field"><div class="fl"><div class="fn">Корень RE</div></div><div class="fc"><input data-cfg="interfaces:debug_broker.re_root" type="text" class="wide" disabled></div></div>
+              <div class="field"><div class="fl"><div class="fn">Startup / request timeout</div></div><div class="fc"><input data-cfg="interfaces:debug_broker.startup_timeout_sec" type="number" min="1" disabled><input data-cfg="interfaces:debug_broker.request_timeout_sec" type="number" min="1" disabled></div></div>
+              <div class="field"><div class="fl"><div class="fn">Result / sessions</div></div><div class="fc"><input data-cfg="interfaces:debug_broker.max_result_chars" type="number" min="1" disabled><input data-cfg="interfaces:debug_broker.max_sessions" type="number" min="1" disabled></div></div>
+              <div class="field"><div class="fl"><div class="fn">Порты x64dbg</div></div><div class="fc"><input data-cfg="interfaces:debug_broker.x64dbg_port_start" type="number" min="1" max="65535" disabled><input data-cfg="interfaces:debug_broker.x64dbg_port_end" type="number" min="1" max="65535" disabled></div></div>
+            </div></div></div>
           </div>
 
           <!-- calendar -->

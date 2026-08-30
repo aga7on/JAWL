@@ -120,9 +120,24 @@ def _read_lines(path: Path) -> List[str]:
 
 
 def _write_lines(path: Path, lines: List[str]) -> None:
-    nl = detect_newline(path)
+    # Preserve the exact newline layout of an existing user config.  A file
+    # may be mostly CRLF with a few manually added LF lines; rewriting every
+    # line with the dominant convention turns a one-value edit into a noisy
+    # whole-file change.
+    existing = ""
+    if path.exists():
+        existing = io.open(path, encoding="utf-8", newline="").read()
+    pieces = re.split(r"(\r\n|\n|\r)", existing)
+    original_lines = pieces[::2]
+    endings = pieces[1::2]
     with io.open(path, "w", encoding="utf-8", newline="") as fh:
-        fh.write(nl.join(lines))
+        if existing and len(lines) == len(original_lines):
+            for index, line in enumerate(lines):
+                fh.write(line)
+                if index < len(endings):
+                    fh.write(endings[index])
+            return
+        fh.write(detect_newline(path).join(lines))
 
 
 # ---------------------------------------------------------------- чтение YAML

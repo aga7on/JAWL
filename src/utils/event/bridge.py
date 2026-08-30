@@ -70,11 +70,18 @@ class EventBridge:
                 return
 
             if self.container.heartbeat:
+                arguments = {
+                    "level": evt.level,
+                    "event_name": evt.name,
+                    "payload": kwargs,
+                }
+                # Keep existing Heartbeat integrations source-compatible: true
+                # is the historic default, while false is the new meaningful
+                # opt-out for passive system events.
+                if not evt.requires_attention:
+                    arguments["requires_attention"] = False
                 self.container.heartbeat.answer_to_event(
-                    level=evt.level,
-                    event_name=evt.name,
-                    payload=kwargs,
-                    requires_attention=evt.requires_attention,
+                    **arguments,
                 )
 
         return handler
