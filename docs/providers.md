@@ -160,7 +160,7 @@ pytest tests/integration/src/l3/llm/test_live_provider_goal.py -s
 # QWB bridge
 JAWL_LIVE_QWB=1 \
 JAWL_LIVE_QWB_URL=http://127.0.0.1:8000/v1 \
-JAWL_LIVE_QWB_MODEL=qwen3.8-max-preview \
+JAWL_LIVE_QWB_MODEL=qwen3.8-max \
 JAWL_LIVE_QWB_KEY=<bridge key> \
 pytest tests/integration/src/l3/llm/test_live_qwb_goal.py -s
 ```

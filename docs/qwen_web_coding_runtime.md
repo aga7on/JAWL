@@ -120,7 +120,7 @@ catalogue-name feedback, not adding more memory to every request.
 
 # Qwen 3.8 preview context and Thinking
 
-The coding fork uses `qwen3.8-max-preview` for both coding and vision.
+The coding fork uses `qwen3.8-max` for both coding and vision.
 
 Each ordinary ReAct cycle has an isolated `X-Session-Id`. An active durable Goal
 keeps the same lane across cycles and reconstructs every step from bounded JAWL

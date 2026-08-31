@@ -418,6 +418,30 @@ async def test_qwb_empty_answer_is_classified_for_repair():
 
 
 @pytest.mark.asyncio
+async def test_qwb_waf_challenge_stops_without_banning_the_bridge_key():
+    request = httpx.Request("POST", "http://qwb.test/v1/chat/completions")
+    response = httpx.Response(503, request=request)
+    error = openai.APIStatusError(
+        "Qwen Web anti-bot challenge required; refresh WAF cookies or use CDP transport",
+        response=response,
+        body={"error": {"type": "upstream_waf_challenge"}},
+    )
+    client, session = _client_with_response(_response())
+    session.chat.completions.create.side_effect = error
+    provider = QWBProvider(client)
+
+    with pytest.raises(ProviderError) as caught:
+        await provider.complete(
+            LLMRequest(model="qwen", messages=(LLMMessage(role="user", content="x"),))
+        )
+
+    assert caught.value.category == "authentication"
+    assert caught.value.retryable is False
+    provider.on_authentication_error(caught.value)
+    client.rotator.ban_key.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_qwb_health_exposes_account_diagnostics_without_tokens():
     response = MagicMock()
     response.raise_for_status.return_value = None

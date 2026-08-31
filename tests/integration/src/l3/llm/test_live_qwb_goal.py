@@ -4,7 +4,8 @@ Enable with a running QWB bridge::
 
     JAWL_LIVE_QWB=1
     JAWL_LIVE_QWB_URL=http://127.0.0.1:8000/v1
-    JAWL_LIVE_QWB_MODEL=qwen3.8-max-preview
+    JAWL_LIVE_QWB_MODEL=qwen3.8-max
+    JAWL_LIVE_QWB_KEY=<bridge key>
 
 The point of this file is symmetry with ``test_live_provider_goal.py``: the same
 Durable Goal machinery must complete a real coding task through QWB, while the
@@ -39,7 +40,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 QWB_URL = os.environ.get("JAWL_LIVE_QWB_URL", "http://127.0.0.1:8000/v1")
-QWB_MODEL = os.environ.get("JAWL_LIVE_QWB_MODEL", "qwen3.8-max-preview")
+QWB_MODEL = os.environ.get("JAWL_LIVE_QWB_MODEL", "qwen3.8-max")
 QWB_KEY = os.environ.get("JAWL_LIVE_QWB_KEY", "local_dummy_key")
 
 logger = logging.getLogger("live-qwb")

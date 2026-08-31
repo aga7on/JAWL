@@ -168,6 +168,21 @@ class QWBProvider(OpenAICompatibleProvider):
                 retryable=True,
                 cause=error,
             )
+        if (
+            "upstream_auth_error" in text
+            or "all configured tokens are expired" in text
+            or "upstream_waf_challenge" in text
+            or "anti-bot challenge" in text
+        ):
+            return ProviderError(
+                str(error),
+                provider=self.name,
+                category="authentication",
+                status_code=mapped.status_code,
+                code="upstream_auth_error",
+                retryable=False,
+                cause=error,
+            )
         return ProviderError(
             str(mapped),
             provider=self.name,
@@ -186,6 +201,11 @@ class QWBProvider(OpenAICompatibleProvider):
         if self.bridge_managed_accounts:
             return None
         super().on_rate_limit(error)
+
+    def on_authentication_error(self, error: Exception) -> None:
+        if self.bridge_managed_accounts:
+            return None
+        super().on_authentication_error(error)
 
     async def health(self) -> ProviderHealth:
         started = time.perf_counter()
@@ -210,7 +230,8 @@ class QWBProvider(OpenAICompatibleProvider):
             ]
             status = str(payload.get("status") or "invalid")
             if status == "ok" and any(
-                item["state"] != "healthy" for item in public_accounts
+                item["state"] not in {"available", "healthy"}
+                for item in public_accounts
             ):
                 status = "degraded"
             if status not in {"ok", "degraded", "offline", "invalid"}:
